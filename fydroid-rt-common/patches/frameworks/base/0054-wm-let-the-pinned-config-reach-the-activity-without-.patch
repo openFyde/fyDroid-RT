@@ -1,0 +1,69 @@
+From b1aef2903e410aad5b9b70f96ed8894cb47abff3 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 13 Aug 2026 19:31:52 +0800
+Subject: [PATCH 54/75] wm: let the pinned config reach the activity without a
+ PIP organizer
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+moveActivityToPinnedRootTask pins the task but holds the activity at its
+previous windowing mode, so the app does not relayout while the WM Shell
+animates the shrink. The only code in the tree that lifts that override
+again is PipTaskOrganizer's setActivityWindowingMode(.., UNDEFINED).
+
+fydroid ships no WM Shell — ash owns the PIP window, its bounds and its
+animation — so nothing ever cleared it. The activity never resolved to
+WINDOWING_MODE_PINNED: isInPictureInPictureMode() stayed false,
+onPictureInPictureModeChanged() never fired, and the stuck
+mWaitForEnteringPinnedMode latch suppressed every visibility commit for
+that activity.
+
+Skip the deferral when no task organizer is registered and let the pinned
+configuration cascade straight down. Gated on the organizer rather than on
+an ARC flag so the upstream path is untouched wherever a shell exists.
+
+First step of the PIP work; see device/fydeos/docs/picture-in-picture-plan.md.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I3d371bd7f50eddb533b57f8bdc4b42a2d55e5eda
+---
+ .../server/wm/RootWindowContainer.java        | 22 +++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/RootWindowContainer.java b/services/core/java/com/android/server/wm/RootWindowContainer.java
+index a4e08dfb1e3b..a0c44451a7a3 100644
+--- a/services/core/java/com/android/server/wm/RootWindowContainer.java
++++ b/services/core/java/com/android/server/wm/RootWindowContainer.java
+@@ -2086,8 +2086,26 @@ class RootWindowContainer extends WindowContainer<DisplayContent>
+             // Defer the windowing mode change until after the transition to prevent the activity
+             // from doing work and changing the activity visuals while animating
+             // TODO(task-org): Figure-out more structured way to do this long term.
+-            r.setWindowingMode(intermediateWindowingMode);
+-            r.mWaitForEnteringPinnedMode = true;
++            //
++            // fydroid-rt (ARC): this deferral holds the ACTIVITY at its previous
++            // windowing mode while the TASK becomes pinned, so the app does not
++            // relayout while the shell animates the shrink. The only code in the
++            // tree that ever lifts the override again is the WM Shell's
++            // PipTaskOrganizer (setActivityWindowingMode(.., UNDEFINED)).
++            //
++            // fydroid ships no WM Shell — ash owns the PIP window, its bounds and
++            // its animation — so with no task organizer registered nothing would
++            // clear it: the activity would never resolve to WINDOWING_MODE_PINNED,
++            // isInPictureInPictureMode() would stay false,
++            // onPictureInPictureModeChanged() would never fire, and the stuck
++            // mWaitForEnteringPinnedMode latch would suppress every visibility
++            // commit for the activity (see ActivityRecord#shouldApplyAnimation).
++            // With no organizer, let the pinned configuration cascade straight
++            // down to the activity instead.
++            if (mService.mTaskOrganizerController.getTaskOrganizer() != null) {
++                r.setWindowingMode(intermediateWindowingMode);
++                r.mWaitForEnteringPinnedMode = true;
++            }
+             rootTask.forAllTaskFragments(tf -> {
+                 if (!tf.isOrganizedTaskFragment()) {
+                     return;
+-- 
+2.43.0
+

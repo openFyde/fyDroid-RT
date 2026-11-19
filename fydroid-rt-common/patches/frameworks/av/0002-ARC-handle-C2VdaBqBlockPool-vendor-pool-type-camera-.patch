@@ -1,0 +1,124 @@
+From 1b965edda93acaaaf62a59715cf8f34cef28727f Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 24 Apr 2026 13:30:17 +0800
+Subject: [PATCH 2/5] ARC: handle C2VdaBqBlockPool vendor pool type + camera
+ format override
+
+types.cpp: C2VdaBqBlockPool uses kTypeVdaBufferQueue (TYPE_BUFFERQUEUE
++ 256). Treat vendor pool types as NATIVE blocks instead of failing,
+so video decode output buffers serialize correctly across HIDL.
+
+Camera3Device: Allow ARC camera HAL to override stream format to
+YCbCr_420_888 or IMPLEMENTATION_DEFINED. The remote camera service
+produces NV12 and local gralloc may not support the original format
+with camera usage flags.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I9201ab24bbbe9a5452ac57c0a55fac65f94d91a5
+---
+ media/codec2/hidl/1.0/utils/types.cpp         |  7 +++--
+ .../device3/aidl/AidlCamera3Device.cpp        | 27 ++++++++++++++-----
+ .../device3/hidl/HidlCamera3Device.cpp        | 27 ++++++++++++++-----
+ 3 files changed, 45 insertions(+), 16 deletions(-)
+
+diff --git a/media/codec2/hidl/1.0/utils/types.cpp b/media/codec2/hidl/1.0/utils/types.cpp
+index 319ba62f18..debbcd211f 100644
+--- a/media/codec2/hidl/1.0/utils/types.cpp
++++ b/media/codec2/hidl/1.0/utils/types.cpp
+@@ -751,8 +751,11 @@ bool addBaseBlock(
+                 index, handle,
+                 baseBlocks, baseBlockIndices);
+     default:
+-        LOG(ERROR) << "Unknown C2BlockPoolData type.";
+-        return false;
++        // C2VdaBqBlockPool uses kTypeVdaBufferQueue (TYPE_BUFFERQUEUE + 256).
++        // Treat vendor pool types as NATIVE blocks (serialize just the handle).
++        return _addBaseBlock(
++                index, handle,
++                baseBlocks, baseBlockIndices);
+     }
+ }
+ 
+diff --git a/services/camera/libcameraservice/device3/aidl/AidlCamera3Device.cpp b/services/camera/libcameraservice/device3/aidl/AidlCamera3Device.cpp
+index 1bc9ef2490..c40bd0b6e2 100644
+--- a/services/camera/libcameraservice/device3/aidl/AidlCamera3Device.cpp
++++ b/services/camera/libcameraservice/device3/aidl/AidlCamera3Device.cpp
+@@ -993,15 +993,28 @@ status_t AidlCamera3Device::AidlHalInterface::configureStreams(
+         dstStream->setOfflineProcessingSupport(src.supportOffline);
+ 
+         if (dstStream->getOriginalFormat() != HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
+-            dstStream->setFormatOverride(false);
+-            dstStream->setDataSpaceOverride(false);
+-            if (dst->format != overrideFormat) {
+-                ALOGE("%s: Stream %d: Format override not allowed for format 0x%x", __FUNCTION__,
+-                        streamId, dst->format);
++            // ARC camera HAL may override format to a camera-compatible one
++            // (e.g. YCbCr_420_888) because the remote camera service produces
++            // NV12 and the local gralloc may not support the original format
++            // with camera usage flags.
++            if (dst->format != overrideFormat &&
++                    (overrideFormat == HAL_PIXEL_FORMAT_YCbCr_420_888 ||
++                     overrideFormat == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED)) {
++                ALOGI("%s: Stream %d: ARC format override 0x%x -> 0x%x",
++                        __FUNCTION__, streamId, dst->format, overrideFormat);
++                dstStream->setFormatOverride(true);
++                dst->format = overrideFormat;
++            } else {
++                dstStream->setFormatOverride(false);
++                if (dst->format != overrideFormat) {
++                    ALOGE("%s: Stream %d: Format override not allowed for format 0x%x",
++                            __FUNCTION__, streamId, dst->format);
++                }
+             }
+             if (dst->data_space != overrideDataSpace) {
+-                ALOGE("%s: Stream %d: DataSpace override not allowed for format 0x%x", __FUNCTION__,
+-                        streamId, dst->format);
++                dstStream->setDataSpaceOverride(false);
++                ALOGE("%s: Stream %d: DataSpace override not allowed for format 0x%x",
++                        __FUNCTION__, streamId, dst->format);
+             }
+         } else {
+             bool needFormatOverride =
+diff --git a/services/camera/libcameraservice/device3/hidl/HidlCamera3Device.cpp b/services/camera/libcameraservice/device3/hidl/HidlCamera3Device.cpp
+index c675c6349e..ad27ffb097 100644
+--- a/services/camera/libcameraservice/device3/hidl/HidlCamera3Device.cpp
++++ b/services/camera/libcameraservice/device3/hidl/HidlCamera3Device.cpp
+@@ -1144,15 +1144,28 @@ status_t HidlCamera3Device::HidlHalInterface::configureStreams(
+         }
+ 
+         if (dstStream->getOriginalFormat() != HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED) {
+-            dstStream->setFormatOverride(false);
+-            dstStream->setDataSpaceOverride(false);
+-            if (dst->format != overrideFormat) {
+-                ALOGE("%s: Stream %d: Format override not allowed for format 0x%x", __FUNCTION__,
+-                        streamId, dst->format);
++            // ARC camera HAL may override format to a camera-compatible one
++            // (e.g. YCbCr_420_888) because the remote camera service produces
++            // NV12 and the local gralloc may not support the original format
++            // with camera usage flags.
++            if (dst->format != overrideFormat &&
++                    (overrideFormat == HAL_PIXEL_FORMAT_YCbCr_420_888 ||
++                     overrideFormat == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED)) {
++                ALOGI("%s: Stream %d: ARC format override 0x%x -> 0x%x",
++                        __FUNCTION__, streamId, dst->format, overrideFormat);
++                dstStream->setFormatOverride(true);
++                dst->format = overrideFormat;
++            } else {
++                dstStream->setFormatOverride(false);
++                if (dst->format != overrideFormat) {
++                    ALOGE("%s: Stream %d: Format override not allowed for format 0x%x",
++                            __FUNCTION__, streamId, dst->format);
++                }
+             }
+             if (dst->data_space != overrideDataSpace) {
+-                ALOGE("%s: Stream %d: DataSpace override not allowed for format 0x%x", __FUNCTION__,
+-                        streamId, dst->format);
++                dstStream->setDataSpaceOverride(false);
++                ALOGE("%s: Stream %d: DataSpace override not allowed for format 0x%x",
++                        __FUNCTION__, streamId, dst->format);
+             }
+         } else {
+             bool needFormatOverride =
+-- 
+2.43.0
+

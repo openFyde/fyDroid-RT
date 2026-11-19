@@ -1,0 +1,59 @@
+From 0cb59fc1299f9e0b0037e29a4349a35ee6c6eeaf Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 18:59:16 +0800
+Subject: [PATCH 28/75] WM: skip launch animation for ARC freeform/multi-window
+ tasks
+
+AOSP-13 port of patch 0032: ActivityStack was removed in Android 12;
+the "Prepare open transition: starting" block moved to
+Task.startActivityLocked. prepareAppTransition is now single-arg
+(TRANSIT_NONE) and mStackSupervisor->mTaskSupervisor. Skip the
+internal launch animation for FREEFORM/MULTI_WINDOW so the per-task
+HWC virtual display doesn't latch onto the animating thumbnail rect
+and shrink/corrupt the task's saved bounds; Chrome animates the
+window externally.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I7531c241fc69655f887578eae80bfeb6d6865e19
+---
+ .../core/java/com/android/server/wm/Task.java    | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index e4d8aa50e5a8..08504a575201 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -25,6 +25,7 @@ import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
+ import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
++import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
+ import static android.app.WindowConfiguration.activityTypeToString;
+@@ -5226,8 +5227,21 @@ class Task extends TaskFragment {
+             final DisplayContent dc = mDisplayContent;
+             if (DEBUG_TRANSITION) Slog.v(TAG_TRANSITION,
+                     "Prepare open transition: starting " + r);
++            // fydroid: ARC freeform/multi-window tasks are animated externally
++            // by Chrome OS's compositor (window scale/move animations run in
++            // Chrome). Android's internal launch animation runs the activity
++            // through an animating thumbnail rect first, which the per-task
++            // HWC virtual display latches onto as the task's "real" size —
++            // shrinking the task to that thumbnail and corrupting its saved
++            // bounds. Skipping the open animation for these modes lets the
++            // task come up at its actual bounds.
++            final int fydroidWm = task.getWindowingMode();
++            final boolean fydroidSkipLaunchAnim =
++                    (fydroidWm == WINDOWING_MODE_FREEFORM
++                            || fydroidWm == WINDOWING_MODE_MULTI_WINDOW);
+             // TODO(shell-transitions): record NO_ANIMATION flag somewhere.
+-            if ((r.intent.getFlags() & Intent.FLAG_ACTIVITY_NO_ANIMATION) != 0) {
++            if ((r.intent.getFlags() & Intent.FLAG_ACTIVITY_NO_ANIMATION) != 0
++                    || fydroidSkipLaunchAnim) {
+                 dc.prepareAppTransition(TRANSIT_NONE);
+                 mTaskSupervisor.mNoAnimActivities.add(r);
+             } else {
+-- 
+2.43.0
+

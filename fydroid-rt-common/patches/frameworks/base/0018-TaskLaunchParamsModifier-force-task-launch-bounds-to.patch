@@ -1,0 +1,43 @@
+From 0f53b7564bed90068f2eb0a1352a6bb5d6ec1618 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 18:05:49 +0800
+Subject: [PATCH 18/75] TaskLaunchParamsModifier: force task launch bounds to
+ (0,0,W,H) in container
+
+AOSP-13 port of patch 0027: centerBounds moved from TaskLaunchParamsModifier to
+LaunchParamsUtil in 13 (and its signature changed to TaskDisplayArea). Added the
+ARC-container guard (anchor at 0,0,W,H so the WMS frame matches SF's task-local
+coords) to LaunchParamsUtil.centerBounds. Applied as a targeted edit since the
+3-way merge mis-grouped against the removed getDefaultFreeformSize.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I7f16fb5dc18f451ed1385feb97f3fb6b75f14977
+---
+ .../java/com/android/server/wm/LaunchParamsUtil.java  | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/LaunchParamsUtil.java b/services/core/java/com/android/server/wm/LaunchParamsUtil.java
+index 09a17e166f46..2829a2ce650b 100644
+--- a/services/core/java/com/android/server/wm/LaunchParamsUtil.java
++++ b/services/core/java/com/android/server/wm/LaunchParamsUtil.java
+@@ -56,6 +56,17 @@ class LaunchParamsUtil {
+      */
+     static void centerBounds(@NonNull TaskDisplayArea displayArea, int width, int height,
+             @NonNull Rect inOutBounds) {
++        // fydroid-rt (AOSP-13 port of frameworks/base patch 0027; centerBounds moved
++        // from TaskLaunchParamsModifier to LaunchParamsUtil in 13): in ARC container
++        // mode every task renders into its own SF virtual display and HWC/Wayland owns
++        // the on-screen position, not Android WM. The WMS window frame must stay at
++        // (0, 0, W, H) — a non-zero origin makes the InputDispatcher frame disagree
++        // with the task-local coords SF emits, so all clicks get dropped (app loses
++        // focus -> background cgroup -> ART heap clamp -> OOM). Skip the centering math.
++        if (android.os.Build.IS_CONTAINER) {
++            inOutBounds.set(0, 0, width, height);
++            return;
++        }
+         if (inOutBounds.isEmpty()) {
+             displayArea.getStableRect(inOutBounds);
+         }
+-- 
+2.43.0
+

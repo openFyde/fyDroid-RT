@@ -1,0 +1,125 @@
+From 2c6acc02e7adebe8b448c3059f3d209f92cd5dd8 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 27 Jul 2026 18:08:00 +0800
+Subject: [PATCH 49/75] PackageInstaller: really disable the install dialog
+ animations
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+windowAnimationStyle=@null does not disable anything: WindowManager treats
+a null style as "unset" and falls back to the framework defaults, so the
+activity- and task-transition animations kept running. Point the themes at
+an explicit style that nulls every WindowAnimation attribute instead, and
+give InstallStart — the invisible trampoline that actually opens the task,
+and therefore the activity whose theme the task-open transition reads — a
+translucent theme carrying the same animation style.
+
+This matters more here than on a phone: the dialog is rendered through the
+Wayland compositor, which follows the animation's scale sweep frame by
+frame. The install warning card swept from 662x342 to 704x363 over ~400ms
+on every launch, dragging the modal window's geometry with it, instead of
+appearing at its final size.
+
+Verified on a fydroid-rt_arm64 board: the card now lands at a stable
+704x363 with no intermediate sizes.
+
+Change-Id: I41114876a288311c6a371cd56972c9f981d8749f
+---
+ packages/PackageInstaller/AndroidManifest.xml |  2 +-
+ .../res/values-night/themes.xml               |  2 +-
+ .../PackageInstaller/res/values/themes.xml    | 40 ++++++++++++++++++-
+ 3 files changed, 40 insertions(+), 4 deletions(-)
+
+diff --git a/packages/PackageInstaller/AndroidManifest.xml b/packages/PackageInstaller/AndroidManifest.xml
+index 030175d643ad..dc5c92e39dab 100644
+--- a/packages/PackageInstaller/AndroidManifest.xml
++++ b/packages/PackageInstaller/AndroidManifest.xml
+@@ -44,7 +44,7 @@
+         </receiver>
+ 
+         <activity android:name=".InstallStart"
+-                android:theme="@android:style/Theme.Translucent.NoTitleBar"
++                android:theme="@style/Theme.Translucent.NoAnimation"
+                 android:exported="true"
+                 android:excludeFromRecents="true">
+             <intent-filter android:priority="1">
+diff --git a/packages/PackageInstaller/res/values-night/themes.xml b/packages/PackageInstaller/res/values-night/themes.xml
+index 1c43743730ab..789f110062f8 100644
+--- a/packages/PackageInstaller/res/values-night/themes.xml
++++ b/packages/PackageInstaller/res/values-night/themes.xml
+@@ -19,7 +19,7 @@
+ 
+     <style name="Theme.AlertDialogActivity"
+             parent="@android:style/Theme.DeviceDefault.Dialog.Alert">
+-        <item name="android:windowAnimationStyle">@null</item>
++        <item name="android:windowAnimationStyle">@style/Animation.AlertDialogActivity.None</item>
+         <item name="android:windowElevation">0dp</item>
+     </style>
+ 
+diff --git a/packages/PackageInstaller/res/values/themes.xml b/packages/PackageInstaller/res/values/themes.xml
+index 03c41edbbf52..99f4d317e08c 100644
+--- a/packages/PackageInstaller/res/values/themes.xml
++++ b/packages/PackageInstaller/res/values/themes.xml
+@@ -17,9 +17,36 @@
+ 
+ <resources>
+ 
++    <!-- No-op window animation set. windowAnimationStyle=@null is NOT enough:
++         a null style makes WindowManager fall back to the framework defaults,
++         so the activity/task open and close transitions still run. Every
++         attribute has to be nulled explicitly instead.
++
++         The transitions matter more here than on a phone: the dialog is
++         rendered through the Wayland compositor, which faithfully follows the
++         animation's scale/translate sweep — the card grows and slides through
++         a dozen intermediate sizes, dragging the modal window's geometry along
++         with it, instead of simply appearing at its final size. -->
++    <style name="Animation.AlertDialogActivity.None" parent="@android:style/Animation">
++        <item name="android:windowEnterAnimation">@null</item>
++        <item name="android:windowExitAnimation">@null</item>
++        <item name="android:activityOpenEnterAnimation">@null</item>
++        <item name="android:activityOpenExitAnimation">@null</item>
++        <item name="android:activityCloseEnterAnimation">@null</item>
++        <item name="android:activityCloseExitAnimation">@null</item>
++        <item name="android:taskOpenEnterAnimation">@null</item>
++        <item name="android:taskOpenExitAnimation">@null</item>
++        <item name="android:taskCloseEnterAnimation">@null</item>
++        <item name="android:taskCloseExitAnimation">@null</item>
++        <item name="android:taskToFrontEnterAnimation">@null</item>
++        <item name="android:taskToFrontExitAnimation">@null</item>
++        <item name="android:taskToBackEnterAnimation">@null</item>
++        <item name="android:taskToBackExitAnimation">@null</item>
++    </style>
++
+     <style name="Theme.AlertDialogActivity.NoAnimation"
+            parent="@style/Theme.AlertDialogActivity.NoActionBar">
+-        <item name="android:windowAnimationStyle">@null</item>
++        <item name="android:windowAnimationStyle">@style/Animation.AlertDialogActivity.None</item>
+     </style>
+ 
+     <style name="Theme.AlertDialogActivity"
+@@ -27,10 +54,19 @@
+         <!-- Disable window animations and elevation shadow to prevent
+              visual flashing during activity transitions when rendered
+              through the Wayland compositor. -->
+-        <item name="android:windowAnimationStyle">@null</item>
++        <item name="android:windowAnimationStyle">@style/Animation.AlertDialogActivity.None</item>
+         <item name="android:windowElevation">0dp</item>
+     </style>
+ 
++    <!-- InstallStart, the invisible trampoline the VIEW intent lands on. It is
++         the activity that opens the task, so its theme is what the task-open
++         transition reads — leaving it on the stock translucent theme animates
++         the whole task in even though every dialog above it is animation-free. -->
++    <style name="Theme.Translucent.NoAnimation"
++           parent="@android:style/Theme.Translucent.NoTitleBar">
++        <item name="android:windowAnimationStyle">@style/Animation.AlertDialogActivity.None</item>
++    </style>
++
+     <style name="Theme.AlertDialogActivity.NoActionBar">
+         <item name="android:windowActionBar">false</item>
+         <item name="android:windowNoTitle">true</item>
+-- 
+2.43.0
+

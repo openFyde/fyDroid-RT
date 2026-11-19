@@ -1,0 +1,32 @@
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index 8b760130552..22828520222 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -3292,8 +3292,26 @@ begin_rendering(struct zink_context *ctx, bool check_attachment_shadow)
+       ctx->rp_layout_changed = false;
+    }
+    attachment_shadow_mask &= ctx->transient_attachments;
++   /* fydroid: never populate the transient from inside a blit. The replicate
++    * blit below binds its own framebuffer, and u_blitter's set_framebuffer_state
++    * comes straight back here through zink_set_framebuffer_state ->
++    * zink_flush_clears -> zink_batch_rp -> begin_rendering(check=true). The
++    * attachment's own clear is deliberately left enabled by
++    * zink_render_attachment_shadow(), so the shadow mask is unchanged and the
++    * path runs again -- for ever. u_blitter is not re-entrant either: it warns
++    * "u_blitter:559: Caught recursion. This is a driver bug." each time round
++    * and keeps going, so the process dies on a stack overflow (SIGSEGV
++    * SEGV_ACCERR on the guard page) rather than on anything diagnostic.
++    *
++    * Seen on the NVIDIA dGPU board as WebView taking com.google.android.gms.ui
++    * and the Play Store down on every launch; the same signature is
++    * https://gitlab.freedesktop.org/mesa/mesa/-/issues/14269 (Firefox, zink,
++    * NVIDIA). The outer call is already populating this transient, so skipping
++    * the nested one loses nothing. begin_rendering() consults ctx->blitting the
++    * same way for tc_info above.
++    */
+    /* both msrtss emulation and format view shadowing use this path to populate the transient image */
+-   if (((!ctx->transient_msrtss && ctx->rp_draw) || (ctx->transient_msrtss && !has_msrtss)) && attachment_shadow_mask && check_attachment_shadow) {
++   if (((!ctx->transient_msrtss && ctx->rp_draw) || (ctx->transient_msrtss && !has_msrtss)) && attachment_shadow_mask && check_attachment_shadow && !ctx->blitting) {
+       zink_render_attachment_shadow(ctx, attachment_shadow_mask);
+       return begin_rendering(ctx, false);
+    }

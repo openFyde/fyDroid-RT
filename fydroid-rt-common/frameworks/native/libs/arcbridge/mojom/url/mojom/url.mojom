@@ -1,0 +1,6 @@
+// Stub for url.mojom.Url — minimal definition for arc mojom compilation.
+module url.mojom;
+
+struct Url {
+  string url;
+};

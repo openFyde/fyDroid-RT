@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright (C) 2024 The FydeOS Authors
+
+  ARC/fydroid runs in a container on Chrome OS — there is no Android
+  SetupWizard to flip these flags. We seed device_provisioned=true so the
+  Settings UI doesn't gate features on first boot, but keep
+  user_setup_complete=false: ArcPolicyService promotes it to 1 after
+  ensuring the device-owner state is resolved (so setDeviceOwner isn't
+  rejected by DevicePolicyManagerService.enforceCanSetDeviceOwnerLocked).
+-->
+<resources>
+    <bool name="def_device_provisioned">true</bool>
+    <bool name="def_user_setup_complete">false</bool>
+</resources>

@@ -1,0 +1,34 @@
+cc_binary {
+    name: "fydroid_arcbridge",
+    defaults: ["fydroid_perf_defaults"],
+    stem: "vendor.google_arc.arcbridge@1.0-service",
+
+    srcs: [
+        "main.cpp",
+        "ArcBridgeInstance.cpp",
+        "ArcBridgeHidlService.cpp",
+        "ArcBridgeHostForwarder.cpp",
+    ],
+
+    shared_libs: [
+        "libarcbridge",
+        "libarcbridgeservice",
+        "libbase",
+        "libchrome",
+        "libcutils",
+        "libhidlbase",
+        "liblog",
+        "libmojo",
+        "libutils",
+        "vendor.google_arc.arcbridge@1.0",
+    ],
+
+    init_rc: ["fydroid_arcbridge.rc"],
+
+    vendor: true,
+    relative_install_path: "hw",
+
+    cflags: [
+        "-Wno-unused-parameter",
+    ],
+}

@@ -1,0 +1,32 @@
+From c10f5b408f5eb6508a272336f10cbba5b9cfaf89 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 15:54:44 +0800
+Subject: [PATCH 1/4] fydroid-rt: allow ARC bridge libs to use
+ libbluetooth_headers
+
+libarcbridge and libbluetooth_arc (ARC Bluetooth bridge) need libbluetooth_headers.
+Add device/fydeos/fydroid-rt-common subpackages to its visibility allowlist
+(AOSP 13 moved Bluetooth to a mainline module with restricted visibility).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I3175b659029fb03100eb50eb31d2c0aa3d432ae0
+---
+ system/include/Android.bp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/system/include/Android.bp b/system/include/Android.bp
+index cfe5897f33..77360cc5fa 100644
+--- a/system/include/Android.bp
++++ b/system/include/Android.bp
+@@ -34,6 +34,8 @@ cc_library_headers {
+         "//packages/apps/Test/connectivity/sl4n",
+         "//packages/modules/Bluetooth:__subpackages__",
+         "//vendor:__subpackages__",
++        // fydroid-rt: ARC bridge libs (libbluetooth_arc, libarcbridge) need these headers.
++        "//device/fydeos/fydroid-rt-common:__subpackages__",
+     ],
+     header_libs: [
+         "avrcp_headers",
+-- 
+2.43.0
+

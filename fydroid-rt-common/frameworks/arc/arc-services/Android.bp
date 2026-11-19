@@ -1,0 +1,26 @@
+java_library {
+    name: "arc-services",
+    installable: true,
+    srcs: [
+        "java/**/*.java",
+        "aidl/**/*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    platform_apis: true,
+    static_libs: [
+        "fydroid_arc_task_aidl-java",
+        // ArcPolicy app matching, shared with FydroidPolicyManager (install gate).
+        "fydroid-app-install-policy",
+    ],
+    libs: [
+        "framework",
+        "framework-wifi.impl",
+        "services.core",
+        "org.chromium.arc.bridge",
+        "arc-clipboard",
+        "android.mojo",
+        "org.chromium.arc",
+    ],
+}

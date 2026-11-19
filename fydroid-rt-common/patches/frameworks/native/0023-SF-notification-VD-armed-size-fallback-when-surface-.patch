@@ -1,0 +1,61 @@
+From e541abec5085514a005298a670f2891a4141cf22 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 15 Jun 2026 14:41:26 +0800
+Subject: [PATCH 23/40] SF: notification VD armed-size fallback when surface
+ reports 0x0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+processDisplayAdded() reads a virtual display's resolution by querying
+its output Surface (NATIVE_WINDOW_WIDTH/HEIGHT). For the ARC notification
+VD that size races the producer query and can read back 0x0, which would
+size the DisplayDevice (setPixels) at 0 pixels — SF then composites a
+0-pixel output and no notification layer reaches the composer (blank
+cards), even though the Android display is 720x1024.
+
+When the notification flag is armed and the queried size is invalid,
+fall back to the armed size for the whole device (HWC id, pixels, render
+surface). This is a backstop; the primary fix moves the VD sink to an
+ImageReader whose BufferQueue is sized at construction so the query
+never races.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I2af6f685286e43c4cea8674c7ca400ba938dcba4
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 8191b73ab2..5f31f5b280 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -3005,6 +3005,25 @@ void SurfaceFlinger::processDisplayAdded(const wp<IBinder>& displayToken,
+         return;
+     }
+ 
++    // fydroid: the ARC notification VD's output Surface buffer size races with
++    // display setup, so NATIVE_WINDOW_WIDTH/HEIGHT above can read back 0x0.
++    // That would size the DisplayDevice (setPixels below) at 0x0 — SF then
++    // composites a 0-pixel output and no notification layer ever reaches the
++    // composer (blank cards), even though the Android display is 720x1024.
++    // When the notification flag is armed, fall back to the armed size for the
++    // whole device (HWC id, pixels, render surface).
++    if (state.isVirtual() && (resolution.width <= 0 || resolution.height <= 0)) {
++        if (auto* globals = WaylandGlobals::instance(); globals && globals->isNotificationArmed()) {
++            resolution.width = globals->armedNotifWidth();
++            resolution.height = globals->armedNotifHeight();
++            if (pixelFormat == static_cast<ui::PixelFormat>(PIXEL_FORMAT_UNKNOWN)) {
++                pixelFormat = static_cast<ui::PixelFormat>(PIXEL_FORMAT_RGBA_8888);
++            }
++            ALOGI("processDisplayAdded: notification VD reported 0x0, using armed %dx%d",
++                  resolution.width, resolution.height);
++        }
++    }
++
+     compositionengine::DisplayCreationArgsBuilder builder;
+     if (const auto& physical = state.physical) {
+         builder.setId(physical->id);
+-- 
+2.43.0
+

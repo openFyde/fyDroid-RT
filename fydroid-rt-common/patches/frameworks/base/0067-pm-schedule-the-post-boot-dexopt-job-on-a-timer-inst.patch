@@ -1,0 +1,57 @@
+From dd0c26dfad7d4b905c0d82e053e5d319d2a230ff Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 14 Sep 2026 12:20:41 +0800
+Subject: [PATCH 67/75] pm: schedule the post-boot dexopt job on a timer
+ instead of device idle
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Iab9282e661cd44140b11b5cfcbc6287d7f1cf790
+---
+ .../server/pm/BackgroundDexOptService.java    | 23 ++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/services/core/java/com/android/server/pm/BackgroundDexOptService.java b/services/core/java/com/android/server/pm/BackgroundDexOptService.java
+index 99b2bae1c3dd..70f8be9e8d4c 100644
+--- a/services/core/java/com/android/server/pm/BackgroundDexOptService.java
++++ b/services/core/java/com/android/server/pm/BackgroundDexOptService.java
+@@ -83,6 +83,12 @@ public final class BackgroundDexOptService {
+ 
+     private static final long IDLE_OPTIMIZATION_PERIOD = TimeUnit.DAYS.toMillis(1);
+ 
++    /**
++     * Delay and deadline for {@link #JOB_POST_BOOT_UPDATE}. ARC has no real idle state, so the
++     * post-boot update is scheduled on a short timer instead of a device-idle constraint.
++     */
++    private static final long POST_BOOT_UPDATE_DELAY_MS = TimeUnit.MINUTES.toMillis(1);
++
+     private static final long CANCELLATION_WAIT_CHECK_INTERVAL_MS = 200;
+ 
+     private static ComponentName sDexoptServiceName =
+@@ -489,10 +495,21 @@ public final class BackgroundDexOptService {
+ 
+     private void scheduleAJob(int jobId) {
+         JobScheduler js = mInjector.getJobScheduler();
+-        JobInfo.Builder builder =
+-                new JobInfo.Builder(jobId, sDexoptServiceName).setRequiresDeviceIdle(true);
++        JobInfo.Builder builder = new JobInfo.Builder(jobId, sDexoptServiceName);
+         if (jobId == JOB_IDLE_OPTIMIZE) {
+-            builder.setRequiresCharging(true).setPeriodic(IDLE_OPTIMIZATION_PERIOD);
++            builder.setRequiresDeviceIdle(true)
++                    .setRequiresCharging(true)
++                    .setPeriodic(IDLE_OPTIMIZATION_PERIOD);
++        } else {
++            // ARC has no real idle state: the container's display is permanently on, so
++            // DeviceIdleController never leaves ACTIVE and a device-idle constraint is never
++            // satisfied. JOB_POST_BOOT_UPDATE also carries no deadline, so gating it on idle
++            // means it never runs at all -- nothing ever (re)builds /data/dalvik-cache and every
++            // non-preopted system app stays interpreter+JIT for the life of the image. Schedule
++            // it on a short latency with a matching deadline instead, which is what ARC R did
++            // before this job was reworked.
++            builder.setMinimumLatency(POST_BOOT_UPDATE_DELAY_MS)
++                    .setOverrideDeadline(POST_BOOT_UPDATE_DELAY_MS);
+         }
+         js.schedule(builder.build());
+     }
+-- 
+2.43.0
+

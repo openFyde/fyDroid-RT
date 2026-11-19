@@ -1,0 +1,47 @@
+From 7a200fce8e282dd42c8754a2e685a7e5a0f4f603 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 21 Apr 2026 16:34:45 +0800
+Subject: [PATCH 07/75] Skip safe mode input device wait in ARC++ container
+
+In the ARC++ container environment, input devices arrive late via the
+pipe bridge from Chrome OS. The 1-second waitForInputDevicesReady()
+timeout in detectSafeMode() always expires, adding a full second to
+every boot. Safe mode detection is unnecessary in the container since
+Chrome OS handles it at the host level.
+
+Skip the wait when ro.boot.container=1.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I059f058b7fa006a8ef7e7f2adc14baaac0898006
+---
+ .../android/server/wm/WindowManagerService.java    | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/WindowManagerService.java b/services/core/java/com/android/server/wm/WindowManagerService.java
+index 706989069e4b..2c1418e6517a 100644
+--- a/services/core/java/com/android/server/wm/WindowManagerService.java
++++ b/services/core/java/com/android/server/wm/WindowManagerService.java
+@@ -5138,11 +5138,15 @@ public class WindowManagerService extends IWindowManager.Stub
+     }
+ 
+     public boolean detectSafeMode() {
+-        if (!mInputManagerCallback.waitForInputDevicesReady(
+-                INPUT_DEVICES_READY_FOR_SAFE_MODE_DETECTION_TIMEOUT_MILLIS)) {
+-            ProtoLog.w(WM_ERROR, "Devices still not ready after waiting %d"
+-                            + " milliseconds before attempting to detect safe mode.",
+-                    INPUT_DEVICES_READY_FOR_SAFE_MODE_DETECTION_TIMEOUT_MILLIS);
++        // In ARC++ container, skip the 1-second input device wait — safe mode is
++        // never needed (Chrome OS handles it) and input devices arrive late via pipe bridge.
++        if (!"1".equals(SystemProperties.get("ro.boot.container", "0"))) {
++            if (!mInputManagerCallback.waitForInputDevicesReady(
++                    INPUT_DEVICES_READY_FOR_SAFE_MODE_DETECTION_TIMEOUT_MILLIS)) {
++                ProtoLog.w(WM_ERROR, "Devices still not ready after waiting %d"
++                                + " milliseconds before attempting to detect safe mode.",
++                        INPUT_DEVICES_READY_FOR_SAFE_MODE_DETECTION_TIMEOUT_MILLIS);
++            }
+         }
+ 
+         if (Settings.Global.getInt(
+-- 
+2.43.0
+

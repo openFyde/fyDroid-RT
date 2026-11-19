@@ -1,0 +1,22 @@
+package org.chromium.memory_instrumentation.mojom;
+
+import org.chromium.mojo.bindings.DeserializationException;
+
+public final class MemoryMapOption {
+    public static final int FULL = 2;
+    public static final int MODULES = 1;
+    public static final int NONE = 0;
+
+    private MemoryMapOption() {
+    }
+
+    public static boolean isKnownValue(int i) {
+        return i == 0 || i == 1 || i == 2;
+    }
+
+    public static void validate(int i) {
+        if (!isKnownValue(i)) {
+            throw new DeserializationException("Invalid enum value.");
+        }
+    }
+}

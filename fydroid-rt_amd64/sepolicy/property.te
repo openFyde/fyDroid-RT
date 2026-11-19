@@ -1,0 +1,4 @@
+# Mesa GL driver-override property (mesa.loader.driver.override).
+# Vendor-owned and world-readable (public) so Mesa's loader can read it in every
+# GL process — SurfaceFlinger and each app — when it picks the gallium driver.
+vendor_public_prop(vendor_mesa_prop)

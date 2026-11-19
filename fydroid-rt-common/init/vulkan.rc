@@ -1,0 +1,6 @@
+# Vulkan configuration for ARC++ container
+
+on early-init
+    setprop ro.hardware.vulkan cheets
+    setprop ro.hardware.vulkan.level 1
+    setprop ro.hardware.vulkan.version 4194307

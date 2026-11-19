@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.chromium.arc.apkcacheprovider">
+
+    <application android:label="ArcApkCache">
+        <provider
+            android:name=".ApkCacheProvider"
+            android:authorities="org.chromium.arc.apk_cache"
+            android:exported="true" />
+    </application>
+</manifest>

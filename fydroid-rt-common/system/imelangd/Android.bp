@@ -1,0 +1,22 @@
+// Publishes Gboard's current language (arc.fydroid.gboard_entry) so
+// arc-services can keep the Android physical-keyboard layout in step with
+// Gboard's sidebar. See main.cpp and docs/gboard-system-ime.plan.
+cc_binary {
+    name: "fydroid_imelangd",
+    stem: "imelangd",
+    init_rc: ["fydroid_imelangd.rc"],
+
+    srcs: ["main.cpp"],
+
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "libbinder",
+        "liblog",
+        "libutils",
+    ],
+}

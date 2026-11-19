@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.fydeos.overlay.connectivity">
+    <!-- config_ethernet_iface_regex lives in the *named* overlayable
+         "ServiceConnectivityResourcesConfig"; a named overlayable requires the
+         RRO to declare a matching android:targetName, else idmap2 filters out
+         every resource ("no resources were overlaid" -> STATE_NO_IDMAP). -->
+    <overlay android:targetPackage="com.android.connectivity.resources"
+             android:targetName="ServiceConnectivityResourcesConfig"
+             android:isStatic="true"
+             android:priority="999" />
+</manifest>

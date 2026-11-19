@@ -1,0 +1,140 @@
+From 3bd98aca925ccc474d1118022cf7dfc94fea6ee9 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 16 Jun 2026 10:52:40 +0800
+Subject: [PATCH 24/40] SF: route a floating-activity layer to its own
+ standalone window (ARC)
+
+Companion to the WM IS_FLOATING_ACTIVITY change. In SurfaceFlinger:
+- map org.chromium.arc.V1_0.IsFloatingActivity to
+  METADATA_IS_FLOATING_ACTIVITY in the generic layer-metadata keymap;
+- propagate the flag to descendant layers, and skip TaskId inheritance
+  into a floating-activity subtree (Layer::addChild / setMetadata) so the
+  floating dialog's window layer carries no host TaskId.
+
+With no TaskId the layer flows through the ARC standalone (Pass 2) path
+instead of being unioned into the host task footprint, so the host app
+window no longer expands to wrap the floating dialog.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ic6b3c92b56a9f88a3be94e8534fe99abb6510db0
+---
+ libs/gui/include/gui/LayerMetadata.h       |  4 ++
+ services/surfaceflinger/Layer.cpp          | 54 +++++++++++++++++++++-
+ services/surfaceflinger/SurfaceFlinger.cpp |  5 ++
+ 3 files changed, 62 insertions(+), 1 deletion(-)
+
+diff --git a/libs/gui/include/gui/LayerMetadata.h b/libs/gui/include/gui/LayerMetadata.h
+index f933d4ee92..8c0e42f1f4 100644
+--- a/libs/gui/include/gui/LayerMetadata.h
++++ b/libs/gui/include/gui/LayerMetadata.h
+@@ -37,6 +37,10 @@ enum {
+     METADATA_IS_GAME = 10,   // app category == CATEGORY_GAME (Chrome full-screen efficiency)
+     METADATA_IS_DIALOG = 11, // Top activity uses dialog/floating theme
+     METADATA_IS_HOME = 12,   // Task is the home/launcher (activity type HOME)
++    METADATA_IS_FLOATING_ACTIVITY = 13, // A floating-themed activity stacked on a
++                                        // non-dialog task (e.g. brightness dialog
++                                        // over Settings). Routed to its own modal
++                                        // window instead of the host task footprint.
+     METADATA_NOTIFICATION_KEY = 0x40000000,  // ARC++ notification surface key
+ };
+ 
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 9ab0918584..b7f39b0081 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1046,6 +1046,15 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+         if (taskId > 0) {
+             int propagated = 0;
+             mCurrentChildren.traverse([&](Layer* child) {
++                // Skip floating-activity subtrees: a floating-themed activity
++                // stacked on this task (e.g. brightness dialog over Settings) is
++                // split into its own modal window, so it must not carry the host
++                // TaskId (that would fold it back into the host footprint and
++                // grow the host window). addChild stamps IS_FLOATING_ACTIVITY on
++                // every layer of such a subtree, so a direct check suffices.
++                if (child->mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++                    return;
++                }
+                 if (!child->mDrawingState.metadata.has(METADATA_TASK_ID)) {
+                     child->mDrawingState.metadata.setInt32(METADATA_TASK_ID, taskId);
+                     child->mDrawingState.sequence++;
+@@ -1075,6 +1084,24 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+         });
+         ALOGI("IsDialog propagation: set on '%s' isDialog=%d", mName.c_str(), isDialog);
+     }
++    // Propagate IsFloatingActivity to descendants so the compositor sees the
++    // flag on the activity's buffer-bearing window layer (the flag is set by WM
++    // on the activity's own surface). Covers the case where the flag is set
++    // after children already exist; addChild handles children added later.
++    if (data.has(METADATA_IS_FLOATING_ACTIVITY)) {
++        int32_t isFloating = data.getInt32(METADATA_IS_FLOATING_ACTIVITY, 0);
++        mCurrentChildren.traverse([&](Layer* child) {
++            if (!child->mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++                child->mDrawingState.metadata.setInt32(
++                        METADATA_IS_FLOATING_ACTIVITY, isFloating);
++                child->mDrawingState.sequence++;
++                child->mDrawingState.modified = true;
++                child->setTransactionFlags(eTransactionNeeded);
++            }
++        });
++        ALOGI("IsFloatingActivity propagation: set on '%s' isFloating=%d",
++              mName.c_str(), isFloating);
++    }
+ #endif
+ 
+     return true;
+@@ -1616,9 +1643,34 @@ void Layer::addChild(const sp<Layer>& layer) {
+     updateTreeHasFrameRateVote();
+ 
+ #ifdef FYDROID_WAYLAND_COMPOSER
++    // Determine whether this child sits inside a floating-activity subtree — a
++    // floating-themed activity (windowIsFloating) stacked on a non-dialog task,
++    // e.g. SystemUI's brightness dialog launched over Settings. WM stamps
++    // IS_FLOATING_ACTIVITY on the activity's own surface; we mark every layer of
++    // that subtree here so the compositor splits it into its own modal window
++    // instead of unioning it into the host task footprint (which auto-expands
++    // the host window).
++    bool inFloatingSubtree =
++            layer->mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY);
++    if (!inFloatingSubtree) {
++        for (sp<Layer> ancestor = this; ancestor != nullptr;
++             ancestor = ancestor->mCurrentParent.promote()) {
++            if (ancestor->mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++                inFloatingSubtree = true;
++                break;
++            }
++        }
++        if (inFloatingSubtree) {
++            // Stamp so this child's own descendants are recognized directly.
++            layer->mDrawingState.metadata.setInt32(METADATA_IS_FLOATING_ACTIVITY, 1);
++        }
++    }
++
+     // Propagate TaskId to newly-added child (covers case where parent already
+     // has TaskId when child is added later). Walks up to find ancestor TaskId.
+-    if (!layer->mDrawingState.metadata.has(METADATA_TASK_ID)) {
++    // Floating-activity subtrees are intentionally excluded (see above).
++    if (!inFloatingSubtree &&
++        !layer->mDrawingState.metadata.has(METADATA_TASK_ID)) {
+         for (sp<Layer> ancestor = this; ancestor != nullptr;
+              ancestor = ancestor->mCurrentParent.promote()) {
+             int32_t taskId = ancestor->mDrawingState.metadata.getInt32(METADATA_TASK_ID, 0);
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 5f31f5b280..c7a20ebe08 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -7221,6 +7221,11 @@ const std::unordered_map<std::string, uint32_t>& SurfaceFlinger::getGenericLayer
+             {"org.chromium.arc.V1_0.IsGame", METADATA_IS_GAME},
+             {"org.chromium.arc.V1_0.IsDialogTask", METADATA_IS_DIALOG},
+             {"org.chromium.arc.V1_0.IsHome", METADATA_IS_HOME},
++            // fydroid: a floating-themed activity stacked on a non-dialog task
++            // (e.g. brightness dialog over Settings). Set on the activity's own
++            // surface so the compositor splits it into its own modal window
++            // instead of unioning it into the host task footprint.
++            {"org.chromium.arc.V1_0.IsFloatingActivity", METADATA_IS_FLOATING_ACTIVITY},
+             {"org.chromium.arc.V1_0.NotificationKey", METADATA_NOTIFICATION_KEY},
+             // fydroid: expose the WM window type (TYPE_TOAST/IME/OVERLAY) so the
+             // composer can classify standalone (no-TaskId) layers and give them
+-- 
+2.43.0
+

@@ -1,0 +1,23 @@
+android_app {
+    name: "ArcAccessibilityHelperService",
+    srcs: ["src/**/*.java"],
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    libs: [
+        "org.chromium.arc.mojom",
+        "org.chromium.arc.bridge",
+        "android.mojo",
+    ],
+    // AOSP-13's uses-library coherence check (manifest_check.py) compares the
+    // build-system list against the manifest <uses-library> tags by ORDER, not
+    // as a set. List all three required libs explicitly in the manifest's order
+    // (mojom, bridge, android.mojo) so they match; android.mojo is provided
+    // on-device by the android.mojo.installable wrapper (stem android.mojo).
+    uses_libs: [
+        "org.chromium.arc.mojom",
+        "org.chromium.arc.bridge",
+        "android.mojo.installable",
+    ],
+    resource_dirs: ["res"],
+}

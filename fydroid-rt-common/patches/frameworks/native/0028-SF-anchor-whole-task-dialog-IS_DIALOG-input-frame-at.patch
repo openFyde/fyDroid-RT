@@ -1,0 +1,68 @@
+From edbeb15b987568d8a1c3707cc488602a1ac624ef Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 24 Jun 2026 14:46:47 +0800
+Subject: [PATCH 28/40] SF: anchor whole-task dialog (IS_DIALOG) input frame at
+ screen origin (ARC)
+
+Extends patch 0026 (which anchored only IS_FLOATING_ACTIVITY input frames) to
+the whole-task dialog modal (METADATA_IS_DIALOG, e.g. SystemUI
+WifiDebuggingActivity). Such a dialog is composited into its task VD with the
+card captured to the buffer origin and presented by a Wayland modal window the
+composer centers on screen. WMS still lays the card out at a centered frame on
+display 0, so Layer::fillInputFrameInfo computed the input frame at that display
+position while the surface-relative Wayland touch is anchored at the buffer
+origin -> taps missed (dialog visually centered but unresponsive).
+
+Strip only the translation from layerToScreen for IS_DIALOG layers too, so the
+input frame is computed at the screen origin and matches the surface-relative
+touch. IS_DIALOG is a TASK metadata propagated to every task layer, so gate it
+on !isTrustedOverlay() to strip only the dialog card (activity content), never
+the task caption/decor trusted overlays (stripping those would drop their
+touchable regions onto the card).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I18aca274df6a47d7cda7c072827432222f0c8f5f
+---
+ services/surfaceflinger/Layer.cpp | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index bdf905512e..141f1f2fb5 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -2411,16 +2411,24 @@ void Layer::fillInputFrameInfo(WindowInfo& info, const ui::Transform& screenToDi
+ 
+     ui::Transform layerToScreen = getInputTransform();
+ 
+-    // ARC: a floating-activity modal (e.g. GrantPermissions) is composited as a
+-    // standalone Wayland window whose buffer sits at the VD origin and whose
+-    // visible window is placed at the display origin (0,0) by the composer.
+-    // WMS still lays the activity out at a centered frame on display 0, so the
+-    // stock input frame lands there while the surface-relative Wayland touch is
+-    // anchored at origin -> taps miss. Strip ONLY the translation from
++    // ARC: a floating-activity modal (e.g. GrantPermissions) OR a whole-task
++    // dialog (METADATA_IS_DIALOG, e.g. WifiDebuggingActivity) is composited as a
++    // standalone/modal Wayland window whose buffer sits at the VD origin and
++    // whose visible window is centered on screen by the composer. WMS still lays
++    // the activity out at a centered frame on display 0, so the stock input
++    // frame lands there while the surface-relative Wayland touch is anchored at
++    // the buffer origin -> taps miss. Strip ONLY the translation from
+     // layerToScreen (keep the app's rotation/scale) so the input frame and the
+     // display->input transform are computed at screen origin, matching the
+-    // standalone window's on-screen and buffer origin.
+-    if (mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++    // modal window's buffer origin.
++    //
++    // IS_DIALOG is a TASK metadata propagated to every task layer, so gate it on
++    // !isTrustedOverlay() to strip only the dialog card (the activity content),
++    // never the task caption/decor trusted overlays — stripping those would move
++    // their touchable regions over the card.
++    if (mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)
++            || (mDrawingState.metadata.has(METADATA_IS_DIALOG)
++                    && !isTrustedOverlay())) {
+         const Rect screenRect{layerToScreen.transform(croppedInsetBoundsInLayer)};
+         ui::Transform originShift;
+         originShift.set(static_cast<float>(-screenRect.left),
+-- 
+2.43.0
+

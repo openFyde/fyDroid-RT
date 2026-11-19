@@ -1,0 +1,46 @@
+From cc26c38e24c8f255256a38c395d4b69832f5d039 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 8 Sep 2026 16:09:17 +0800
+Subject: [PATCH 62/75] am: don't re-show the ANR dialog for a process that is
+ no longer not responding
+
+Tapping "Wait" clears the not-responding flag and then asks for the dialog
+again five seconds later via rescheduleAnrDialog(). handleShowAnrUi() only
+guarded on a null process, an already-showing dialog and canShowErrorDialogs(),
+never on isNotResponding(), so the re-show fired unconditionally and the new
+dialog's "Wait" scheduled the next one -- the dialog could never be dismissed.
+Gate the re-show on the flag instead: a process that is still wedged raises a
+fresh ANR, which sets the flag again and brings the dialog back on its own.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Ib75035d8d910fb2f7e7619e590f7a6a6ebab9adf
+---
+ .../core/java/com/android/server/am/AppErrors.java   | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/services/core/java/com/android/server/am/AppErrors.java b/services/core/java/com/android/server/am/AppErrors.java
+index 08c1de61d7fb..0e08243364ef 100644
+--- a/services/core/java/com/android/server/am/AppErrors.java
++++ b/services/core/java/com/android/server/am/AppErrors.java
+@@ -1081,6 +1081,18 @@ class AppErrors {
+         }
+         synchronized (mProcLock) {
+             final ProcessErrorStateRecord errState = proc.mErrorState;
++            // Tapping "Wait" clears the not-responding flag and then asks for this
++            // re-show five seconds out (rescheduleAnrDialog). Showing it again
++            // unconditionally makes the dialog impossible to dismiss: every Wait
++            // schedules the next one, forever, whether or not the app recovered.
++            // Only re-show while the process is still flagged not-responding -- a
++            // still-wedged app raises a fresh ANR, which sets the flag again and
++            // brings the dialog back on its own.
++            if (!errState.isNotResponding()) {
++                Slog.i(TAG, "Not re-showing ANR dialog for " + proc
++                        + ": no longer marked not responding");
++                return;
++            }
+             errState.setAnrData(data);
+             if (!proc.isPersistent()) {
+                 packageList = proc.getPackageListWithVersionCode();
+-- 
+2.43.0
+

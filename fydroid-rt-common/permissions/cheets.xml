@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright 2017 The Android Open Source Project
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+          http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<!--
+  ARC++ container feature declarations for fydroid-rt.
+  Based on device/google/cheets2 cheets.xml from a reference device.
+-->
+<permissions>
+    <unavailable-feature name="android.hardware.type.automotive" />
+    <!-- AppWidgetService is not advertised, but enabled.
+         In config.xml, |config_enableAppWidgetService| must be true.
+         See: b/110122867 -->
+    <unavailable-feature name="android.software.app_widgets" />
+    <unavailable-feature name="android.software.home_screen" />
+    <unavailable-feature name="android.software.leanback" />
+    <unavailable-feature name="android.software.live_tv" />
+    <unavailable-feature name="android.software.live_wallpaper" />
+    <!-- Enable Android device admin / device owner so the Fydroid policy manager can
+         enforce enterprise policy as device owner (replaces ARC CloudDPC). managed_users
+         (work profiles) stays disabled — the policy manager only uses device-owner mode. -->
+    <feature name="android.software.device_admin" />
+    <unavailable-feature name="android.software.managed_users" />
+    <!-- USB host passthrough is served by ArcUsbService over the ARC bridge.
+         Accessory (gadget/AOA) mode has no hardware in the container. -->
+    <unavailable-feature name="android.hardware.usb.accessory" />
+    <feature name="android.hardware.usb.host" />
+
+    <!-- Enable Wifi -->
+    <feature name="android.hardware.wifi" />
+
+    <!-- Identification of Chromium device. -->
+    <feature name="org.chromium.arc" />
+    <!-- Enable ARC specific device management APIs -->
+    <feature name="org.chromium.arc.device_management" />
+    <!-- We don't support the secure lock screen feature as understood by CDD -->
+    <unavailable-feature name="android.software.secure_lock_screen" />
+    <!-- Video HW acceleration: HW video encoder support dynamic bitrate change -->
+    <feature name="org.chromium.arc.video.encode_dynamic_bitrate" />
+
+    <!-- Enable PIP -->
+    <feature name="android.software.picture_in_picture" />
+
+    <!-- Enable multi-display -->
+    <feature name="android.software.activities_on_secondary_displays" />
+
+    <!-- Whitelist of what components are permitted as backup data transports. -->
+    <backup-transport-whitelisted-service
+        service="com.android.localtransport/.LocalTransportService" />
+    <backup-transport-whitelisted-service
+        service="com.google.android.gms/.backup.BackupTransportService" />
+    <backup-transport-whitelisted-service
+        service="com.google.android.gms/.backup.component.D2dTransportService" />
+
+    <!-- Audio: mic + output capability. -->
+    <feature name="android.hardware.microphone" />
+
+    <!-- Touchscreen: add jazzhand to tablet core. -->
+    <feature name="android.hardware.touchscreen.multitouch.jazzhand" />
+
+    <!-- Bluetooth already part of tablet core, add LE -->
+    <feature name="android.hardware.bluetooth_le" />
+
+    <feature name="android.software.freeform_window_management" />
+
+    <!-- Enable Passpoint -->
+    <feature name="android.hardware.wifi.passpoint" />
+
+    <!-- This is a 'PC' device controlled primarily via keyboard, mouse and
+         touchpad. Touchscreen optional. -->
+    <feature name="android.hardware.type.pc" />
+
+    <!-- Whitelist to avoid blackholing the PAC proxy handler. -->
+    <allow-in-power-save-except-idle package="com.android.proxyhandler" />
+</permissions>

@@ -1,0 +1,8 @@
+android_app {
+    name: "FydroidIME",
+    srcs: ["src/**/*.java"],
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    overrides: ["LatinIME"],
+}

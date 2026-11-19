@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Copyright 2020 The Android Open Source Project
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+          http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<MediaCodecs>
+    <Settings>
+        <Setting name="max-video-encoder-input-buffers" value="4" />
+    </Settings>
+
+    <Encoders>
+        <!-- Limit block count to stop encoder timing out on lower-end devices (see b/181863334). -->
+        <MediaCodec name="c2.android.vp8.encoder" type="video/x-vnd.on2.vp8" update="true">
+            <Limit name="block-count" range="1-8192" /> <!-- max 2048x1024 -->
+        </MediaCodec>
+        <!-- Disable HEVC encoder (see b/158961698) -->
+        <MediaCodec name="c2.android.hevc.encoder" type="video/hevc" update="true" enabled="false">
+        </MediaCodec>
+    </Encoders>
+    <Decoders>
+        <!-- Re-enable AOSP software HEVC decoder as fallback for the hardware
+             c2.mojo-legacy.hevc.decoder (b/158961698 was a Chrome OS specific
+             concern that doesn't apply once we own the codec stack). -->
+    </Decoders>
+</MediaCodecs>

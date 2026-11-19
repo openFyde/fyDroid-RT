@@ -1,0 +1,28 @@
+Backport of upstream mesa 45582c89 (MR 42888, Eric R. Smith):
+pan: in register allocation, consider spilling the node being allocated
+
+Fixes 3DMark Steel Nomad's particle compute shader spending minutes in the
+LCRA spill loop (bi_register_allocate -> bi_mark_interference) on Mali-G610.
+The upstream commit also lowered max_iters to 400; that was reverted upstream
+by b84ccacd (already in 26.2.5), so it is left out here.
+
+diff --git a/src/panfrost/compiler/bifrost/bi_ra.c b/src/panfrost/compiler/bifrost/bi_ra.c
+index c68acdac12bd774681b3cf0d373381c1c2c75010..0a893d9b3dd72d0478a94466fe0b785d557db551 100644
+--- a/src/panfrost/compiler/bifrost/bi_ra.c
++++ b/src/panfrost/compiler/bifrost/bi_ra.c
+@@ -628,6 +628,15 @@ bi_choose_spill_node(bi_context *ctx, struct lcra_state *l)
+    unsigned best_benefit = 0;
+    signed best_node = -1;
+ 
++   /* consider spilling the node that we're trying to allocate,
++    * rather the ones interfering with it, if that would be
++    * better
++    */
++   if (!BITSET_TEST(no_spill, l->spill_node)) {
++      best_node = l->spill_node;
++      best_benefit = lcra_count_constraints(l, best_node);
++   }
++
+    if (nodearray_is_sparse(&l->linear[l->spill_node])) {
+       nodearray_sparse_foreach(&l->linear[l->spill_node], elem) {
+          unsigned i = nodearray_sparse_key(elem);

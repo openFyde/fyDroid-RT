@@ -1,0 +1,31 @@
+# ARC++ binder service contexts (fydroid-rt)
+
+arc_ime u:object_r:arc_ime_service:s0
+arc_display_layout u:object_r:arc_display_layout_service:s0
+arc_anr_messenger_service u:object_r:arc_anr_messenger_service:s0
+arc_app_fuse_mounter_service u:object_r:arc_app_fuse_mounter_service:s0
+arc_bridge_service u:object_r:arc_bridge_service:s0
+arc_data_device_provider_service u:object_r:arc_data_device_provider_service:s0
+arc_data_device_service u:object_r:arc_data_device_service:s0
+arc_disk_space_service u:object_r:arc_disk_space_service:s0
+arc_hash_service u:object_r:arc_hash_service:s0
+arc_input_method_manager_service u:object_r:arc_input_method_manager_service:s0
+arc_lock_screen_service u:object_r:arc_lock_screen_service:s0
+arc_metrics_service u:object_r:arc_metrics_service:s0
+arc_obb_mounter_service u:object_r:arc_obb_mounter_service:s0
+arc_print_service u:object_r:arc_print_service:s0
+arc_screen_capture_service u:object_r:arc_screen_capture_service:s0
+arc_task_controller u:object_r:arc_task_controller_service:s0
+arc_task_window_placer u:object_r:arc_task_window_placer_service:s0
+arc-toast u:object_r:arc_toast_service:s0
+arc_volume_mounter_service u:object_r:arc_volume_mounter_service:s0
+arc_wake_lock_service u:object_r:arc_wake_lock_service:s0
+arc_window_manager u:object_r:arc_window_manager_service:s0
+display.arc u:object_r:display_service:s0
+Wayland u:object_r:wayland_service:s0
+WaylandInputInjector u:object_r:wayland_input_injector_service:s0
+
+# fydroid Widevine DRM HAL. AOSP's private/service_contexts names each
+# android.hardware.drm.IDrmFactory instance explicitly (only /clearkey is
+# there), so without this the service lands on default_android_service.
+android.hardware.drm.IDrmFactory/widevine u:object_r:hal_drm_service:s0

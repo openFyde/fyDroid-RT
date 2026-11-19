@@ -1,0 +1,154 @@
+From 6621a455e3121a70a17092f595bdf2fc1b6419ea Mon Sep 17 00:00:00 2001
+From: yang <yang@fydeos.io>
+Date: Fri, 15 May 2026 16:00:11 +0800
+Subject: [PATCH 19/75] TaskLaunchParamsModifier: snap unresizable activities
+ to declared AR
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Unresizable activities with android:minAspectRatio / android:maxAspectRatio
+declared in their manifest were launching at the default freeform size
+(typically 1024x600 landscape) and then size-compat-mode-letterboxed to
+their declared AR — leaving large empty bars and small live content.
+
+Post-process freeform launch bounds for in-container builds (Build
+.IS_CONTAINER) only:
+
+* Skip resizable activities — they accept whatever the default flow
+  chose.
+* Take the closest aspect ratio inside [minAspectRatio, maxAspectRatio]
+  to the display's own AR so the window fills as much screen as the
+  activity will allow.
+* Default short side ≈ 60 % of display short side, capped to 1280-px
+  long side; resolve to width/height by activity's preferred
+  orientation.
+* If the resulting window would overflow the display (the activity's
+  required AR can't fit), force WINDOWING_MODE_FULLSCREEN and let
+  Android letterbox internally.
+* Otherwise centre the AR-correct window on the display and launch
+  freeform.
+
+Together with the WaylandLayerContainer change that flips frame_type
+to AUTOHIDE on MAXIMIZED/FULLSCREEN, this matches the desired ARC
+launch UX: aspect-correct windowed default, immersive fullscreen for
+content that can't fit any other way.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I18f791f38b8211ad4f1a6be0a8105fadbd9194a6
+---
+ .../server/wm/TaskLaunchParamsModifier.java   | 95 +++++++++++++++++++
+ 1 file changed, 95 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index 0b90a7ce664c..37870ed258ff 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -389,9 +389,104 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             getTaskBounds(root, taskDisplayArea, layout, resolvedMode, hasInitialBounds,
+                     outParams.mBounds);
+         }
++
++        // fydroid-rt: Snap unresizable activities with declared aspect-ratio
++        // constraints to the closest in-range aspect ratio at launch, and
++        // promote to FULLSCREEN if the resulting bounds wouldn't fit the
++        // display. Without this an unresizable 16:9-portrait activity
++        // launched in a 1024x600 default freeform window gets letterboxed
++        // (~580 px wide content, big black bars) instead of a clean
++        // 720x1280 portrait window.
++        if (android.os.Build.IS_CONTAINER
++                && outParams.mWindowingMode != WINDOWING_MODE_FULLSCREEN) {
++            applyArcAspectRatio(root, display, outParams);
++        }
++
+         return RESULT_CONTINUE;
+     }
+ 
++    /**
++     * fydroid-rt: post-process freeform launch bounds for unresizable
++     * activities with a declared aspect-ratio constraint
++     * (android:minAspectRatio / android:maxAspectRatio). Resize the
++     * window to the closest in-range AR for the display, and if the
++     * resulting window can't fit, promote to FULLSCREEN.
++     *
++     * Resizable activities are untouched — they accept anything the
++     * normal launch params produced.
++     */
++    private void applyArcAspectRatio(@NonNull ActivityRecord root,
++            @NonNull DisplayContent display, @NonNull LaunchParams outParams) {
++        if (root.info == null) return;
++        if (ActivityInfo.isResizeableMode(root.info.resizeMode)) {
++            return;
++        }
++
++        final float minAR = root.info.minAspectRatio;
++        final float maxAR = root.info.maxAspectRatio;
++        if (minAR <= 0f && maxAR <= 0f) {
++            return;  // No constraint declared.
++        }
++
++        final Rect displayBounds = display.getBounds();
++        final int dispW = displayBounds.width();
++        final int dispH = displayBounds.height();
++        if (dispW <= 0 || dispH <= 0) return;
++
++        // Decide whether the window should be portrait or landscape from
++        // the activity's preferred orientation, falling back to whatever
++        // orientation the current default bounds already chose.
++        final int orientation = resolveOrientation(root, display, outParams.mBounds);
++        final boolean portrait = (orientation == SCREEN_ORIENTATION_PORTRAIT);
++
++        // Aspect ratios are long-side / short-side (always >= 1.0). Pick
++        // the closest one in [minAR, maxAR] to the display's own AR so
++        // the window fills as much of the screen as the activity allows.
++        final float dispLong = Math.max(dispW, dispH);
++        final float dispShort = Math.min(dispW, dispH);
++        final float dispAR = dispLong / dispShort;
++        float targetAR = dispAR;
++        if (minAR > 0f && targetAR < minAR) targetAR = minAR;
++        if (maxAR > 0f && targetAR > maxAR) targetAR = maxAR;
++        if (targetAR <= 0f) return;
++
++        // Default the short side to roughly half the display short side so
++        // the window doesn't dominate the screen. Cap to 1280 long side
++        // to match the existing freeform default size feel.
++        int shortSide = Math.max(360, (int) Math.round(dispShort * 0.6f));
++        int longSide = (int) Math.round(shortSide * targetAR);
++        if (longSide > 1280) {
++            longSide = 1280;
++            shortSide = (int) Math.round(longSide / targetAR);
++        }
++
++        final int targetW = portrait ? shortSide : longSide;
++        final int targetH = portrait ? longSide : shortSide;
++
++        if (targetW > dispW || targetH > dispH) {
++            outParams.mWindowingMode = WINDOWING_MODE_FULLSCREEN;
++            outParams.mBounds.setEmpty();
++            if (DEBUG) {
++                appendLog("arc-aspect-ratio-overflow="
++                        + targetW + "x" + targetH + ">" + dispW + "x" + dispH
++                        + "-force-fullscreen");
++            }
++            return;
++        }
++
++        // Centre on the display.
++        final int x = displayBounds.left + (dispW - targetW) / 2;
++        final int y = displayBounds.top + (dispH - targetH) / 2;
++        outParams.mBounds.set(x, y, x + targetW, y + targetH);
++        if (outParams.mWindowingMode == WINDOWING_MODE_UNDEFINED) {
++            outParams.mWindowingMode = WINDOWING_MODE_FREEFORM;
++        }
++        if (DEBUG) {
++            appendLog("arc-aspect-ratio-fit minAR=" + minAR + " maxAR=" + maxAR
++                    + " targetAR=" + targetAR + " bounds=" + outParams.mBounds);
++        }
++    }
++
+     private TaskDisplayArea getPreferredLaunchTaskDisplayArea(@Nullable Task task,
+             @Nullable ActivityOptions options, ActivityRecord source, LaunchParams currentParams,
+             @NonNull ActivityRecord activityRecord, @Nullable Request request) {
+-- 
+2.43.0
+

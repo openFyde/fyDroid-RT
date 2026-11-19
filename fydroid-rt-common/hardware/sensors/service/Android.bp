@@ -1,0 +1,14 @@
+// The multihal service binary itself is built by AOSP at
+// hardware/interfaces/sensors/2.1/multihal/Android.bp
+// (module name: android.hardware.sensors@2.1-service.multihal).
+// We only provide the RC, VINTF fragment, and hals.conf here —
+// but since AOSP's module already installs its own RC and VINTF,
+// we just need hals.conf and to pull in our sub-HALs.
+
+prebuilt_etc {
+    name: "sensors_hals_conf",
+    vendor: true,
+    sub_dir: "sensors",
+    src: "hals.conf",
+    filename: "hals.conf",
+}

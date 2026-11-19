@@ -1,0 +1,51 @@
+From bec55094b1ad4a2714a58f69d1db192236481e92 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 12 Mar 2026 12:46:44 +0800
+Subject: [PATCH 01/40] Add METADATA_IS_GAME for game full-screen efficiency
+ mode
+
+Add METADATA_IS_GAME=7 enum value to LayerMetadata and register the
+"org.chromium.arc.V1_0.IsGame" key mapping in SurfaceFlinger's
+genericLayerMetadataKeyMap. This enables the game flag to flow from
+WindowManager through SF's generic metadata pipeline to the HWC
+compositor (WaylandHwc2Composer).
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I1a8ac9c439993d67c1693fb12b11cbde79179ac6
+---
+ libs/gui/include/gui/LayerMetadata.h       | 5 ++++-
+ services/surfaceflinger/SurfaceFlinger.cpp | 2 ++
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/libs/gui/include/gui/LayerMetadata.h b/libs/gui/include/gui/LayerMetadata.h
+index 27f4d379e9..f4ab196065 100644
+--- a/libs/gui/include/gui/LayerMetadata.h
++++ b/libs/gui/include/gui/LayerMetadata.h
+@@ -30,7 +30,10 @@ enum {
+     METADATA_ACCESSIBILITY_ID = 5,
+     METADATA_OWNER_PID = 6,
+     METADATA_DEQUEUE_TIME = 7,
+-    METADATA_GAME_MODE = 8
++    METADATA_GAME_MODE = 8,
++    // fydroid-rt ARC keys, renumbered above AOSP 13's keys (AOSP 11 used 6..7).
++    METADATA_SESSION_ID = 9, // window session id for matching restored windows
++    METADATA_IS_GAME = 10,   // app category == CATEGORY_GAME (Chrome full-screen efficiency)
+ };
+ 
+ struct LayerMetadata : public Parcelable {
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 494aa2c2cf..81f8711542 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -7137,6 +7137,8 @@ const std::unordered_map<std::string, uint32_t>& SurfaceFlinger::getGenericLayer
+     static const std::unordered_map<std::string, uint32_t> genericLayerMetadataKeyMap{
+             {"org.chromium.arc.V1_0.TaskId", METADATA_TASK_ID},
+             {"org.chromium.arc.V1_0.CursorInfo", METADATA_MOUSE_CURSOR},
++            {"org.chromium.arc.V1_0.SessionId", METADATA_SESSION_ID},
++            {"org.chromium.arc.V1_0.IsGame", METADATA_IS_GAME},
+     };
+     return genericLayerMetadataKeyMap;
+ }
+-- 
+2.43.0
+

@@ -1,0 +1,482 @@
+Description: vmwgfx: fix CPU map offset, surface flags, format and CPU/GPU sync
+ Five defects in the vmwgfx backend, found while chasing ARC software-decoded
+ video that first composited black and then played its opening frames on a loop.
+ .
+ 1. get_map_handle() recombined the halves stashed by store_map_handle() with
+ '&' instead of '|'. That is 0 for every possible input: the shifted high half
+ has no low bits and blob_id is a uint32_t with no high bits. Since
+ store_map_handle() also sets memory_idx = 0xFF at create time,
+ exist_map_handle() is always true, so every CPU map of a locally created bo
+ mmap'd offset 0 rather than buffer_map_handle - every frame a software decoder
+ wrote landed outside the buffer. vmwgfx_bo_map() never checked MAP_FAILED and
+ logged "map success" unconditionally, so nothing ever showed it.
+ .
+ 2. SVGA3D_SURFACE_SCREENTARGET was requested for every format. A screen target
+ has to be something the host can put on a screen - a displayable RGB format -
+ so asking for it on the YUV/R8 video formats made an illegal surface and the
+ host refused to DEFINE it. The distinction was already known here (is_texture()
+ gates drm_vmw_surface_flag_scanout) and simply was not applied to svga3d_flags;
+ texture formats now ask for HINT_TEXTURE | BIND_SHADER_RESOURCE instead.
+ .
+ 3. The planar YUV formats claimed packed video formats - SVGA3D_UYVY for YV12,
+ SVGA3D_NV12 for NV12. What is actually allocated is a single 8-bit byte plane:
+ vmwgfx_surface_extent() stacks the chroma planes under the luma plane at height
+ 3*ceil(h/2) and the stride is one byte per pixel. UYVY is two bytes per pixel,
+ so the host also computed a MOB twice the size of the one allocated.
+ SVGA3D_R8_UNORM describes the real layout. Consumers are unaffected: they
+ import the DMA-BUF and read the layout from the DRM fourcc and the per-plane
+ strides/offsets in the handle.
+ .
+ Together (2) and (3) were worth 966 rejected commands per 10s of playback,
+ measured on device with drm.debug=0x2 - 17 DEFINE_GB_SURFACE, 17
+ BIND_GB_SURFACE, and then everything naming those sids afterwards, including
+ 300 DX_UPDATE_SUBRESOURCE issued by Mesa itself. All of it fails
+ asynchronously: the ioctl returns success and the device fails the command
+ buffer later, so user space never sees an error. And each rejection lands in
+ vmw_cmdbuf_work_func(), which blocks submission on every SVGA command-buffer
+ context, preempts them, re-queues the outstanding buffers and restarts the
+ contexts - two host round-trips stalling the entire guest's graphics command
+ stream, ~65 times a second during 30fps playback. That was the stutter. It is
+ now 0 rejections.
+ .
+ 4. The backend supplied neither .bo_invalidate nor .bo_flush, and drv.c
+ silently no-ops when those hooks are absent (drv.c:629/644) - no CPU/GPU
+ synchronisation for mapped buffers at all. Implemented with DRM_VMW_SYNCCPU
+ grab/release, resolving the MOB handle the ioctl wants via
+ DRM_VMW_GB_SURFACE_REF (crep.buffer_handle), plus UPDATE_GB_SURFACE from
+ bo_flush to publish CPU writes to the host.
+ .
+ bo_invalidate deliberately does NOT issue a readback. READBACK_GB_SURFACE
+ copies host -> MOB, which is the wrong direction for these buffers: the guest
+ MOB is the authoritative copy, since they are written by the CPU and only read
+ by the GPU. On a read lock it overwrites the frame the decoder just wrote with
+ whatever the host last held.
+ .
+ 5. drm_vmw_surface_flag_coherent was not requested. Without it the host reads
+ the guest pages once, when it first realises the resource, and never looks
+ again. COHERENT makes the kernel write-protect the backing pages, record dirty
+ ranges as they fault and flush them on validation - what the kernel's own
+ dumb-buffer path asks for in exactly this situation (vmwgfx_surface.c:
+ scanout|shareable|create_buffer|coherent). Note it only covers writes through
+ the vmwgfx GEM mapping in the creating process; a prime/DMA-BUF mapping in
+ another process still needs the explicit flush in (4).
+ .
+ None of these five was the cause of the frame loop itself - that was
+ SurfaceFlinger running AOSP-13's default Skia RenderEngine, which has no
+ fallback for a driver that cannot import YUV dmabufs and caches one host-side
+ texture snapshot per buffer. See fydroid_rt_apple.mk. They are all real, and
+ the stutter and the 966 command-buffer stalls were genuinely theirs.
+Author: FydeOS <yang@fydeos.io>
+
+--- a/vmwgfx.c
++++ b/vmwgfx.c
+@@ -89,7 +89,17 @@
+ 
+ static uint64_t get_map_handle(struct bo_metadata *meta) {
+   uint64_t map_handle = meta->map_info;
+-  return (map_handle << 32) & meta->blob_id;
++  /*
++   * Recombine the halves stashed by store_map_handle(). This was '&', which
++   * is 0 for every possible input: the shifted high half has no low bits and
++   * blob_id is a uint32_t with no high bits. Every CPU map therefore mmap'd
++   * offset 0 instead of buffer_map_handle, so everything the CPU wrote - i.e.
++   * every frame out of a software video decoder - landed outside the SVGA
++   * surface. The GPU then sampled an untouched surface and composited the
++   * video as black, while the decoder, SurfaceFlinger and Chrome all reported
++   * perfectly healthy frames.
++   */
++  return (map_handle << 32) | meta->blob_id;
+ }
+ 
+ static uint32_t drm_format_to_svga_format(uint32_t format)
+@@ -106,13 +116,35 @@
+ 		return SVGA3D_X1R5G5B5;
+ 	case DRM_FORMAT_RGB565:
+ 		return SVGA3D_R5G6B5;
++	/*
++	 * The planar YUV formats are not created as YUV surfaces at all.
++	 * vmwgfx_surface_extent() stacks the chroma planes underneath the luma
++	 * plane in one surface of height 3*ceil(h/2), and drv_stride_from_format()
++	 * gives a stride of one byte per pixel — so what is actually allocated is a
++	 * plain 8-bit byte plane, and SVGA3D_R8_UNORM is what describes it.
++	 *
++	 * These used to claim SVGA3D_UYVY / SVGA3D_NV12. Those are packed video
++	 * formats: UYVY is two bytes per pixel, so the host computed a MOB twice
++	 * the size of the one allocated, against an extent that was already the
++	 * stacked-plane height rather than the frame height. The host rejected
++	 * SVGA_3D_CMD_DEFINE_GB_SURFACE for every such buffer — 17 rejections per
++	 * playback on device, one per video buffer — and because DEFINE is issued by
++	 * the kernel on a command buffer and fails asynchronously,
++	 * DRM_VMW_GB_SURFACE_CREATE still returned a valid handle and MOB. The
++	 * guest had a working buffer that did not exist host-side, so the decoder's
++	 * frames could never be published and playback looped over whatever the
++	 * host had realised on the first pass.
++	 *
++	 * Consumers are unaffected: they import the DMA-BUF and read the layout
++	 * from the DRM fourcc and the per-plane strides/offsets in the handle,
++	 * not from this format.
++	 */
+ 	case DRM_FORMAT_YVU420_ANDROID:
+ 	case DRM_FORMAT_YVU420:
+-		return SVGA3D_UYVY;
++	case DRM_FORMAT_NV12:
++		return SVGA3D_R8_UNORM;
+ 	case DRM_FORMAT_YUYV:
+ 		return SVGA3D_YUY2;
+-	case DRM_FORMAT_NV12:
+-		return SVGA3D_NV12;
+ 	case DRM_FORMAT_ABGR8888:
+ 		return SVGA3D_R8G8B8A8_UNORM;
+ 	default:
+@@ -121,23 +153,21 @@
+ 	}
+ }
+ 
+-static int vmwgfx_bo_create_with_modifiers(struct bo *bo, uint32_t width, uint32_t height,
+-          uint32_t format, const uint64_t *modifiers, uint32_t count)
++/*
++ * Extent of the SVGA surface backing a bo of this format and size.
++ *
++ * A YUV bo is not created as a planar surface: the chroma planes are stacked
++ * underneath the luma plane in one taller single-plane surface, so the surface
++ * is a different shape from the frame. Anything addressing the whole surface
++ * (the transfer commands below) needs this extent, not bo->meta.width/height —
++ * a box sized from the frame would leave the chroma planes behind.
++ */
++static void vmwgfx_surface_extent(uint32_t format, uint32_t width, uint32_t height,
++				  uint32_t *out_width, uint32_t *out_height)
+ {
+-	int ret;
+-	uint32_t stride;
+-	uint32_t aligned_width, aligned_height;
+-	union drm_vmw_gb_surface_create_arg create_arg;
+-	struct drm_vmw_gb_surface_create_rep *rep = &create_arg.rep;
+-	struct drm_vmw_gb_surface_create_req *req = &create_arg.req;
+-  uint32_t extra_flag = 0;
++	uint32_t aligned_width = width;
++	uint32_t aligned_height = height;
+ 
+-	if (!drv_has_modifier(modifiers, count, DRM_FORMAT_MOD_LINEAR)) {
+-     drv_loge("no usable modifier found\n");
+-     return -EINVAL;
+-  }
+-	aligned_width = width;
+-	aligned_height = height;
+ 	switch (format) {
+ 	case DRM_FORMAT_YVU420_ANDROID:
+ 		/* Align width to 32 pixels, so chroma strides are 16 bytes as
+@@ -148,27 +178,111 @@
+ 		 * HAL_PIXEL_FORMAT_YV12 requires that the buffer's height not
+ 		 * be aligned. */
+ 		aligned_height = 3 * DIV_ROUND_UP(height, 2);
+-    extra_flag = SVGA3D_SURFACE_BIND_STREAM_OUTPUT | SVGA3D_SURFACE_TRANSFER_FROM_BUFFER;
+ 		break;
+ 	case DRM_FORMAT_YVU420:
+ 	case DRM_FORMAT_YUYV:
+ 	case DRM_FORMAT_NV12:
+ 		/* Adjust the height to include room for chroma planes */
+ 		aligned_height = 3 * DIV_ROUND_UP(height, 2);
+-    extra_flag = SVGA3D_SURFACE_BIND_STREAM_OUTPUT | SVGA3D_SURFACE_TRANSFER_FROM_BUFFER;
+ 		break;
+ 	default:
+ 		break;
+ 	}
+ 
++	if (out_width)
++		*out_width = aligned_width;
++	if (out_height)
++		*out_height = aligned_height;
++}
++
++static int vmwgfx_bo_create_with_modifiers(struct bo *bo, uint32_t width, uint32_t height,
++          uint32_t format, const uint64_t *modifiers, uint32_t count)
++{
++	int ret;
++	uint32_t stride;
++	uint32_t aligned_width, aligned_height;
++	union drm_vmw_gb_surface_create_arg create_arg;
++	struct drm_vmw_gb_surface_create_rep *rep = &create_arg.rep;
++	struct drm_vmw_gb_surface_create_req *req = &create_arg.req;
++
++	if (!drv_has_modifier(modifiers, count, DRM_FORMAT_MOD_LINEAR)) {
++     drv_loge("no usable modifier found\n");
++     return -EINVAL;
++  }
++	vmwgfx_surface_extent(format, width, height, &aligned_width, &aligned_height);
++
+   bo->meta.total_size = 0;
+   memset(&create_arg, 0, sizeof(create_arg));
+-  req->svga3d_flags = SVGA3D_SURFACE_SCREENTARGET | extra_flag |
+-      SVGA3D_SURFACE_HINT_RENDERTARGET | SVGA3D_SURFACE_HINT_DYNAMIC;
++  /*
++   * YUV formats used to add SVGA3D_SURFACE_BIND_STREAM_OUTPUT |
++   * SVGA3D_SURFACE_TRANSFER_FROM_BUFFER here. Both appear in
++   * SVGA3D_SURFACE_SCREENTARGET_DISALLOWED_MASK (external/svga3d_types.h), so
++   * combined with SCREENTARGET they made an illegal surface and the host
++   * rejected SVGA_3D_CMD_DEFINE_GB_SURFACE outright.
++   *
++   * Nothing in user space could see that: DEFINE is issued from the guest
++   * kernel on a command buffer and fails asynchronously, so
++   * DRM_VMW_GB_SURFACE_CREATE still returned success with a valid handle and a
++   * MOB. The guest then had a perfectly working buffer that simply did not
++   * exist host-side — the CPU wrote decoded frames into the MOB and the host
++   * GPU sampled a surface it had never created. Every later UPDATE/READBACK on
++   * those surfaces failed too, each one costing a full command-buffer context
++   * preempt-and-restart in vmw_cmdbuf_work_func() (~65/s during 30fps
++   * playback), which is where the stutter came from.
++   */
++  /*
++   * SCREENTARGET is for surfaces the host can actually put on a screen, which
++   * means a displayable RGB format. It was being asked for unconditionally,
++   * including for the YUV/R8 video formats — an illegal surface, which the host
++   * refused to DEFINE. That is the whole reason a decoded frame could never be
++   * published: 17 DEFINE_GB_SURFACE rejections per playback, one per video
++   * buffer, and every later command naming those sids failed after it.
++   *
++   * The distinction was already known here — is_texture() gates
++   * drm_vmw_surface_flag_scanout three lines below — it just was not applied to
++   * svga3d_flags. A texture surface asks to be bound as a shader resource
++   * instead; that is what a decoder buffer is for.
++   */
++  if (is_texture(format)) {
++    req->svga3d_flags = SVGA3D_SURFACE_HINT_TEXTURE |
++        SVGA3D_SURFACE_BIND_SHADER_RESOURCE | SVGA3D_SURFACE_HINT_DYNAMIC;
++  } else {
++    req->svga3d_flags = SVGA3D_SURFACE_SCREENTARGET |
++        SVGA3D_SURFACE_HINT_RENDERTARGET | SVGA3D_SURFACE_HINT_DYNAMIC;
++  }
+   req->format = drm_format_to_svga_format(format);
+   req->mip_levels = 1;
++  /*
++   * COHERENT is what makes CPU writes to the MOB reach the host.
++   *
++   * Without it the host takes a surface's contents once, when it first realises
++   * the resource, and never looks at the guest pages again — so everything the
++   * CPU writes afterwards is invisible. That is the shape of the ARC
++   * software-video-decode bug: media.swcodec writes decoded frames into a pool
++   * of ~16 recycled gralloc buffers, SurfaceFlinger samples them on the GPU
++   * (Mesa's svga driver — SF really is GPU-composited here), and it composes the
++   * contents each buffer held the first time the host realised it. Measured on
++   * device by checksumming SF's composed output: 299 frames, 18 distinct, period
++   * exactly 16 — the BufferQueue depth.
++   *
++   * COHERENT makes the kernel write-protect the backing pages, record dirty
++   * ranges as they fault, and flush them to the host when the resource is
++   * validated (vmw_bo_dirty_add + vmw_surface_dirty_alloc/_sync). It is what the
++   * kernel's own dumb-buffer path uses for exactly this case — see
++   * vmwgfx_surface.c, which asks for scanout|shareable|create_buffer|coherent.
++   *
++   * NOTE it is not sufficient on its own for the decode path: the fault
++   * tracking only sees writes through the vmwgfx GEM mapping in the process that
++   * created the surface, and media.swcodec writes through a prime/DMA-BUF
++   * mapping in a different process. Publishing those writes needs an explicit
++   * flush from the writer — which is what the transfer hooks below are for, and
++   * why they have to be made to work rather than dropped.
++   *
++   * Spelled out rather than named: external/libdrm's vmwgfx_drm.h predates the
++   * flag. The value is uapi and fixed — drm_vmw_surface_flag_coherent, 1 << 3.
++   */
+   req->drm_surface_flags = drm_vmw_surface_flag_shareable |
+-     drm_vmw_surface_flag_create_buffer;
++     drm_vmw_surface_flag_create_buffer | (1 << 3) /* coherent */;
+   if (!is_texture(format))
+     req->drm_surface_flags |= drm_vmw_surface_flag_scanout;
+   req->array_size = 0;
+@@ -231,12 +345,188 @@
+    }
+    addr =  mmap(0, vma->length, drv_get_prot(map_flags), MAP_SHARED, bo->drv->fd,
+                 rep->crep.buffer_map_handle);
++   store_map_handle(&bo->meta, rep->crep.buffer_map_handle);
++   }
++   if (addr == MAP_FAILED) {
++     drv_loge("mmap failed: handle:%u, map_flags:0x%x, %s\n", bo->handle.u32, map_flags,
++              strerror(errno));
++     return MAP_FAILED;
+    }
+    drv_logd("map success: handle:%u, map_flags:0x%x\n", bo->handle.u32, map_flags);
+    return addr;
+ }
+ 
+ /*
++ * CPU access synchronisation for guest-backed surfaces.
++ *
++ * A GB surface lives host-side and is backed by a guest MOB. Mapping the MOB
++ * and touching it is not enough on its own: the host has to be told when the
++ * CPU takes the buffer and when it gives it back, otherwise it never re-reads
++ * the MOB. Without this, everything a software video decoder writes stays
++ * invisible to the GPU, which keeps sampling stale contents and composites the
++ * video black — while the decoder, SurfaceFlinger and the compositor all report
++ * perfectly healthy frames. In the other direction, a CPU read of a
++ * GPU-rendered surface returns stale data.
++ *
++ * DRM_VMW_SYNCCPU operates on the *buffer* handle backing the surface, not the
++ * surface id, so resolve it with DRM_VMW_GB_SURFACE_REF first.
++ */
++static int vmwgfx_sync_cpu(struct bo *bo, struct mapping *mapping, bool grab)
++{
++	union drm_vmw_gb_surface_reference_arg s_arg;
++	struct drm_vmw_surface_arg *ref_req = &s_arg.req;
++	struct drm_vmw_gb_surface_ref_rep *ref_rep = &s_arg.rep;
++	struct drm_vmw_synccpu_arg arg;
++	uint32_t map_flags = mapping->vma->map_flags;
++	int ret;
++
++	memset(&s_arg, 0, sizeof(s_arg));
++	ref_req->sid = bo->handle.u32;
++	ref_req->handle_type = DRM_VMW_HANDLE_LEGACY;
++	ret = drmCommandWriteRead(bo->drv->fd, DRM_VMW_GB_SURFACE_REF, &s_arg, sizeof(s_arg));
++	if (ret) {
++		drv_loge("synccpu: GB_SURFACE_REF failed for sid %u: %d\n", bo->handle.u32, ret);
++		return ret;
++	}
++
++	memset(&arg, 0, sizeof(arg));
++	arg.op = grab ? drm_vmw_synccpu_grab : drm_vmw_synccpu_release;
++	arg.handle = ref_rep->crep.buffer_handle;
++	/* Mirror the mapping's access mode; default to read if unset. */
++	arg.flags = 0;
++	if (map_flags & BO_MAP_READ)
++		arg.flags |= drm_vmw_synccpu_read;
++	if (map_flags & BO_MAP_WRITE)
++		arg.flags |= drm_vmw_synccpu_write;
++	if (!arg.flags)
++		arg.flags = drm_vmw_synccpu_read;
++
++	ret = drmCommandWrite(bo->drv->fd, DRM_VMW_SYNCCPU, &arg, sizeof(arg));
++	if (ret)
++		drv_loge("DRM_VMW_SYNCCPU %s failed (buf %u, flags 0x%x): %d\n",
++			 grab ? "grab" : "release", arg.handle, (uint32_t)arg.flags, ret);
++	return ret;
++}
++
++/*
++ * Move surface contents between the host and the guest MOB.
++ *
++ * SYNCCPU only arbitrates access; it does not transfer anything. A guest-backed
++ * surface lives host-side and the MOB is just its backing store, so the host has
++ * to be told explicitly to pull contents up (UPDATE) or push them down
++ * (READBACK). Without the UPDATE the host keeps serving whatever it last
++ * realised, and a software decoder writing new frames into a rotating pool of
++ * buffers simply replays the first frame that landed in each one — playback
++ * circles through the opening frames forever, with a period equal to the pool
++ * depth (measured on device: 16 buffers, and SurfaceFlinger's composed output
++ * repeated with a period of exactly 16).
++ *
++ * These commands are only accepted for a surface the host actually has. They
++ * were rejected for every YUV buffer until drm_format_to_svga_format() stopped
++ * asking for a packed video format for what is really an 8-bit byte plane; the
++ * host refused DEFINE_GB_SURFACE, and every command naming that sid failed
++ * after it. Rejections are invisible from user space — the ioctl succeeds and
++ * the device fails the command buffer later — and each one costs a full
++ * command-buffer context preempt-and-restart in vmw_cmdbuf_work_func(), which
++ * stalls the entire guest's graphics command stream. So if this path ever
++ * regresses it is expensive as well as useless, and silent. To check:
++ *
++ *     echo 0x02 > /sys/module/drm/parameters/debug   # DRM_UT_DRIVER
++ *     dmesg | grep "causing device error"            # names the command
++ *
++ * Ordering is load-bearing: a write grab blocks all command submissions
++ * referencing the buffer, so bo_flush releases *before* submitting the update;
++ * bo_invalidate submits the readback *before* grabbing, since the grab idles the
++ * GPU on the buffer and so also waits for the readback to land.
++ *
++ * The command stream is a bare SVGA3dCmdHeader + body; no DX context is
++ * involved, hence context_handle = SVGA3D_INVALID_ID. The kernel treats the
++ * body's sid as a *user-space* surface handle and converts it during command
++ * validation (vmw_cmd_update_gb_surface -> user_surface_converter), so
++ * bo->handle.u32 is exactly what goes in.
++ */
++#define SVGA_3D_CMD_UPDATE_GB_SURFACE 1102
++#define SVGA_3D_CMD_READBACK_GB_SURFACE 1104
++
++static int vmwgfx_surface_transfer(struct bo *bo, uint32_t cmd_id)
++{
++	struct {
++		uint32_t id;
++		uint32_t size;
++		uint32_t sid;
++	} cmd;
++	struct drm_vmw_execbuf_arg arg;
++	int ret;
++
++	cmd.id = cmd_id;
++	cmd.size = sizeof(cmd.sid);
++	cmd.sid = bo->handle.u32;
++
++	memset(&arg, 0, sizeof(arg));
++	arg.commands = (uint64_t)(uintptr_t)&cmd;
++	arg.command_size = sizeof(cmd);
++	arg.version = DRM_VMW_EXECBUF_VERSION;
++	arg.context_handle = SVGA3D_INVALID_ID;
++	arg.imported_fence_fd = -1;
++
++	ret = drmCommandWrite(bo->drv->fd, DRM_VMW_EXECBUF, &arg, sizeof(arg));
++	if (ret)
++		drv_loge("execbuf %s failed for sid %u: %d\n",
++			 cmd_id == SVGA_3D_CMD_UPDATE_GB_SURFACE ? "UPDATE_GB_SURFACE"
++								 : "READBACK_GB_SURFACE",
++			 bo->handle.u32, ret);
++	return ret;
++}
++
++/*
++ * Called before CPU access. Pull the host's contents down into the MOB first,
++ * then grab — the grab idles the GPU on this buffer, so it also waits for the
++ * readback to land.
++ */
++static int vmwgfx_bo_invalidate(struct bo *bo, struct mapping *mapping)
++{
++	/*
++	 * Deliberately NO readback.
++	 *
++	 * READBACK_GB_SURFACE copies host -> MOB. For the buffers this backend
++	 * hands out that is the wrong direction, and actively destructive: the
++	 * guest MOB is the authoritative copy, because these buffers are written
++	 * by the CPU (a software video decoder) and only read by the GPU. Pulling
++	 * the host's copy down on a read lock overwrites the frame the decoder
++	 * just wrote with whatever the host happened to hold.
++	 *
++	 * That is not hypothetical for video. SurfaceFlinger's YV12 path on this
++	 * driver is bindYv12ViaCpuUpload(): Mesa SVGA rejects EGL dmabuf import for
++	 * YUV formats, so RenderEngine lockYCbCr()s the decoder's buffer with
++	 * GRALLOC_USAGE_SW_READ_OFTEN once per frame and uploads it by hand. With a
++	 * readback on that lock, every decoded frame was replaced by the host's
++	 * stale copy before it was ever read, so each buffer froze at whatever the
++	 * host first held and the picture circled the pool forever — measured on
++	 * device as a composed output with a period of exactly 16 against a 16-deep
++	 * BufferQueue.
++	 *
++	 * A readback is only right for a GPU-rendered surface the CPU wants to read
++	 * back. Nothing allocated here is that, and making every read lock pay for
++	 * it is what broke the one case that matters.
++	 */
++	return vmwgfx_sync_cpu(bo, mapping, true);
++}
++
++/*
++ * Called after CPU access. Release before submitting: a write grab blocks all
++ * command submissions referencing the buffer, so the UPDATE has to come after
++ * the buffer is handed back.
++ */
++static int vmwgfx_bo_flush(struct bo *bo, struct mapping *mapping)
++{
++	int ret = vmwgfx_sync_cpu(bo, mapping, false);
++
++	if (mapping->vma->map_flags & BO_MAP_WRITE)
++		vmwgfx_surface_transfer(bo, SVGA_3D_CMD_UPDATE_GB_SURFACE);
++	return ret;
++}
++
++/*
+  * Release a bo by closing its GEM handle. This works for both locally
+  * created GB surfaces (DRM_VMW_GB_SURFACE_CREATE registers the handle via
+  * drm_gem_handle_create — see vmwgfx_surface.c:1751) and PRIME-imported
+@@ -259,6 +549,8 @@
+ 	.bo_destroy = drv_gem_bo_destroy,
+ 	.bo_map = vmwgfx_bo_map,
+ 	.bo_unmap = drv_bo_munmap,
++	.bo_invalidate = vmwgfx_bo_invalidate,
++	.bo_flush = vmwgfx_bo_flush,
+ 	.resolve_format_and_use_flags = drv_resolve_format_and_use_flags_helper,
+ };
+ 

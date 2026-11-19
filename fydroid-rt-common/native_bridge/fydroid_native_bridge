@@ -1,0 +1,6 @@
+# Marker for the fydroid dual native-bridge (houdini + ndk_translation) squashfs
+# layout. Its presence indicates the translator binaries/libs are NOT baked into
+# system.raw.img but come from a CPU-selected squashfs mounted by arc-setup at
+# /vendor/nb (see device/fydeos/docs/native-bridge-dual-squashfs.md). The install
+# of this module also creates the bind-target dirs + symlinks into the mount.
+squashfs

@@ -1,0 +1,181 @@
+From 31292b81aeae7d0fd601e2527560db7b8066d9ba Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 6 Nov 2026 12:09:55 +0800
+Subject: [PATCH 40/40] RenderEngine: add a CPU-upload tier to the NV12 path so
+ camera preview renders on Mesa svga, which rejects NV12/GR88 dmabuf imports
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: I8e55a44920b165beb63ee0953f92084c712c7c7e
+---
+ libs/renderengine/gl/GLESRenderEngine.cpp | 57 ++++++++++++++++-------
+ libs/renderengine/gl/GLESRenderEngine.h   | 24 ++++++++--
+ 2 files changed, 59 insertions(+), 22 deletions(-)
+
+diff --git a/libs/renderengine/gl/GLESRenderEngine.cpp b/libs/renderengine/gl/GLESRenderEngine.cpp
+index 73b3b9bdea..5afd1aebc9 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.cpp
++++ b/libs/renderengine/gl/GLESRenderEngine.cpp
+@@ -715,18 +715,23 @@ void GLESRenderEngine::deleteTextures(size_t count, uint32_t const* names) {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// NV12/YCbCr → RGBA. Two-tier strategy:
++// NV12/YCbCr → RGBA. Three-tier strategy:
+ //   1. Direct multi-plane dmabuf import via samplerExternalOES (preferred).
+ //   2. Per-plane import + custom YUV→RGB shader (fallback).
++//   3. lockYCbCr + CPU conversion + RGBA upload (drivers that reject YUV
++//      dmabuf import entirely, e.g. Mesa SVGA on VMware: camera preview).
+ // First-call probing chooses the path; subsequent calls take the same route.
+ // ---------------------------------------------------------------------------
+ 
+ bool GLESRenderEngine::bindNv12(const sp<GraphicBuffer>& buffer, uint32_t texName) {
+-    if (mNv12Path == NV12_PATH_DIRECT) {
+-        return bindNv12AsExternalImage(buffer, texName);
+-    }
+-    if (mNv12Path == NV12_PATH_SHADER) {
+-        return bindNv12ViaShader(buffer, texName);
++    switch (mNv12Path) {
++        case NV12_PATH_DIRECT:     return bindNv12AsExternalImage(buffer, texName);
++        case NV12_PATH_SHADER:     return bindNv12ViaShader(buffer, texName);
++        case NV12_PATH_CPU_UPLOAD:
++            return bindYuvViaCpuUpload(buffer, texName, mNv12OutputTex, mNv12OutputW,
++                                       mNv12OutputH, "bindNv12ViaCpuUpload");
++        case NV12_PATH_FAILED:     return false;
++        case NV12_PATH_UNKNOWN:    break;  // probe below
+     }
+     // Probe: try direct first; lock in whichever path succeeds.
+     if (bindNv12AsExternalImage(buffer, texName)) {
+@@ -739,7 +744,14 @@ bool GLESRenderEngine::bindNv12(const sp<GraphicBuffer>& buffer, uint32_t texNam
+         mNv12Path = NV12_PATH_SHADER;
+         return true;
+     }
+-    ALOGW("bindNv12: both direct and shader paths failed");
++    if (bindYuvViaCpuUpload(buffer, texName, mNv12OutputTex, mNv12OutputW, mNv12OutputH,
++                            "bindNv12ViaCpuUpload")) {
++        ALOGI("bindNv12: dmabuf import unsupported, using CPU-upload fallback");
++        mNv12Path = NV12_PATH_CPU_UPLOAD;
++        return true;
++    }
++    ALOGW("bindNv12: every path failed; locking in NV12_PATH_FAILED");
++    mNv12Path = NV12_PATH_FAILED;
+     return false;
+ }
+ 
+@@ -1436,6 +1448,15 @@ inline void yuv_to_rgb_pixel(int y, int u, int v, uint8_t* out) {
+ 
+ bool GLESRenderEngine::bindYv12ViaCpuUpload(const sp<GraphicBuffer>& buffer,
+                                              uint32_t texName) {
++    return bindYuvViaCpuUpload(buffer, texName, mYv12OutputTex, mYv12OutputW, mYv12OutputH,
++                               "bindYv12ViaCpuUpload");
++}
++
++// Shared by NV12 and YV12: android_ycbcr describes either layout (NV12 is
++// cb/cr interleaved with chroma_step 2, YV12 separate planes with step 1).
++bool GLESRenderEngine::bindYuvViaCpuUpload(const sp<GraphicBuffer>& buffer, uint32_t texName,
++                                           GLuint& outTex, uint32_t& outW, uint32_t& outH,
++                                           const char* tag) {
+     const uint32_t w = buffer->getWidth();
+     const uint32_t height = buffer->getHeight();
+     if (w == 0 || height == 0) return false;
+@@ -1443,16 +1464,16 @@ bool GLESRenderEngine::bindYv12ViaCpuUpload(const sp<GraphicBuffer>& buffer,
+     android_ycbcr ycbcr = {};
+     status_t s = buffer->lockYCbCr(GRALLOC_USAGE_SW_READ_OFTEN, &ycbcr);
+     if (s != NO_ERROR || !ycbcr.y || !ycbcr.cb || !ycbcr.cr) {
+-        ALOGW("bindYv12ViaCpuUpload: lockYCbCr failed (%d)", s);
++        ALOGW("%s: lockYCbCr failed (%d)", tag, s);
+         if (s == NO_ERROR) buffer->unlock();
+         return false;
+     }
+ 
+     const size_t rgbaSize = (size_t)w * height * 4;
+-    if (mYv12CpuRgbaBuf.size() < rgbaSize) {
+-        mYv12CpuRgbaBuf.resize(rgbaSize);
++    if (mYuvCpuRgbaBuf.size() < rgbaSize) {
++        mYuvCpuRgbaBuf.resize(rgbaSize);
+     }
+-    uint8_t* dst = mYv12CpuRgbaBuf.data();
++    uint8_t* dst = mYuvCpuRgbaBuf.data();
+     const uint8_t* yPlane  = (const uint8_t*)ycbcr.y;
+     const uint8_t* cbPlane = (const uint8_t*)ycbcr.cb;
+     const uint8_t* crPlane = (const uint8_t*)ycbcr.cr;
+@@ -1475,17 +1496,17 @@ bool GLESRenderEngine::bindYv12ViaCpuUpload(const sp<GraphicBuffer>& buffer,
+ 
+     buffer->unlock();
+ 
+-    if (!mYv12OutputTex) glGenTextures(1, &mYv12OutputTex);
+-    glBindTexture(GL_TEXTURE_2D, mYv12OutputTex);
+-    if (mYv12OutputW != w || mYv12OutputH != height) {
++    if (!outTex) glGenTextures(1, &outTex);
++    glBindTexture(GL_TEXTURE_2D, outTex);
++    if (outW != w || outH != height) {
+         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)height, 0,
+                      GL_RGBA, GL_UNSIGNED_BYTE, dst);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+-        mYv12OutputW = w;
+-        mYv12OutputH = height;
++        outW = w;
++        outH = height;
+     } else {
+         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)w, (GLsizei)height,
+                         GL_RGBA, GL_UNSIGNED_BYTE, dst);
+@@ -1493,10 +1514,10 @@ bool GLESRenderEngine::bindYv12ViaCpuUpload(const sp<GraphicBuffer>& buffer,
+ 
+     EGLImageKHR outImage = eglCreateImageKHR(mEGLDisplay, mEGLContext,
+                                               EGL_GL_TEXTURE_2D_KHR,
+-                                              (EGLClientBuffer)(uintptr_t)mYv12OutputTex,
++                                              (EGLClientBuffer)(uintptr_t)outTex,
+                                               nullptr);
+     if (outImage == EGL_NO_IMAGE_KHR) {
+-        ALOGE("bindYv12ViaCpuUpload: output EGLImage failed: %#x", eglGetError());
++        ALOGE("%s: output EGLImage failed: %#x", tag, eglGetError());
+         return false;
+     }
+ 
+diff --git a/libs/renderengine/gl/GLESRenderEngine.h b/libs/renderengine/gl/GLESRenderEngine.h
+index 6e6b19f8da..823e516995 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.h
++++ b/libs/renderengine/gl/GLESRenderEngine.h
+@@ -282,9 +282,20 @@ private:
+     //      driver-side YUV color conversion. Persistent shader/FBO/output
+     //      texture; per-call EGLImage handles.
+     //
+-    // mNv12DirectImportSupported caches the result of the first attempt so
+-    // we don't churn on a known-unsupported driver every frame.
+-    enum Nv12Path { NV12_PATH_UNKNOWN, NV12_PATH_DIRECT, NV12_PATH_SHADER };
++    //   3. CPU upload (lockYCbCr + RGBA glTexImage2D), shared with YV12. Mesa
++    //      SVGA (VMware) rejects the NV12 and GR88 dmabuf imports (EGL_BAD_ALLOC),
++    //      and the cache path below deliberately skips YUV buffers, so without
++    //      this tier camera preview rendered nothing there.
++    //
++    // mNv12Path caches the result of the first probe so we don't churn on a
++    // known-unsupported driver every frame.
++    enum Nv12Path {
++        NV12_PATH_UNKNOWN,
++        NV12_PATH_DIRECT,
++        NV12_PATH_SHADER,
++        NV12_PATH_CPU_UPLOAD,
++        NV12_PATH_FAILED,  // every variant rejected; stop retrying
++    };
+     Nv12Path mNv12Path = NV12_PATH_UNKNOWN;
+     bool bindNv12(const sp<GraphicBuffer>& buffer, uint32_t texName);
+     bool bindNv12AsExternalImage(const sp<GraphicBuffer>& buffer, uint32_t texName);
+@@ -353,7 +364,12 @@ private:
+     // RGBA glTexImage2D per frame. No FBO, no shader, no multi-plane
+     // sampling — avoids the Mesa SVGA / vmwgfx hangs we hit trying to run
+     // the sampler2D Y/U/V combine shader on a guest VM with no real GPU.
+-    std::vector<uint8_t> mYv12CpuRgbaBuf;
++    // Format-agnostic (reads planes via android_ycbcr + chroma_step), so NV12
++    // and YV12 share it; each keeps its own RGBA output texture.
++    bool bindYuvViaCpuUpload(const sp<GraphicBuffer>& buffer, uint32_t texName,
++                             GLuint& outTex, uint32_t& outW, uint32_t& outH,
++                             const char* tag);
++    std::vector<uint8_t> mYuvCpuRgbaBuf;
+ 
+     // Blur effect processor, only instantiated when a layer requests it.
+     BlurFilter* mBlurFilter = nullptr;
+-- 
+2.43.0
+

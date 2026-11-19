@@ -1,0 +1,17 @@
+# Typemaps for arc.mojom Bluetooth types → Android BT native types.
+#
+# BluetoothUUID (array<uint8,16>) → bluetooth::Uuid (system/bt/types/)
+# BluetoothDeviceType (enum)      → bt_device_type_t (system/bt/include/)
+
+mojom = "arc/bluetooth.mojom"
+public_headers = [
+  "bluetooth/uuid.h",
+  "hardware/bluetooth.h",
+]
+traits_headers = [
+  "arc/bluetooth_mojom_traits.h",
+]
+type_mappings = [
+  "arc.mojom.BluetoothUUID=bluetooth::Uuid",
+  "arc.mojom.BluetoothDeviceType=bt_device_type_t",
+]

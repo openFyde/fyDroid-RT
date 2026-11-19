@@ -1,0 +1,60 @@
+From 473eed51da14d078f4849019ae25661421839388 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 27 Apr 2026 18:15:40 +0800
+Subject: [PATCH 10/75] Fix TaskPersister recents dir error and WriteFallback
+ job timeout
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TaskPersister: skip recent_images cleanup when directory doesn't exist
+(no screenshots saved in ARC++ container — Chrome OS manages recents).
+
+WriteFallbackSettingsFilesJobService: run file copy on background thread
+and call jobFinished() properly instead of blocking onStartJob, which
+caused 10-minute JobScheduler timeouts in the container environment.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ibb6a22025a70f40b615aecd23a864bed0e187686
+---
+ .../settings/WriteFallbackSettingsFilesJobService.java     | 7 +++++--
+ .../core/java/com/android/server/wm/TaskPersister.java     | 5 ++++-
+ 2 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/packages/SettingsProvider/src/com/android/providers/settings/WriteFallbackSettingsFilesJobService.java b/packages/SettingsProvider/src/com/android/providers/settings/WriteFallbackSettingsFilesJobService.java
+index 66aa7baa3b51..6f0838cdffa7 100644
+--- a/packages/SettingsProvider/src/com/android/providers/settings/WriteFallbackSettingsFilesJobService.java
++++ b/packages/SettingsProvider/src/com/android/providers/settings/WriteFallbackSettingsFilesJobService.java
+@@ -44,8 +44,11 @@ public class WriteFallbackSettingsFilesJobService extends JobService {
+         settingsFiles.add(params.getExtras().getString(TABLE_SECURE, ""));
+         settingsFiles.add(params.getExtras().getString(TABLE_SSAID, ""));
+         settingsFiles.add(params.getExtras().getString(TABLE_CONFIG, ""));
+-        SettingsProvider.writeFallBackSettingsFiles(settingsFiles);
+-        return false;
++        new Thread(() -> {
++            SettingsProvider.writeFallBackSettingsFiles(settingsFiles);
++            jobFinished(params, false);
++        }).start();
++        return true;
+     }
+ 
+     @Override
+diff --git a/services/core/java/com/android/server/wm/TaskPersister.java b/services/core/java/com/android/server/wm/TaskPersister.java
+index b8d2febd5dd4..7bb0e0ff38b2 100644
+--- a/services/core/java/com/android/server/wm/TaskPersister.java
++++ b/services/core/java/com/android/server/wm/TaskPersister.java
+@@ -480,7 +480,10 @@ public class TaskPersister implements PersisterQueue.Listener {
+             candidateUserIds = mRecentTasks.usersWithRecentsLoadedLocked();
+         }
+         for (int userId : candidateUserIds) {
+-            removeObsoleteFiles(persistentTaskIds, getUserImagesDir(userId).listFiles());
++            File imagesDir = getUserImagesDir(userId);
++            if (imagesDir.isDirectory()) {
++                removeObsoleteFiles(persistentTaskIds, imagesDir.listFiles());
++            }
+             removeObsoleteFiles(persistentTaskIds, getUserTasksDir(userId).listFiles());
+         }
+     }
+-- 
+2.43.0
+

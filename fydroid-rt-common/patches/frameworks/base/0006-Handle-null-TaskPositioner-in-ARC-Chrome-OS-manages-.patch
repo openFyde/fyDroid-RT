@@ -1,0 +1,40 @@
+From 2f1f5fe23fb5cd728045166da09dc9568c13f066 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 20 Apr 2026 16:40:51 +0800
+Subject: [PATCH 06/75] Handle null TaskPositioner in ARC (Chrome OS manages
+ positioning)
+
+ArcWindowManagerService sets TaskPositioner.setFactory() to return null
+because Chrome OS handles window move/resize through its compositor.
+TaskPositioningController.startPositioningLocked() didn't null-check the
+factory result, causing an NPE crash in system_server when the user
+tried to resize a freeform window.
+
+Return false (positioning declined) when the factory returns null,
+matching the existing pattern where other validation failures return
+false.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ic17e64ba282e6799993adf4b6229f571845c2dcf
+---
+ .../java/com/android/server/wm/TaskPositioningController.java | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/TaskPositioningController.java b/services/core/java/com/android/server/wm/TaskPositioningController.java
+index 6dcad2bb263e..29c97061990d 100644
+--- a/services/core/java/com/android/server/wm/TaskPositioningController.java
++++ b/services/core/java/com/android/server/wm/TaskPositioningController.java
+@@ -158,6 +158,10 @@ class TaskPositioningController {
+         mPositioningDisplay = displayContent;
+ 
+         mTaskPositioner = TaskPositioner.create(mService);
++        if (mTaskPositioner == null) {
++            // ARC: TaskPositioner factory returns null — Chrome OS handles positioning.
++            return false;
++        }
+         mTaskPositioner.register(displayContent, win);
+ 
+         // We need to grab the touch focus so that the touch events during the
+-- 
+2.43.0
+

@@ -1,0 +1,7 @@
+runtime_resource_overlay {
+    name: "FydroidConnectivityOverlay",
+    resource_dirs: ["res"],
+    certificate: "platform",
+    product_specific: true,
+    sdk_version: "current",
+}

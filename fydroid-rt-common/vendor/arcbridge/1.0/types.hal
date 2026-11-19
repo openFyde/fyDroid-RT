@@ -1,0 +1,6 @@
+package vendor.google_arc.arcbridge@1.0;
+
+struct MojoBootstrapChannel {
+    handle channelHandle;
+    vec<uint64_t> pipeNames;
+};

@@ -1,0 +1,33 @@
+// Open source replacement for the proprietary com.google.android.chromeos jar
+// from ARC++. Drop-in compatible: same module name, same Java packages
+// (org.chromium.arc.{display,wayland}), same binder descriptors and same
+// transaction codes — so any in-process consumer that loaded the original
+// classes (ArcSystemUI, system_server, arc-services) keeps working unchanged.
+//
+// Provides:
+//   - ArcDisplay / ArcDisplayLayout AIDL parcelables (stable AIDL wire format,
+//     bit-for-bit identical to the proprietary classes)
+//   - ArcDisplayUtils / ArcDisplayLayoutUtils helper clones
+//   - LayoutMode / Transform integer enums
+//   - IWaylandService Stub/Proxy hand-written to reproduce the proprietary
+//     gappy transaction code numbering (1..6, 8..10, 12..13, 15..16, 19..21,
+//     24..40, 42, 1001..1003)
+//   - IWaylandShellHandler / IWaylandOrientationChangeListener oneway AIDL
+//     interfaces with sequential transaction codes that match the proprietary
+//     jar exactly.
+java_library {
+    name: "com.google.android.chromeos",
+    installable: true,
+    srcs: [
+        "java/**/*.java",
+        "aidl/**/*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    platform_apis: true,
+    libs: [
+        "framework",
+        "org.chromium.arc.mojom",
+    ],
+}

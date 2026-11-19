@@ -1,0 +1,59 @@
+# ART heap budget for the "16G" Dalvik memory profile.
+#
+# Lives in system/etc/init/hw/ and not in an auto-scanned init directory:
+# init's ParseConfigDir walks every regular file in /vendor/etc/init and
+# /system/etc/init, so a tier file placed there is parsed whatever the host's
+# actual profile is, and all four merge -- last `on init` in sorted order wins.
+# Observed exactly that: a 4G board came up with the 8G budget. Subdirectories
+# are skipped, which is why AOSP keeps its own imported-only init.rc variants
+# (init.${ro.zygote}.rc) in hw/ too.
+#
+# Selected at parse time by init.cheets.rc:
+#     import /vendor/etc/init/init.dalvik_heap.${ro.boot.arc_dalvik_memory_profile}.rc
+#
+# Chrome sizes the host and ships the tier into the container: MemTotal >= 3.5 /
+# 7.5 / 15.5 GB picks 4G / 8G / 16G (arc_session_impl.cc:54-56), login_manager
+# turns it into DALVIK_MEMORY_PROFILE (arc_manager.cc:318) and arc-setup into
+# androidboot.arc_dalvik_memory_profile (arc_setup.cc:520). Until this file
+# existed nothing in AOSP read it and every board got one hardcoded profile.
+#
+# Source: extrapolated. AOSP's own table stops at 6144, so this is the one tier here with no upstream reference: it continues the same progression (growth cap doubled again, heapsize raised in step) and should be revisited if real ARC++ numbers ever become available.
+# Everything except heapgrowthlimit/heapsize matches the 8G tier.
+#
+# These are mutable dalvik.vm.* properties, set in "on init" — long before
+# zygote-start, which is where ART first reads them. The fydroid_rt_common.mk
+# values remain the default for a board that gets no profile at all.
+
+on init
+    setprop dalvik.vm.heapstartsize 16m
+    setprop dalvik.vm.heapgrowthlimit 512m
+    setprop dalvik.vm.heapsize 768m
+    setprop dalvik.vm.heaptargetutilization 0.5
+    setprop dalvik.vm.heapminfree 8m
+    setprop dalvik.vm.heapmaxfree 32m
+
+# x86_64 ceiling. ART reserves the concurrent-copying region space as
+# 2 x heapsize ("Reserve twice the capacity", heap.cc) with low_4gb=true. On
+# x86_64 USE_ART_LOW_4G_ALLOCATOR is 0 (aarch64/APPLE only), so once the hinted
+# attempt at kPreferredAllocSpaceBegin fails MemMap::MapInternal falls back to
+# MAP_32BIT -- which the kernel clamps to [0x40000000, 0x80000000), i.e. 1GB,
+# with the base randomised up to +32MB on top (find_start_end(),
+# arch/x86/kernel/sys_x86_64.c). 768m asks for 1536MB there and can never be
+# satisfied on any amount of RAM: zygote64 aborts at heap.cc:620 "No region
+# space mem map" every 5s, system_server never starts and ARC never boots.
+#
+# 512m (1024MB) is served by the earlier hinted attempt at 300MB, whose range
+# clears the boot image -- the same path the 4G and 8G tiers already rely on in
+# the field. heapgrowthlimit stays 512m, so normal apps are unchanged and only
+# android:largeHeap apps give up the extra 256m.
+#
+# arm64 keeps the full 768m: aarch64 sets USE_ART_LOW_4G_ALLOCATOR=1 and scans
+# the whole low 4GB, where ~1.9GB is free above the boot image.
+#
+# Do NOT instead enable that scanner on x86_64. Verified on hardware: it fixes
+# the region space, but code mappings (the JIT cache) must stay below the 2GB
+# line because x86_64 sign-extends 32-bit displacements. With the scanner the
+# JIT cache can land above 2GB and JIT-compiled code then faults on a
+# sign-extended address (SIGSEGV at 0xffffffff9a68f180 on a 4G board).
+on init && property:ro.product.cpu.abi=x86_64
+    setprop dalvik.vm.heapsize 512m

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Use Translucent instead of NoDisplay: NoDisplay sets windowNoDisplay=true
+         which makes mVisibleFromClient=false, and AOSP 11 (targetSdk 30) requires
+         invisible activities to call finish() before onResume() completes.
+         ArcHome is a persistent home activity that must NOT finish. -->
+    <style name="Theme" parent="@android:style/Theme.Translucent.NoTitleBar"/>
+</resources>

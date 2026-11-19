@@ -1,0 +1,92 @@
+From 840587946434ebac485da72535d6f1188307d0fe Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 25 Mar 2026 12:37:27 +0800
+Subject: [PATCH 2/2] Handle Run/QueryVersion in Mojo stub framework
+
+Chrome R144 enables kArcExchangeVersionOnMojoHandshake which sends
+QueryVersion (Run message, ordinal -1) to every Mojo instance during
+setup. Older ARC++ generated stubs lack a handler for this ordinal in
+acceptWithResponder(), causing the message to be rejected and the pipe
+to close immediately.
+
+Add ControlMessageFilter wrapper in Interface.Manager.bind() that
+intercepts Run/QueryVersion messages at the framework level before
+they reach the stub, handling them via InterfaceControlMessagesHelper.
+This ensures all stubs respond correctly to version queries regardless
+of their generated code.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ia401e04cbb376cc6672b4774b713f0e415aafb59
+---
+ .../org/chromium/mojo/bindings/Interface.java | 52 ++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/mojo/public/java/bindings/src/org/chromium/mojo/bindings/Interface.java b/mojo/public/java/bindings/src/org/chromium/mojo/bindings/Interface.java
+index f7d3f80256..e6ad7008cd 100644
+--- a/mojo/public/java/bindings/src/org/chromium/mojo/bindings/Interface.java
++++ b/mojo/public/java/bindings/src/org/chromium/mojo/bindings/Interface.java
+@@ -475,10 +475,60 @@ public interface Interface extends ConnectionErrorHandler, Closeable {
+ 
+         /**
+          * Binds the implementation to the given |router|.
++         * Wraps the stub with a filter that handles Run/QueryVersion interface
++         * control messages, which older generated stubs may not support.
+          */
+         final void bind(Core core, I impl, Router router) {
+             router.setErrorHandler(impl);
+-            router.setIncomingMessageReceiver(buildStub(core, impl));
++            MessageReceiverWithResponder stub = buildStub(core, impl);
++            router.setIncomingMessageReceiver(
++                new ControlMessageFilter<>(core, Manager.this, stub));
++        }
++
++        /**
++         * Wrapper around a stub that intercepts Run/QueryVersion interface
++         * control messages. Ensures stubs respond correctly to version queries
++         * even if the generated stub code does not handle them (as is the case
++         * with older ARC++ mojom stubs compiled before the QueryVersion
++         * handshake was added to Chrome).
++         */
++        private static class ControlMessageFilter<I extends Interface, P extends Proxy>
++                implements MessageReceiverWithResponder {
++            private final Core mCore;
++            private final Manager<I, P> mManager;
++            private final MessageReceiverWithResponder mDelegate;
++
++            ControlMessageFilter(Core core, Manager<I, P> manager,
++                                 MessageReceiverWithResponder delegate) {
++                mCore = core;
++                mManager = manager;
++                mDelegate = delegate;
++            }
++
++            @Override
++            public boolean accept(Message message) {
++                return mDelegate.accept(message);
++            }
++
++            @Override
++            public boolean acceptWithResponder(Message message, MessageReceiver responder) {
++                try {
++                    MessageHeader header = message.asServiceMessage().getHeader();
++                    // RUN_MESSAGE_ID = -1 (Run/QueryVersion)
++                    if (header.getType() == -1) {
++                        return InterfaceControlMessagesHelper.handleRun(
++                            mCore, mManager, message.asServiceMessage(), responder);
++                    }
++                } catch (DeserializationException e) {
++                    // Fall through to delegate
++                }
++                return mDelegate.acceptWithResponder(message, responder);
++            }
++
++            @Override
++            public void close() {
++                mDelegate.close();
++            }
+         }
+ 
+         /**
+-- 
+2.43.0
+

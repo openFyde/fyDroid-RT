@@ -1,0 +1,43 @@
+From e9790a2db6f015c2331dceb54b0601158dc34b96 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 24 Jul 2026 11:32:55 +0800
+Subject: [PATCH] fydroid: mount binfmt_misc noexec so the CrOS LSM permits it
+
+The native-bridge rc mounts binfmt_misc exec-allowed. The CrOS kernel LSM
+(chromiumos sb_mount) rejects an exec-allowed mount unless the caller holds
+CAP_SYS_ADMIN in the *init* userns -- which Android init, running in the
+container's child userns, can never satisfy. The mount EPERMs, so the
+subsequent binfmt_misc register copies have no filesystem and the ARM/ARM64
+direct-exec handlers are never installed (native-bridge exec path dead; the
+JNI/native-bridge path is unaffected).
+
+binfmt_misc is a control filesystem with no executable files of its own (the
+interpreter lives on /vendor/nb resp. /system), so mounting it noexec,nosuid,
+nodev is functionally free and satisfies the LSM's own rule, which only gates
+exec-allowed mounts. Verified on-device: exec-flag mount -> EPERM; noexec
+mount -> OK and all four houdini handlers register.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ prebuilts/etc/init/ndk_translation.rc | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/prebuilts/etc/init/ndk_translation.rc b/prebuilts/etc/init/ndk_translation.rc
+index a32c770..0154e47 100644
+--- a/prebuilts/etc/init/ndk_translation.rc
++++ b/prebuilts/etc/init/ndk_translation.rc
+@@ -1,6 +1,10 @@
+ # Enable native bridge for target executables
+ on early-init && property:ro.enable.native.bridge.exec=1
+-    mount binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
++    # noexec/nosuid/nodev so the CrOS LSM allows the mount from the container's
++    # child userns (an exec-allowed mount would need CAP_SYS_ADMIN in the init
++    # ns, unsatisfiable here). binfmt_misc holds no executable files, so noexec
++    # is functionally free.
++    mount binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc noexec nosuid nodev
+ 
+ # Gated on ro.dalvik.vm.native.bridge=libndk_translation.so so ndk_translation's
+ # binfmt_misc entries register only when it is the selected native bridge
+-- 
+2.43.0
+

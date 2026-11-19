@@ -1,0 +1,18 @@
+android_app {
+    name: "ArcHome",
+    srcs: [
+        "src/**/*.java",
+        "aidl/**/*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    libs: [
+        "org.chromium.arc",
+    ],
+    resource_dirs: ["res"],
+    overrides: ["Home"],
+}

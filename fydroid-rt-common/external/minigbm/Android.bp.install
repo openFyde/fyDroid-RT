@@ -1,0 +1,365 @@
+// Android build configuration for CrOS minigbm (synced from chromiumos/platform/minigbm)
+
+// Soong-config carve-out: translate per-driver bool flags from
+// SOONG_CONFIG_fydroid_minigbm_drv_<name> into srcs (the backend's
+// .c file) and cflags (-DDRV_<NAME>). Per-board BoardConfig.mk sets
+// BOARD_MINIGBM_DRIVERS to a space-separated list (e.g. "rockchip"
+// or "vmwgfx"); BoardConfigCommon.mk translates that list to the
+// individual SOONG_CONFIG_fydroid_minigbm_drv_<name> := true entries
+// consumed here.
+soong_config_module_type {
+    name: "minigbm_drv_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "fydroid_minigbm",
+    bool_variables: [
+        "drv_amdgpu",
+        "drv_i915",
+        "drv_msm",
+        "drv_nouveau",
+        "drv_realtek",
+        "drv_rockchip",
+        "drv_v3d",
+        "drv_vc4",
+        "drv_vmwgfx",
+        "drv_xe",
+    ],
+    properties: [
+        "srcs",
+        "cflags",
+        "include_dirs",
+    ],
+}
+
+minigbm_drv_cc_defaults {
+    name: "minigbm_drivers_config",
+    soong_config_variables: {
+        // drv_amdgpu also pulls in dri.c — its content is gated on
+        // DRV_AMDGPU upstream, so it has no effect for other backends.
+        drv_amdgpu: {
+            srcs: [
+                "amdgpu.c",
+                "dri.c",
+            ],
+            cflags: ["-DDRV_AMDGPU"],
+            // amdgpu.c includes libdrm's <amdgpu.h>; dri.c (dlopen-based) drives
+            // the Mesa >= 25 megadriver through <mesa_interface.h> +
+            // <kopper_interface.h> (the legacy <GL/internal/dri_interface.h>
+            // entry points were removed). Scoped to the amdgpu backend so
+            // non-amdgpu boards (e.g. arm64/rockchip) get none of these.
+            include_dirs: [
+                "external/libdrm/amdgpu",
+                // GL/gl.h, kopper_interface.h, vulkan/vulkan_core.h
+                "external/mesa3d/include",
+                // mesa_interface.h
+                "external/mesa3d/src/gallium/include",
+            ],
+        },
+        drv_i915: {
+            srcs: ["i915.c"],
+            cflags: ["-DDRV_I915"],
+        },
+        drv_msm: {
+            srcs: ["msm.c"],
+            cflags: ["-DDRV_MSM"],
+        },
+        // NVIDIA render backend for boards where Android renders on the dGPU
+        // (zink on NVK) while Chrome stays on the iGPU. Replaces the dumb
+        // nouveau allocator (#ifndef DRV_NOUVEAU in dumb_driver.c), which cannot
+        // allocate on a render node. nouveau.c includes libdrm's <nouveau_drm.h>.
+        drv_nouveau: {
+            srcs: ["nouveau.c"],
+            cflags: ["-DDRV_NOUVEAU"],
+        },
+        drv_rockchip: {
+            srcs: ["rockchip.c"],
+            cflags: ["-DDRV_ROCKCHIP"],
+        },
+        // Realtek RTD1501S display/scanout backend (Mali render via panfrost).
+        // realtek.c quote-includes "external/realtek_drm.h" from the minigbm
+        // root, so no extra include_dirs. When drv_realtek is off, backend_realtek
+        // falls back to the dumb allocator (#ifndef DRV_REALTEK in dumb_driver.c).
+        drv_realtek: {
+            srcs: ["realtek.c"],
+            cflags: ["-DDRV_REALTEK"],
+        },
+        // Broadcom V3D (Raspberry Pi 4/5) render backend. v3d.c quote-includes
+        // "external/v3d_drm.h" from the minigbm root, so no extra include_dirs.
+        drv_v3d: {
+            srcs: ["v3d.c"],
+            cflags: ["-DDRV_V3D"],
+        },
+        // VC4 (Raspberry Pi KMS/display) has no dedicated source — it is backed
+        // by the always-built dumb allocator (INIT_DUMB_DRIVER(vc4) in
+        // dumb_driver.c, gated on -DDRV_VC4). So this carries only the cflag.
+        drv_vc4: {
+            cflags: ["-DDRV_VC4"],
+        },
+        drv_vmwgfx: {
+            srcs: ["vmwgfx.c"],
+            cflags: ["-DDRV_VMWGFX"],
+        },
+        drv_xe: {
+            srcs: ["xe.c"],
+            cflags: ["-DDRV_XE"],
+        },
+    },
+}
+
+// fydroid-rt: build config (flags / headers / base libs) WITHOUT the minigbm drv
+// core sources. The gralloc front-ends (gralloc0 HAL, gralloc4 mapper/allocator)
+// use this and link the drv core + cros_gralloc driver via the shared
+// libcros_gralloc, so they do NOT each recompile a private copy of
+// cros_gralloc_driver (which would give each .so its own get_instance()
+// singleton, splitting the per-process buffer registry — see libcros_gralloc).
+cc_defaults {
+    name: "minigbm_common_defaults",
+
+    cflags: [
+        "-D_GNU_SOURCE=1",
+        "-D_FILE_OFFSET_BITS=64",
+        "-Wall",
+        "-Wsign-compare",
+        "-Wpointer-arith",
+        "-Wcast-qual",
+        "-Wcast-align",
+        "-Wno-unused-parameter",
+    ],
+    cppflags: ["-std=c++14"],
+
+    vendor: true,
+
+    header_libs: [
+        "libhardware_headers",
+        "libnativebase_headers",
+        "libnativewindow_headers",
+        "libsystem_headers",
+    ],
+
+    export_header_lib_headers: [
+        "libhardware_headers",
+        "libnativebase_headers",
+        "libnativewindow_headers",
+        "libsystem_headers",
+    ],
+
+    shared_libs: [
+        "libcutils",
+        "libdrm",
+        "libnativewindow",
+        "libsync",
+        "liblog",
+    ],
+
+    static_libs: ["libarect"],
+
+    export_static_lib_headers: ["libarect"],
+}
+
+cc_defaults {
+    name: "minigbm_defaults",
+    defaults: ["minigbm_common_defaults", "minigbm_drivers_config"],
+
+    srcs: [
+        "drv.c",
+        "drv_array_helpers.c",
+        "drv_helpers.c",
+        "mediatek.c",
+        "virtgpu.c",
+        "virtgpu_cross_domain.c",
+        "virtgpu_virgl.c",
+        "dumb_driver.c",
+        "minigbm_helpers.c",
+        "dma_heap.c",
+        "backend_mock.c",
+    ],
+}
+
+cc_defaults {
+    name: "minigbm_cros_gralloc_defaults",
+
+    defaults: ["minigbm_defaults"],
+
+    cflags: ["-DHAS_NO_AIDL_METADATA"],
+    cppflags: ["-std=c++17"],
+
+    srcs: [
+        "cros_gralloc/cros_gralloc_buffer.cc",
+        "cros_gralloc/cros_gralloc_helpers.cc",
+        "cros_gralloc/cros_gralloc_driver.cc",
+    ],
+}
+
+cc_library_static {
+    name: "libminigbm",
+    defaults: ["minigbm_defaults"],
+    shared_libs: ["liblog"],
+    static_libs: ["libdrm"],
+
+    srcs: [
+        "gbm.c",
+        "gbm_helpers.c",
+    ],
+
+    export_include_dirs: ["."],
+}
+
+cc_library_static {
+    name: "libminigbm_cros_gralloc",
+    defaults: ["minigbm_cros_gralloc_defaults"],
+    shared_libs: ["liblog"],
+    static_libs: ["libdrm"],
+
+    export_include_dirs: ["."],
+}
+
+// fydroid-rt: the single per-process cros_gralloc driver instance.
+//
+// cros_gralloc_driver makes its driver a process singleton via a function-local
+// static in get_instance(). When cros_gralloc_driver.cc is statically compiled
+// into >1 shared library loaded by the same process (gralloc0 HAL + gralloc4
+// mapper, both pulled into surfaceflinger), each .so gets its OWN s_instance and
+// thus its own handles_/buffers_ registry. A GraphicBuffer imported via the
+// gralloc4 mapper is then invisible to mesa's gralloc0 perform path, so
+// resource_info() aborts with "called on unregistered handle" — crash-looping SF.
+//
+// Building the driver (+ drv core) ONCE here as a shared library and linking it
+// from gralloc0/mapper/allocator gives one get_instance() symbol — hence one
+// registry — per process. Compiled WITHOUT -DHAS_NO_AIDL_METADATA: the flag only
+// adds metadata *methods* (no member vars; metadata is mmap'd by pointer) so the
+// object layout is identical, and the no-flag build is the symbol superset that
+// gralloc0 (which keeps the flag and references only the subset) links against.
+cc_library_shared {
+    name: "libcros_gralloc",
+    defaults: ["minigbm_defaults"],
+    cppflags: ["-std=c++17"],
+    cflags: ["-Wno-sign-compare"],
+    srcs: [
+        "cros_gralloc/cros_gralloc_buffer.cc",
+        "cros_gralloc/cros_gralloc_helpers.cc",
+        "cros_gralloc/cros_gralloc_driver.cc",
+        "cros_gralloc/gralloc4/CrosGralloc4Utils.cc",
+        "gbm.c",
+        "gbm_helpers.c",
+    ],
+    shared_libs: [
+        "android.hardware.graphics.mapper@4.0",
+        "libgralloctypes",
+        "libhidlbase",
+        "libbase",
+        "libutils",
+    ],
+    export_include_dirs: ["."],
+    export_shared_lib_headers: [
+        "android.hardware.graphics.mapper@4.0",
+        "libgralloctypes",
+        "libhidlbase",
+        "libbase",
+        "libutils",
+    ],
+}
+
+cc_library_shared {
+    name: "gralloc.cros",
+    defaults: ["minigbm_common_defaults"],
+    cppflags: ["-std=c++17"],
+    cflags: ["-DHAS_NO_AIDL_METADATA"],
+    relative_install_path: "hw",
+    srcs: ["cros_gralloc/gralloc0/gralloc0.cc"],
+    shared_libs: ["libcros_gralloc"],
+}
+
+// fydroid-rt: gralloc4 — HIDL allocator@4.0 service + mapper@4.0 passthrough.
+// Replaces the gralloc0 + mapper@2.0 path so the device VINTF manifest can
+// declare graphics.mapper@4.0 (AOSP-13 FCM level 6 requires mapper >= 2.1) and
+// the compatibility_matrix.6 mapper relax can be dropped.
+//
+// The cros_gralloc driver + drv core live in the shared libcros_gralloc (built
+// WITHOUT -DHAS_NO_AIDL_METADATA, which the gralloc4 AIDL metadata path requires —
+// CrosGralloc4Mapper.cc static_asserts against the flag). These front-ends only
+// compile their own thin .cc and link libcros_gralloc, so the mapper (here) and
+// the gralloc0 HAL loaded by mesa share ONE driver instance per process.
+cc_defaults {
+    name: "minigbm_cros_gralloc4_frontend_defaults",
+    defaults: ["minigbm_common_defaults"],
+    cppflags: ["-std=c++17"],
+    // The upstream CrosGralloc4* sources have benign signed/unsigned comparisons.
+    cflags: ["-Wno-sign-compare"],
+    shared_libs: [
+        "libcros_gralloc",
+        "android.hardware.graphics.mapper@4.0",
+        "libgralloctypes",
+        "libhidlbase",
+        "libbase",
+        "libutils",
+    ],
+}
+
+cc_library_shared {
+    name: "android.hardware.graphics.mapper@4.0-impl.minigbm",
+    defaults: ["minigbm_cros_gralloc4_frontend_defaults"],
+    relative_install_path: "hw",
+    srcs: ["cros_gralloc/gralloc4/CrosGralloc4Mapper.cc"],
+    vintf_fragments: ["cros_gralloc/gralloc4/android.hardware.graphics.mapper@4.0.xml"],
+}
+
+cc_binary {
+    name: "android.hardware.graphics.allocator@4.0-service.minigbm",
+    defaults: ["minigbm_cros_gralloc4_frontend_defaults"],
+    relative_install_path: "hw",
+    srcs: [
+        "cros_gralloc/gralloc4/CrosGralloc4Allocator.cc",
+        "cros_gralloc/gralloc4/CrosGralloc4AllocatorService.cc",
+    ],
+    shared_libs: ["android.hardware.graphics.allocator@4.0"],
+    init_rc: ["cros_gralloc/gralloc4/android.hardware.graphics.allocator@4.0-service.minigbm.rc"],
+    vintf_fragments: ["cros_gralloc/gralloc4/android.hardware.graphics.allocator@4.0.xml"],
+}
+
+// fydroid-rt: libgbm — minigbm's own gbm API. AOSP-13 in-tree VM consumers
+// (crosvm/virglrenderer/rutabaga and the com.android.virt APEX) require it.
+// Defined apex-clean (lean libdrm+liblog deps, apex_available com.android.virt,
+// NO header_libs/static_libs that aren't apex-available) to match stock's libgbm.
+// The fydroid container never links/builds it (no product module depends on it);
+// it only needs to resolve apex-clean so the VM graph + com.android.virt validate.
+cc_library {
+    name: "libgbm",
+    host_supported: true,
+    defaults: ["minigbm_drivers_config"],
+    srcs: [
+        "drv.c",
+        "drv_array_helpers.c",
+        "drv_helpers.c",
+        "mediatek.c",
+        "virtgpu.c",
+        "virtgpu_cross_domain.c",
+        "virtgpu_virgl.c",
+        "dumb_driver.c",
+        "minigbm_helpers.c",
+        "dma_heap.c",
+        "backend_mock.c",
+        "gbm.c",
+        "gbm_helpers.c",
+    ],
+    cflags: [
+        "-D_GNU_SOURCE=1",
+        "-D_FILE_OFFSET_BITS=64",
+        "-Wno-unused-parameter",
+    ],
+    target: {
+        host: {
+            allow_undefined_symbols: true,
+            header_libs: ["libdrm_headers"],
+        },
+        android: {
+            shared_libs: [
+                "libdrm",
+                "liblog",
+            ],
+        },
+    },
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.virt",
+    ],
+    export_include_dirs: ["."],
+}

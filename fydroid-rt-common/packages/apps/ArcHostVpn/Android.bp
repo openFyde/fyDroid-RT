@@ -1,0 +1,36 @@
+android_app {
+    name: "ArcHostVpn",
+    srcs: [
+        "src/**/*.java",
+        ":ArcHostVpn-aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    platform_apis: true,
+    certificate: "platform",
+    jni_libs: ["libarchostvpn_jni"],
+}
+
+cc_library_shared {
+    name: "libarchostvpn_jni",
+    srcs: ["jni/archostvpn_jni.cpp"],
+    // jni.h is no longer on the default include path under 13 Soong; pull it in
+    // explicitly (the JNI header filegroup).
+    header_libs: ["jni_headers"],
+    shared_libs: [
+        "liblog",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}
+
+filegroup {
+    name: "ArcHostVpn-aidl",
+    srcs: [
+        "aidl/**/*.aidl",
+    ],
+    path: "aidl",
+}

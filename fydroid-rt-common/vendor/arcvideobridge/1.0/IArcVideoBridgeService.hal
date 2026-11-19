@@ -1,0 +1,6 @@
+package vendor.google_arc.arcvideobridge@1.0;
+
+interface IArcVideoBridgeService {
+    bootstrapVideoHost() generates (MojoBootstrapResult result);
+    hostVersion() generates (uint32_t version);
+};

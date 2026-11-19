@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    coreApp="true"
+    package="org.chromium.arc.view_downloads_handler">
+
+    <application
+        android:label="ArcViewDownloadsHandler"
+        android:hasCode="true">
+
+        <activity
+            android:name=".ArcViewDownloadsHandlerActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true">
+            <!--
+              DocumentsUI's ViewDownloadsActivity takes the same action; without a
+              higher priority Android asks the user every time. Priority counts
+              because this is a priv-app and VIEW_DOWNLOADS is not a protected action.
+            -->
+            <intent-filter android:priority="1">
+                <action android:name="android.intent.action.VIEW_DOWNLOADS"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

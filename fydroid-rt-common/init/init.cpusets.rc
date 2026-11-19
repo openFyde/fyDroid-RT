@@ -1,0 +1,21 @@
+# CPU affinity configuration for ARC++ container — big.LITTLE default.
+# Tuned for RK3588S (4x A55 little + 4x A76 big)
+# Android gets the little cores; Chrome OS keeps the big cores.
+#
+# This is the rt-common DEFAULT, not a universal one: the masks below only make
+# sense where the low-numbered CPUs are a genuinely separate, weaker cluster. On
+# a uniform SMP host they hand nothing back to Chrome OS and instead crowd every
+# background app, every restricted process and every restarted process onto
+# cpu0. Such a board overrides FYDROID_CPUSETS_RC with its own file before
+# inheriting fydroid_rt_common.mk — see fydroid-rt_amd64/init/init.cpusets.rc.
+
+on post-stune
+    write /dev/stune/foreground/cpu.uclamp.min 20
+    write /dev/stune/foreground/cpu.uclamp.latency_sensitive 1
+
+on property:sys.boot_completed=1
+    write /dev/cpuset/foreground/cpus 0-3
+    write /dev/cpuset/background/cpus 0
+    write /dev/cpuset/system-background/cpus 0-1
+    write /dev/cpuset/restricted/cpus 0
+    write /dev/cpuset/top-app/cpus 0-3

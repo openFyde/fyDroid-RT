@@ -1,0 +1,23 @@
+// FydeOS task-control AIDL, shared between arc-services (java) and the native
+// wayland composer in SurfaceFlinger (cpp). Cross-language so the C++ side gets a
+// generated BpArcTaskController with auto-correct transaction codes — replacing the
+// hardcoded IActivityTaskManager codes in WaylandTaskResizer that break across AOSP
+// versions.
+aidl_interface {
+    name: "fydroid_arc_task_aidl",
+    unstable: true,
+    srcs: ["aidl/io/fydeos/arc/wm/IArcTaskController.aidl"],
+    local_include_dir: "aidl",
+    backend: {
+        java: {
+            enabled: true,
+            platform_apis: true,
+        },
+        cpp: {
+            enabled: true,
+        },
+        ndk: {
+            enabled: false,
+        },
+    },
+}

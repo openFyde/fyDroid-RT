@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">การติดตั้งแพ็กเกจ</string>
+    <string name="notification_channel_description">ความคืบหน้าการติดตั้ง APK</string>
+    <string name="mode_user">[ผู้ใช้]</string>
+    <string name="mode_policy">[นโยบาย]</string>
+    <string name="installing">%1$s กำลังติดตั้ง: %2$s</string>
+    <string name="installed">%1$s ติดตั้งแล้ว: %2$s</string>
+    <string name="install_failed">%1$s ติดตั้งล้มเหลว: %2$s</string>
+</resources>

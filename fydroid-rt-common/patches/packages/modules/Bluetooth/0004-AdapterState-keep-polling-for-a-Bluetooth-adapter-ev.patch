@@ -1,0 +1,148 @@
+From 8ce3067999e3ce10130f49fa8b78917f39e5a1db Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 14 Sep 2026 14:59:37 +0800
+Subject: [PATCH 4/4] AdapterState: keep polling for a Bluetooth adapter every
+ 10s instead of tearing down BLE start
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Ibc56fa0f38fdf280f217a4a1a5b29b9f3e1cf5ed
+---
+ .../bluetooth/btservice/AdapterService.java   | 16 +++++++++
+ .../bluetooth/btservice/AdapterState.java     | 36 ++++++++++++++++++-
+ .../btservice/AdapterServiceTest.java         | 17 +++++++--
+ 3 files changed, 65 insertions(+), 4 deletions(-)
+
+diff --git a/android/app/src/com/android/bluetooth/btservice/AdapterService.java b/android/app/src/com/android/bluetooth/btservice/AdapterService.java
+index 7e36914f19..7cfca39e9b 100644
+--- a/android/app/src/com/android/bluetooth/btservice/AdapterService.java
++++ b/android/app/src/com/android/bluetooth/btservice/AdapterService.java
+@@ -671,6 +671,22 @@ public class AdapterService extends Service {
+         stopGattProfileService();
+     }
+ 
++    /**
++     * fydroid: called by {@link AdapterState} while BLE start polls for a Bluetooth adapter. Asks
++     * the native stack to enable again once GATT is running; until then GATT reaching STATE_ON
++     * calls enableNative() itself.
++     */
++    void retryBleStart() {
++        mHandler.post(() -> {
++            for (ProfileService profile : mRunningProfiles) {
++                if (GattService.class.getSimpleName().equals(profile.getName())) {
++                    enableNative();
++                    return;
++                }
++            }
++        });
++    }
++
+     void stateChangeCallback(int status) {
+         if (status == AbstractionLayer.BT_STATE_OFF) {
+             debugLog("stateChangeCallback: disableNative() completed");
+diff --git a/android/app/src/com/android/bluetooth/btservice/AdapterState.java b/android/app/src/com/android/bluetooth/btservice/AdapterState.java
+index adeec1bd82..821b3141f4 100644
+--- a/android/app/src/com/android/bluetooth/btservice/AdapterState.java
++++ b/android/app/src/com/android/bluetooth/btservice/AdapterState.java
+@@ -77,6 +77,13 @@ final class AdapterState extends StateMachine {
+             "ro.bluetooth.ble_stop_timeout_delay";
+ 
+     static final int BLE_START_TIMEOUT_DELAY = 4000;
++    /**
++     * fydroid: once BLE start has timed out, it keeps waiting and asks the native stack to enable
++     * again at this interval. The ARC bridge has no Bluetooth host until Chrome OS has an adapter,
++     * so tearing down would only make BluetoothManagerService restart this process until it gives
++     * up.
++     */
++    static final int BLE_START_RETRY_DELAY = 10000;
+     static final int BLE_STOP_TIMEOUT_DELAY = 4000;
+     static final int BREDR_START_TIMEOUT_DELAY = 4000;
+     static final int BREDR_STOP_TIMEOUT_DELAY = 4000;
+@@ -245,6 +252,9 @@ final class AdapterState extends StateMachine {
+ 
+     private class TurningBleOnState extends BaseAdapterState {
+ 
++        // True once BLE start has timed out and is polling for a Bluetooth adapter.
++        private boolean mWaitingForAdapter;
++
+         @Override
+         int getStateValue() {
+             return BluetoothAdapter.STATE_BLE_TURNING_ON;
+@@ -253,6 +263,7 @@ final class AdapterState extends StateMachine {
+         @Override
+         public void enter() {
+             super.enter();
++            mWaitingForAdapter = false;
+             final int timeoutDelay = SystemProperties.getInt(
+                     BLE_START_TIMEOUT_DELAY_PROPERTY, BLE_START_TIMEOUT_DELAY);
+             Log.d(TAG, "Start Timeout Delay: " + timeoutDelay);
+@@ -274,7 +285,30 @@ final class AdapterState extends StateMachine {
+                     break;
+ 
+                 case BLE_START_TIMEOUT:
+-                    errorLog(messageString(msg.what));
++                    if (!mWaitingForAdapter) {
++                        errorLog(messageString(msg.what) + ": no Bluetooth adapter yet, retrying"
++                                + " every " + BLE_START_RETRY_DELAY + "ms");
++                        mWaitingForAdapter = true;
++                    }
++                    mAdapterService.retryBleStart();
++                    sendMessageDelayed(BLE_START_TIMEOUT, BLE_START_RETRY_DELAY);
++                    break;
++
++                case BLE_STOPPED:
++                    if (!mWaitingForAdapter) {
++                        infoLog("Unhandled message - " + messageString(msg.what));
++                        return false;
++                    }
++                    // Chrome OS answered a retry with the adapter still off; keep polling.
++                    break;
++
++                case USER_TURN_OFF:
++                case BLE_TURN_OFF:
++                    if (!mWaitingForAdapter) {
++                        infoLog("Unhandled message - " + messageString(msg.what));
++                        return false;
++                    }
++                    // Turning Bluetooth off stops the polling.
+                     transitionTo(mTurningBleOffState);
+                     break;
+ 
+diff --git a/android/app/tests/unit/src/com/android/bluetooth/btservice/AdapterServiceTest.java b/android/app/tests/unit/src/com/android/bluetooth/btservice/AdapterServiceTest.java
+index c320b356a2..123b3ac6cc 100644
+--- a/android/app/tests/unit/src/com/android/bluetooth/btservice/AdapterServiceTest.java
++++ b/android/app/tests/unit/src/com/android/bluetooth/btservice/AdapterServiceTest.java
+@@ -500,7 +500,7 @@ public class AdapterServiceTest {
+ 
+     /**
+      * Test: Don't start GATT
+-     * Check whether the AdapterService quits gracefully
++     * Check that BLE start keeps waiting past the timeout, and quits gracefully when disabled
+      */
+     @Test
+     public void testGattStartTimeout() {
+@@ -515,9 +515,20 @@ public class AdapterServiceTest {
+         verify(mMockContext, timeout(GATT_START_TIME_MS).times(1)).startService(any());
+         mAdapterService.addProfile(mMockGattService);
+ 
++        // fydroid: the start timeout does not tear down; BLE start keeps polling.
++        try {
++            verify(mIBluetoothCallback,
++                    after(AdapterState.BLE_START_TIMEOUT_DELAY + CONTEXT_SWITCH_MS).never())
++                    .onBluetoothStateChange(BluetoothAdapter.STATE_BLE_TURNING_ON,
++                            BluetoothAdapter.STATE_BLE_TURNING_OFF);
++        } catch (Exception e) {
++            // the mocked onBluetoothStateChange doesn't throw exceptions
++        }
++        Assert.assertEquals(BluetoothAdapter.STATE_BLE_TURNING_ON, mAdapterService.getState());
++
++        mAdapterService.disable();
+         verifyStateChange(BluetoothAdapter.STATE_BLE_TURNING_ON,
+-                BluetoothAdapter.STATE_BLE_TURNING_OFF, 1,
+-                AdapterState.BLE_START_TIMEOUT_DELAY + CONTEXT_SWITCH_MS);
++                BluetoothAdapter.STATE_BLE_TURNING_OFF, 1, CONTEXT_SWITCH_MS);
+ 
+         // Stop GATT
+         verify(mMockContext, timeout(AdapterState.BLE_STOP_TIMEOUT_DELAY + CONTEXT_SWITCH_MS)
+-- 
+2.43.0
+

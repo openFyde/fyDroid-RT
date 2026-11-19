@@ -1,0 +1,278 @@
+# fydroid-rt init script (equivalent to ARC++ init.cheets.rc)
+# Imported automatically when ro.hardware=cheets
+
+import /vendor/etc/init/init.cpusets.rc
+import /vendor/etc/init/init.gpu.rc
+
+# ART heap budget for this host's memory tier. Chrome sizes the host and ships
+# the answer in as androidboot.arc_dalvik_memory_profile (4G / 8G / 16G, or
+# absent on a low-memory board); until this import existed nothing in AOSP read
+# it and every board ran one hardcoded profile. Selected by expansion at parse
+# time — the same idiom as AOSP's own init.${ro.zygote}.rc — rather than by an
+# `on property:` trigger, because property actions are queued after late-init
+# has already appended zygote-start to the queue, and ART reads dalvik.vm.* when
+# zygote starts. The ":-default" fallback matters: init treats an unset
+# property as an expansion error, not an empty string, so without it every
+# sub-3.5 GB board would fail this import line. The files sit in init/hw/
+# because init auto-parses every regular file in the init directories, so a
+# tier file anywhere else applies regardless of this import; hw/ is a
+# subdirectory, which ParseConfigDir skips.
+import /system/etc/init/hw/init.dalvik_heap.${ro.boot.arc_dalvik_memory_profile:-default}.rc
+
+on early-init
+    # Bind-mounts to use Chrome OS font files.
+    mount none /var/run/arc/fonts/notocjk/NotoSerifCJK-Regular.ttc /system/fonts/NotoSerifCJK-Regular.ttc bind
+    mount none /var/run/arc/fonts/notocjk/NotoSansCJK-Regular.ttc /system/fonts/NotoSansCJK-Regular.ttc bind
+    mount none /var/run/arc/fonts/noto/NotoColorEmoji.ttf /system/fonts/NotoColorEmoji.ttf bind
+
+on init
+    # Support legacy paths
+    symlink /sdcard /mnt/sdcard
+    symlink /sdcard /storage/sdcard0
+
+    setprop ro.hardware.gralloc cros
+    setprop ro.dalvik.vm.native.bridge ${ro.boot.native_bridge}
+    setprop ro.radio.noril yes
+    setprop ro.sf.lcd_density ${ro.boot.lcd_density}
+    setprop ro.hardware.sensors bertha
+
+    # Change networking sysctl knobs to match stock Android behavior
+    write /proc/sys/net/core/android_paranoid 1
+    write /proc/sys/net/ipv4/conf/default/rp_filter 0
+    write /proc/sys/net/ipv4/conf/all/rp_filter 0
+
+    # Add 1 to the default IPv4 TTL value of 64 such that IPv4
+    # traffic from ARC++ does not appear to have done one extra hop.
+    write /proc/sys/net/ipv4/ip_default_ttl 65
+
+    # Allow all mapped GIDs to use ping sockets.
+    write /proc/sys/net/ipv4/ping_group_range "0 1999999"
+
+    # Match the host's PMTU black-hole recovery. The ARC netns has its own
+    # copy of this sysctl, so Chrome OS setting it host-side does not carry
+    # over: without this we run with tcp_mtu_probing=0 while the host has 1.
+    write /proc/sys/net/ipv4/tcp_mtu_probing 1
+
+    # Create /dev/input for InputManager inotify
+    mkdir /dev/input 0755 root root
+    restorecon /dev/input
+
+    # /dev/ion is bind-mounted in from the CrOS host with its
+    # cros_system_file:s0 label. Relabel to ion_device:s0 (per AOSP
+    # system/sepolicy/private/file_contexts:103) so that mediacodec /
+    # mediaserver can open it for codec buffer allocation.
+    # Kept for boards whose kernel still builds the ION driver; a no-op
+    # warning elsewhere.
+    restorecon /dev/ion
+
+    # Same problem for the DMA-BUF heaps, which is where codec buffers come
+    # from on kernels built without ION: the nodes are mknod'd into the
+    # container's /dev tmpfs by run_oci, so they inherit cros_system_file:s0
+    # instead of the dmabuf_system_heap_device:s0 that plat_file_contexts
+    # asks for. Nothing in AOSP's policy grants access to cros_system_file,
+    # so under Enforcing every allocator domain (mediaswcodec, mediaserver,
+    # hal_graphics_allocator, system_server, appdomain via app.te) would be
+    # denied and every codec would fail to start with NO_MEMORY.
+    # Recursive so system-uncached / cma are covered wherever they exist.
+    restorecon_recursive /dev/dma_heap
+
+    # And for the GPU: run_oci creates /dev/dri/renderD* (and /dev/mali0 on
+    # Mali boards) from config.json, so they carry cros_system_file:s0, not
+    # the gpu_device:s0 plat_file_contexts gives them. Every GL/Vulkan client
+    # (surfaceflinger, hal_graphics_allocator, appdomain) is granted
+    # gpu_device only. /dev/mali0 is a no-op warning on boards without it.
+    restorecon_recursive /dev/dri
+    restorecon /dev/mali0
+
+    # Fallback to opengles version 3.0 if not defined in init.gpu.rc
+    setprop ro.opengles.version 196608
+
+    # Upstream Android does this in init's --first-stage which we don't use.
+    mkdir /mnt/vendor 0755 root root
+
+    # Enable camera HAL v3
+    setprop ro.hardware.camera bertha_v3
+    setprop camera.disable_zsl_mode 1
+
+    # Fix acct cgroup perms.
+    chmod 0555 /acct
+
+on fs
+    # We don't set ro.crypto.type. See ag/4611349 for more details.
+    setprop ro.crypto.state encrypted
+    trigger host_managed
+
+on post-fs
+    # Turn on swap
+    swapon_all /fstab.cheets
+
+on late-fs
+    start surfaceflinger
+    start vendor.configstore-hal
+    start vendor.gralloc-2-0
+
+on post-fs-data && property:ro.data_mounted=1
+    # The ARC++ container does not support bpf. Setting this property
+    # bypasses a failure that prevents startup.
+    setprop bpf.progs_loaded 1
+    trigger cheets-post-fs-data
+
+on cheets-post-fs-data
+    setprop vold.post_fs_data_done 1
+    mkdir /data/vendor/mediadrm 0700 media mediadrm
+    mkdir /data/misc/wltrace 0700 system system
+
+    # Pre-create default media directories with correct permissions (775).
+    # MediaProvider creates these with umask 0077 → 700, but esdfs/FUSE
+    # needs group-readable dirs. CrOS arc-setup does this; we replicate it.
+    mkdir /data/media/0 0770 media_rw media_rw
+    mkdir /data/media/0/Alarms 0775 media_rw media_rw
+    mkdir /data/media/0/Audiobooks 0775 media_rw media_rw
+    mkdir /data/media/0/DCIM 0775 media_rw media_rw
+    mkdir /data/media/0/Documents 0775 media_rw media_rw
+    mkdir /data/media/0/Download 0775 media_rw media_rw
+    mkdir /data/media/0/Movies 0775 media_rw media_rw
+    mkdir /data/media/0/Music 0775 media_rw media_rw
+    mkdir /data/media/0/Notifications 0775 media_rw media_rw
+    mkdir /data/media/0/Pictures 0775 media_rw media_rw
+    mkdir /data/media/0/Podcasts 0775 media_rw media_rw
+    mkdir /data/media/0/Ringtones 0775 media_rw media_rw
+    mkdir /data/media/0/Movies/.thumbnails 0775 media_rw media_rw
+    mkdir /data/media/0/Music/.thumbnails 0775 media_rw media_rw
+    mkdir /data/media/0/Pictures/.thumbnails 0775 media_rw media_rw
+
+    # Recreate RRO idmaps for framework overlays — idmap2d fails during
+    # first-stage boot when /data/resource-cache is not yet writable.
+    # Overlays targeting "android" are handled by native idmap2d (not OMS),
+    # so we must ensure their idmaps exist before OMS checks.
+    mkdir /data/resource-cache 0771 system system
+    exec - system system -- /system/bin/idmap2 scan --input-directory /system/product/overlay --recursive --output-directory /data/resource-cache --target-package-name android --target-apk-path /system/framework/framework-res.apk --override-policy product
+
+    # For surfaceflinger keychars
+    mkdir /data/system/devices 0700 system system
+    mkdir /data/system/devices/keychars 0700 system system
+
+on boot
+    # Disable traced/traced_probes — ftrace is not available in a container
+    # and traced_probes crashes with PERFETTO_CHECK(ClearFile) EPERM.
+    setprop persist.traced.enable 0
+
+    # Used by tast tests as an indication of the current android boot status.
+    setprop ro.vendor.arc.on_boot 1
+
+# Resuming ARC++ once the user logs in.
+on property:ro.data_mounted=1
+    umount /data/user/0
+
+    # Emulate the interaction between cryptfs.c and init.rc for FDE mode.
+    trigger load_persist_props_action
+    trigger post-fs-data
+
+    # Network devices are only set up after user session has started.
+    trigger wait_for_arc_devices
+
+    # Continue boot process.
+    trigger resume_boot
+
+on load_persist_props_action && property:persist.sys.usb.config=*
+    setprop sys.usb.config ${persist.sys.usb.config}
+
+# Mount /dev/stune for ARC on ChromeOS devices with kernel>=5.4
+on property:ro.schedtune=uclamp
+    mkdir /dev/stune
+    mount cgroup none /dev/stune nodev noexec nosuid cpu
+    mkdir /dev/stune/foreground
+    mkdir /dev/stune/background
+    mkdir /dev/stune/top-app
+    mkdir /dev/stune/rt
+    chown system system /dev/stune
+    chown system system /dev/stune/foreground
+    chown system system /dev/stune/background
+    chown system system /dev/stune/top-app
+    chown system system /dev/stune/rt
+    chown system system /dev/stune/tasks
+    chown system system /dev/stune/foreground/tasks
+    chown system system /dev/stune/background/tasks
+    chown system system /dev/stune/top-app/tasks
+    chown system system /dev/stune/rt/tasks
+
+    chmod 0664 /dev/stune/tasks
+    chmod 0664 /dev/stune/foreground/tasks
+    chmod 0664 /dev/stune/background/tasks
+    chmod 0664 /dev/stune/top-app/tasks
+    chmod 0664 /dev/stune/rt/tasks
+
+    write /dev/stune/top-app/cpu.uclamp.min 20
+    write /dev/stune/top-app/cpu.uclamp.latency_sensitive 1
+
+    # each platform can override the above settings in post-stune
+    trigger post-stune
+
+# Set ro.oem.brand in order to distinguish devices for PAI.
+on property:ro.product.board=*
+    setprop ro.oem.brand ${ro.product.board}
+
+on resume_boot
+    # Enable stage-2 services (disabled by fydroid-stage2-services.rc)
+    enable netd
+    enable cameraserver
+    enable media
+    enable wificond
+    enable fydroid-arcpower
+    enable vendor.camera-provider-2-4
+
+    setprop ro.data_ready 1
+
+    # Start zygote now that /data is available
+    start zygote
+    start zygote_secondary
+
+    class_start main
+    class_start late_start
+
+    start arcwlservice
+
+on wait_for_arc_devices
+    # Wait for the arc0 network interface.
+    wait /sys/class/net/arc0 5
+
+on property:ro.boot.host_is_in_vm=1
+    setprop ro.config.avoid_gfx_accel 1
+    start adbd
+
+on cheets-post-fs-data && property:ro.boot.enable_adb_sideloading=1
+    start adbd
+
+on property:ro.debuggable=1
+    # Give reads to anyone for the wayland trace folder on debug builds.
+    chmod 0775 /data/misc/wltrace
+    # Disable the Android console — Chrome OS has android-sh.
+    stop console
+
+on property:ro.boot.dev_mode=1
+    start arctraceservice
+
+on property:service.bootanim.exit=1
+    # Chromium doesn't run a bootanim service. Set the property directly.
+    setprop init.svc.bootanim stopped
+
+on property:sys.boot_completed=1
+    write /dev/cpuset/background/cpus 0
+    write /dev/cpuset/system-background/cpus 0
+    write /dev/cpuset/restricted/cpus 0
+
+# Disable ureadahead-related traced when generating ureadahead packs.
+on property:ro.boot.arc.host_ureadahead_mode=generate
+    setprop sys.traced.enable_override 0
+
+# --- Service definitions ---
+
+service arctraceservice /system/bin/arctraceservice
+    user oem_5008
+    group oem_5008
+    oneshot
+
+service arcwlservice /system/bin/arcwlservice
+    class main
+    user oem_5006
+    group oem_5006

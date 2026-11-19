@@ -1,0 +1,128 @@
+From ea42141180b2df40b08f9e1079416b1e21a0303a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 16 Apr 2026 17:02:11 +0800
+Subject: [PATCH 13/75] Add IsDialog and IsHome task metadata for ARC
+ composition filtering
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Pass two ARC-specific flags from WindowManager through SurfaceControl
+builder metadata to the HWC composer:
+
+- METADATA_IS_DIALOG (8): task's top activity uses a dialog/floating
+  theme (windowIsFloating=true). CompositionEngineArc uses this to
+  render such tasks as modal overlay windows.
+
+- METADATA_IS_HOME (9): task activity type is ACTIVITY_TYPE_HOME.
+  CompositionEngineArc uses this to suppress rendering the Android
+  home task — Chrome OS provides its own launcher. This also filters
+  any custom home/launcher apps users might install.
+
+Task.setTaskMetadata() sets each flag based on the top activity's
+theme and the task's activity type.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Icdb0e904942372ba04141417d88e4ca2872a9e79
+---
+ core/java/android/view/SurfaceControl.java    | 20 +++++++++++++
+ .../core/java/com/android/server/wm/Task.java | 30 +++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+
+diff --git a/core/java/android/view/SurfaceControl.java b/core/java/android/view/SurfaceControl.java
+index 7b9165cc54a5..260715058e47 100644
+--- a/core/java/android/view/SurfaceControl.java
++++ b/core/java/android/view/SurfaceControl.java
+@@ -792,6 +792,26 @@ public final class SurfaceControl implements Parcelable {
+      */
+     public static final int METADATA_IS_GAME = 10;
+ 
++    /**
++     * Whether the task's top activity uses a dialog / floating theme
++     * (windowIsFloating=true). The compositor renders such tasks as
++     * modal overlay windows on Chrome OS.
++     * fydroid-rt: renumbered above AOSP 13's keys (AOSP 11 used 8); must match
++     * METADATA_IS_DIALOG in frameworks/native LayerMetadata.h.
++     * @hide
++     */
++    public static final int METADATA_IS_DIALOG = 11;
++
++    /**
++     * Whether the task is the home/launcher (activity type HOME). The compositor
++     * uses this to suppress rendering the Android home task since Chrome OS provides
++     * its own launcher. Also filters any custom home/launcher apps users might install.
++     * fydroid-rt: renumbered above AOSP 13's keys (AOSP 11 used 9); must match
++     * METADATA_IS_HOME in frameworks/native LayerMetadata.h.
++     * @hide
++     */
++    public static final int METADATA_IS_HOME = 12;
++
+     /**
+      * A wrapper around HardwareBuffer that contains extra information about how to
+      * interpret the screenshot HardwareBuffer.
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index d9cf0fc969dd..256e59e4e51c 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -47,7 +47,9 @@ import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
+ import static android.provider.Settings.Secure.USER_SETUP_COMPLETE;
+ import static android.view.Display.DEFAULT_DISPLAY;
+ import static android.view.Display.INVALID_DISPLAY;
++import static android.view.SurfaceControl.METADATA_IS_DIALOG;
+ import static android.view.SurfaceControl.METADATA_IS_GAME;
++import static android.view.SurfaceControl.METADATA_IS_HOME;
+ import static android.view.SurfaceControl.METADATA_SESSION_ID;
+ import static android.view.SurfaceControl.METADATA_TASK_ID;
+ import static android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+@@ -197,6 +199,7 @@ import com.android.internal.util.XmlUtils;
+ import com.android.internal.util.function.pooled.PooledConsumer;
+ import com.android.internal.util.function.pooled.PooledLambda;
+ import com.android.internal.util.function.pooled.PooledPredicate;
++import com.android.server.AttributeCache;
+ import com.android.server.Watchdog;
+ import com.android.server.am.ActivityManagerService;
+ import com.android.server.am.AppTimeTracker;
+@@ -3053,6 +3056,27 @@ class Task extends TaskFragment {
+         }
+     }
+ 
++    /**
++     * Check if the top activity uses a dialog / floating theme
++     * (windowIsFloating=true in the theme). Such tasks are rendered
++     * as modal overlay windows on Chrome OS.
++     */
++    private boolean isDialogTask(ActivityRecord topActivity) {
++        if (topActivity == null || topActivity.info == null
++                || topActivity.info.applicationInfo == null) {
++            return false;
++        }
++        int theme = topActivity.info.getThemeResource();
++        if (theme == 0) return false;
++        String pkg = topActivity.info.applicationInfo.packageName;
++        AttributeCache.Entry ent = AttributeCache.instance().get(
++                pkg, theme, com.android.internal.R.styleable.Window,
++                topActivity.mUserId);
++        if (ent == null) return false;
++        return ent.array.getBoolean(
++                com.android.internal.R.styleable.Window_windowIsFloating, false);
++    }
++
+     private SurfaceControl.Builder setTaskMetadata(SurfaceControl.Builder b) {
+         b.setMetadata(METADATA_TASK_ID, mTaskId);
+         int sessionId = getWindowSessionId();
+@@ -3066,6 +3090,12 @@ class Task extends TaskFragment {
+                         == ApplicationInfo.CATEGORY_GAME) {
+             b.setMetadata(METADATA_IS_GAME, 1);
+         }
++        if (isDialogTask(topActivity)) {
++            b.setMetadata(METADATA_IS_DIALOG, 1);
++        }
++        if (getActivityType() == ACTIVITY_TYPE_HOME) {
++            b.setMetadata(METADATA_IS_HOME, 1);
++        }
+         return b;
+     }
+ 
+-- 
+2.43.0
+

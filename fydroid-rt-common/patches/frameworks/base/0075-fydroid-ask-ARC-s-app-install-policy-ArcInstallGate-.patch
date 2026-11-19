@@ -1,0 +1,131 @@
+From a08bc17bcbab299c4a04829797f1e7545dcd724b Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 5 Nov 2026 16:59:51 +0800
+Subject: [PATCH 75/75] fydroid: ask ARC's app-install policy (ArcInstallGate)
+ before installing, so a blocked app is refused instead of installed and
+ disabled
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: I8f7b9ae4b64cabb3c1caf3985bd4d326923e1afa
+---
+ .../com/android/server/pm/ArcInstallGate.java | 44 ++++++++++++++++++
+ .../server/pm/PackageInstallerSession.java    | 45 +++++++++++++++++++
+ 2 files changed, 89 insertions(+)
+ create mode 100644 services/core/java/com/android/server/pm/ArcInstallGate.java
+
+diff --git a/services/core/java/com/android/server/pm/ArcInstallGate.java b/services/core/java/com/android/server/pm/ArcInstallGate.java
+new file mode 100644
+index 000000000000..aefb0e175826
+--- /dev/null
++++ b/services/core/java/com/android/server/pm/ArcInstallGate.java
+@@ -0,0 +1,44 @@
++/*
++ * Copyright (C) 2026 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.server.pm;
++
++import android.annotation.Nullable;
++
++/**
++ * fydroid: install-time app policy for ARC, registered in {@link com.android.server.LocalServices}
++ * by arc-services' {@code ArcPolicyService}, which holds the enterprise ArcPolicy pushed by
++ * Chrome OS. PackageInstallerSession asks it before verifying a non-staged install, so an app
++ * the policy blocks is refused before it is installed, Google Play installs included.
++ *
++ * <p>The package manager keeps the exemptions that need its own state: APEX sessions and
++ * packages already installed as system apps (their updates) are never checked. Everything about
++ * the policy itself, including which installer is trusted, belongs to the implementation. With no
++ * implementation registered every install is allowed.
++ *
++ * <p>Calls arrive on the package manager's handler thread with no package-manager lock held;
++ * implementations must answer from memory, without binder calls or I/O.
++ */
++public interface ArcInstallGate {
++    /**
++     * @param packageName the package being installed
++     * @param installerPackageName the session's installer, or null (e.g. adb)
++     * @return null to allow the install, or a human-readable reason to reject it with
++     *     {@code INSTALL_FAILED_USER_RESTRICTED}
++     */
++    @Nullable
++    String checkInstall(String packageName, @Nullable String installerPackageName);
++}
+diff --git a/services/core/java/com/android/server/pm/PackageInstallerSession.java b/services/core/java/com/android/server/pm/PackageInstallerSession.java
+index 1823de8fcf66..636ba27e8b3d 100644
+--- a/services/core/java/com/android/server/pm/PackageInstallerSession.java
++++ b/services/core/java/com/android/server/pm/PackageInstallerSession.java
+@@ -2317,6 +2317,7 @@ public class PackageInstallerSession extends IPackageInstallerSession.Stub {
+ 
+     private void verifyNonStaged()
+             throws PackageManagerException {
++        checkArcInstallGate();
+         synchronized (mLock) {
+             markStageDirInUseLocked();
+         }
+@@ -2335,6 +2336,50 @@ public class PackageInstallerSession extends IPackageInstallerSession.Stub {
+         });
+     }
+ 
++    /**
++     * fydroid: ask ARC's app-install policy ({@link ArcInstallGate}, implemented by arc-services'
++     * ArcPolicyService) whether this session may install its package(s), and refuse the whole
++     * session with INSTALL_FAILED_USER_RESTRICTED if not. Runs once the APKs are parsed, so the
++     * package name is known, and before any verifier is involved — Google Play's installs are
++     * refused here instead of being installed and disabled afterwards.
++     *
++     * The package-manager side of the exemptions lives here: APEX sessions, and packages already
++     * installed as system apps (an update to a pre-installed app), are never checked.
++     */
++    private void checkArcInstallGate() throws PackageManagerException {
++        final ArcInstallGate gate = LocalServices.getService(ArcInstallGate.class);
++        if (gate == null) {
++            return;
++        }
++        if (isMultiPackage()) {
++            for (PackageInstallerSession child : getChildSessions()) {
++                child.checkArcInstallGate(gate);
++            }
++        } else {
++            checkArcInstallGate(gate);
++        }
++    }
++
++    private void checkArcInstallGate(ArcInstallGate gate) throws PackageManagerException {
++        final String packageName = mPackageName;
++        if (packageName == null || isApexSession()) {
++            return;
++        }
++        final PackageStateInternal existing =
++                mPm.snapshotComputer().getPackageStateInternal(packageName);
++        if (existing != null && existing.isSystem()) {
++            return;
++        }
++        final String reason =
++                gate.checkInstall(packageName, getInstallSource().installerPackageName);
++        if (reason != null) {
++            Slog.i(TAG, "ARC install policy refused " + packageName + " (session " + sessionId
++                    + ", installer " + getInstallSource().installerPackageName + "): " + reason);
++            throw new PackageManagerException(PackageManager.INSTALL_FAILED_USER_RESTRICTED,
++                    reason);
++        }
++    }
++
+     private static class InstallResult {
+         public final PackageInstallerSession session;
+         public final Bundle extras;
+-- 
+2.43.0
+

@@ -1,0 +1,25 @@
+diff --git a/src/nouveau/vulkan/nvk_image.c b/src/nouveau/vulkan/nvk_image.c
+index e5267ef20ce..4f535c977ae 100644
+--- a/src/nouveau/vulkan/nvk_image.c
++++ b/src/nouveau/vulkan/nvk_image.c
+@@ -957,7 +957,20 @@ nvk_image_init(struct nvk_device *dev,
+                                            mod_list_info->pDrmFormatModifiers);
+          assert(image->vk.drm_format_mod != DRM_FORMAT_MOD_INVALID);
+       }
++   }
+ 
++   /* A LINEAR image is rendered through a tiled shadow whenever the pass
++    * cannot target it directly (a depth/stencil attachment, or a stride or
++    * address that is not 128B-aligned; see nvk_rendering_linear). fydroid:
++    * Android native buffers are LINEAR too -- vk_android_get_anb_layout()
++    * above set the modifier -- but the loader creates swapchain images with
++    * VK_IMAGE_TILING_OPTIMAL, so keying this on DRM-modifier tiling left
++    * their shadow layout empty. The first such pass (vkcube: swapchain color
++    * + depth) then failed to allocate a zero-sized shadow and the command
++    * buffer reported the error from vkEndCommandBuffer.
++    */
++   if (image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT ||
++       vk_image_is_android_native_buffer(&image->vk)) {
+       if (image->vk.drm_format_mod == DRM_FORMAT_MOD_LINEAR) {
+          for (uint8_t plane = 0; plane < image->plane_count; plane++) {
+             VkFormat format = ycbcr_info ?

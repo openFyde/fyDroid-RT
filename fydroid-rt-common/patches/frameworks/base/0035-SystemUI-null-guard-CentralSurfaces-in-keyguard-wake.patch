@@ -1,0 +1,63 @@
+From fa1832eb2160136199c5df8b9aebc6a3fddf41aa Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 13:41:10 +0800
+Subject: [PATCH 35/75] SystemUI: null-guard CentralSurfaces in keyguard
+ wake/sleep callbacks (ARC)
+
+ArcSystemUI provides a null StatusBar/CentralSurfaces (Chrome OS owns the status
+bar and shade) and never calls registerCentralSurfaces(), so
+StatusBarKeyguardViewManager.mCentralSurfaces (which is @Nullable) stays null.
+The wake/sleep callbacks onStartedWakingUp()/onStartedGoingToSleep(), fired by
+KeyguardViewMediator on screen on/off, dereference it unconditionally
+(mCentralSurfaces.getNotificationShadeWindowView()) and NPE -> com.android.systemui
+crash-loop, blocking boot.
+
+Guard the null deref in both callbacks. The aosp11 ArcStatusBarKeyguardViewManager
+subclass no-op'd these (and ~40 other CentralSurfaces-touching methods); the
+AOSP-13 ArcSystemUI rewrite binds the stock StatusBarKeyguardViewManager directly,
+so the guard lives here (matching the existing targeted-null-guard approach in
+commit 3e550cdff5b1 "Fix NPEs in two-stage boot").
+
+Verified on device: the onStartedWakingUp NPE is gone (0 occurrences),
+com.android.systemui stays up.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ifbe0d65030731e89194cf3f145fa63234ce916ff
+---
+ .../phone/StatusBarKeyguardViewManager.java         | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarKeyguardViewManager.java b/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarKeyguardViewManager.java
+index 71e2e405d071..5afd8c5105a8 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarKeyguardViewManager.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarKeyguardViewManager.java
+@@ -768,6 +768,15 @@ public class StatusBarKeyguardViewManager implements RemoteInputController.Callb
+ 
+     @Override
+     public void onStartedWakingUp() {
++        // fydroid/ARC: CentralSurfaces (the phone status bar) is never registered
++        // — Chrome OS owns the status bar/shade, so ArcSystemUI provides a null
++        // StatusBar and registerCentralSurfaces() is never called. The wake/sleep
++        // callbacks still fire from KeyguardViewMediator, so guard the null deref
++        // (otherwise mCentralSurfaces.getNotificationShadeWindowView() NPEs and
++        // crash-loops SystemUI).
++        if (mCentralSurfaces == null) {
++            return;
++        }
+         mCentralSurfaces.getNotificationShadeWindowView().getWindowInsetsController()
+                 .setAnimationsDisabled(false);
+         NavigationBarView navBarView = mCentralSurfaces.getNavigationBarView();
+@@ -782,6 +791,10 @@ public class StatusBarKeyguardViewManager implements RemoteInputController.Callb
+ 
+     @Override
+     public void onStartedGoingToSleep() {
++        // fydroid/ARC: see onStartedWakingUp() — null CentralSurfaces in ArcSystemUI.
++        if (mCentralSurfaces == null) {
++            return;
++        }
+         mCentralSurfaces.getNotificationShadeWindowView().getWindowInsetsController()
+                 .setAnimationsDisabled(true);
+         NavigationBarView navBarView = mCentralSurfaces.getNavigationBarView();
+-- 
+2.43.0
+

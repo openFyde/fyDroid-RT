@@ -1,0 +1,61 @@
+--- a/src/panfrost/vulkan/panvk_device_memory.c
++++ b/src/panfrost/vulkan/panvk_device_memory.c
+@@ -588,8 +588,17 @@
+       if (!can_do_host_coherent && (phys_dev->memory.types[i].propertyFlags &
+                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+          continue;
+-      if (!can_do_host_cached && (phys_dev->memory.types[i].propertyFlags &
+-                                  VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
++      /* fydroid: on kernels without WB_MMAP the coherent type is also marked
++       * HOST_CACHED (see panvk_physical_device.c) but stays write-combined,
++       * so an imported BO may still use it. */
++      const VkMemoryPropertyFlags cached_coherent =
++         VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++      const bool nominally_cached =
++         !phys_dev->kmod.dev->props.is_io_coherent &&
++         (phys_dev->memory.types[i].propertyFlags & cached_coherent) == cached_coherent;
++      if (!can_do_host_cached && !nominally_cached &&
++          (phys_dev->memory.types[i].propertyFlags &
++           VK_MEMORY_PROPERTY_HOST_CACHED_BIT))
+          continue;
+ 
+       pMemoryFdProperties->memoryTypeBits |= BITFIELD_BIT(i);
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -237,6 +237,15 @@
+    return result;
+ }
+ 
++/* fydroid: whether HOST_CACHED memory can be backed by a write-back CPU
++ * mapping (panthor >= 1.7). The same condition gates the cached-only type. */
++static bool
++panvk_wb_mmap_supported(const struct panvk_physical_device *device)
++{
++   return !PANVK_DEBUG(NO_WB_MMAP) &&
++          (device->kmod.dev->props.supported_bo_flags & PAN_KMOD_BO_FLAG_WB_MMAP);
++}
++
+ static VkResult
+ get_device_heaps(struct panvk_physical_device *device,
+                  struct panvk_instance *instance)
+@@ -287,8 +296,18 @@
+       .heapIndex = 0,
+    };
+ 
+-   if (!PANVK_DEBUG(NO_WB_MMAP) &&
+-       (device->kmod.dev->props.supported_bo_flags & PAN_KMOD_BO_FLAG_WB_MMAP)) {
++   /* fydroid: kernels older than panthor 1.7 have no WB_MMAP, so no type
++    * below is HOST_CACHED, and apps that require HOST_VISIBLE|HOST_CACHED (a
++    * readback buffer) find no type at all. 3DMark's allocator spins forever on
++    * that. Mark the coherent write-combined type HOST_CACHED as well: HOST_CACHED
++    * is a performance hint, HOST_COHERENT still holds, so no flush is ever
++    * needed; CPU reads are just uncached. See panvk_wb_mmap_supported().
++    */
++   if (!device->kmod.dev->props.is_io_coherent && !panvk_wb_mmap_supported(device))
++      device->memory.types[host_coherent_not_cached_idx].propertyFlags |=
++         VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++
++   if (panvk_wb_mmap_supported(device)) {
+       assert(device->memory.type_count < ARRAY_SIZE(device->memory.types));
+       host_cached_not_coherent_idx = device->memory.type_count;
+       device->memory.types[device->memory.type_count++] = (VkMemoryType) {

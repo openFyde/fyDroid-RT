@@ -1,0 +1,76 @@
+From 832a2b852e6abc2ad8120c505b5499d31c606106 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 17 Jun 2026 12:12:04 +0800
+Subject: [PATCH 40/75] wm: split an in-activity alert dialog into its own
+ modal window (ARC)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A TYPE_APPLICATION dialog window with FLAG_DIM_BEHIND (an AlertDialog) added on
+top of a non-dialog activity — e.g. the "won't be allowed" alert over the
+full-screen PermissionController page — shares the activity's task. Its layer
+inherits the host TaskId, so the ARC compositor unions its centered bounds into
+the host footprint and grows the host window.
+
+Classify such a dialog window and stamp METADATA_IS_FLOATING_ACTIVITY on its own
+surface (WindowState.setInitialSurfaceControlProperties). The compositor strips
+its TaskId and routes the subtree to its own centered modal window
+(SurfaceFlinger Layer::addChild / WaylandHwc2Composer), leaving the host at its
+natural size. Gated to opaque host tasks (!task.isTranslucent) so a translucent
+dialog task (e.g. PackageInstaller's concentric windows) is not fragmented per
+window — that case is composited as one centered modal via IsDialogTask.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: If28308f77fecebff7e719d22f9c8ce097076b1cf
+---
+ .../com/android/server/wm/WindowState.java    | 33 +++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/WindowState.java b/services/core/java/com/android/server/wm/WindowState.java
+index 24619ca6a874..ff5112ee0bce 100644
+--- a/services/core/java/com/android/server/wm/WindowState.java
++++ b/services/core/java/com/android/server/wm/WindowState.java
+@@ -5960,6 +5960,39 @@ class WindowState extends WindowContainer<WindowState> implements WindowManagerP
+         mViewVisibility = viewVisibility;
+     }
+ 
++    /**
++     * An AlertDialog-style window: a TYPE_APPLICATION window (i.e. NOT the
++     * activity's TYPE_BASE_APPLICATION main window) that dims behind itself,
++     * shown on top of an opaque (non-translucent) host task — e.g. the
++     * "won't be allowed" alert over the full-screen PermissionController page.
++     * Such a dialog window otherwise inherits the host TaskId and the compositor
++     * unions its centered bounds into the host footprint, auto-expanding the
++     * host window. We classify it as a dialog and split it into its own centered
++     * modal: reuse METADATA_IS_FLOATING_ACTIVITY, which the compositor strips the
++     * TaskId from and routes to a standalone modal window (SurfaceFlinger
++     * Layer::addChild / WaylandHwc2Composer).
++     *
++     * Excludes translucent dialog *tasks* (e.g. PackageInstaller's concentric
++     * windows) — those are composited as ONE centered modal via IsDialogTask and
++     * must not be fragmented into a modal per window.
++     */
++    private boolean isFloatingDialogWindow() {
++        if (mAttrs.type != TYPE_APPLICATION
++                || (mAttrs.flags & FLAG_DIM_BEHIND) == 0) {
++            return false;
++        }
++        final Task task = getTask();
++        return task != null && !task.isTranslucent(null /* starting */);
++    }
++
++    @Override
++    void setInitialSurfaceControlProperties(SurfaceControl.Builder b) {
++        if (isFloatingDialogWindow()) {
++            b.setMetadata(SurfaceControl.METADATA_IS_FLOATING_ACTIVITY, 1);
++        }
++        super.setInitialSurfaceControlProperties(b);
++    }
++
+     SurfaceControl getClientViewRootSurface() {
+         return mWinAnimator.getSurfaceControl();
+     }
+-- 
+2.43.0
+

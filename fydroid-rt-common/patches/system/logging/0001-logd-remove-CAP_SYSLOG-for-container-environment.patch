@@ -1,0 +1,33 @@
+From 7abf369bad816d8528e3d0b5bfae1833107c3a54 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 17:06:41 +0800
+Subject: [PATCH] logd: remove CAP_SYSLOG for container environment
+
+CAP_SYSLOG is unavailable in the ARC++ container; drop it from logd's
+capabilities (keep AUDIT_CONTROL, add SETGID). AOSP-13 note: logd moved
+from system/core/logd to system/logging/logd, so this lands here instead
+of system/core.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ia25a3d59ffbda7a54a996b79b7b2e97b93eaaf6f
+---
+ logd/logd.rc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/logd/logd.rc b/logd/logd.rc
+index 69bfb73f..1ba626f6 100644
+--- a/logd/logd.rc
++++ b/logd/logd.rc
+@@ -6,7 +6,8 @@ service logd /system/bin/logd
+     file /dev/kmsg w
+     user logd
+     group logd system package_info readproc
+-    capabilities SYSLOG AUDIT_CONTROL
++    # fydroid-rt: CAP_SYSLOG unavailable in ARC++ container.
++    capabilities AUDIT_CONTROL SETGID
+     priority 10
+     task_profiles ServiceCapacityLow
+     onrestart setprop logd.ready false
+-- 
+2.43.0
+

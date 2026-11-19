@@ -1,0 +1,87 @@
+From 89965ea7d0aaac0d894f3a6326af9744f7a86f4e Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 10 Aug 2026 19:00:49 +0800
+Subject: [PATCH 52/75] wm: don't draw Android's freeform decor for ARC windows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Chrome draws the caption for every ARC window and owns resizing it, so
+Shell's freeform decor is not a second opinion — it is interference, and
+invisible interference, because the caption window is NOT_VISIBLE while
+still owning input.
+
+It bites in tablet mode, where the window fills the work area and the
+decor's strips land on furniture the user needs. Measured on device with a
+2560x1520 window, in physical panel coords on the ROT_90 display:
+
+  Embedded{Caption of Task=82}     frame=[1524,0][1600,2560]
+      -> logical y 0..76, exactly where ash starts the multitask menu drag
+  Embedded{DragResizeInputListener of ...}  one rect [26,40][80,2522]
+      -> logical y 1520..1574, over the shelf
+
+Both windows exist only for WINDOWING_MODE_FREEFORM tasks, so they
+appeared in tablet mode when the tablet steady state moved to FREEFORM
+(device/fydeos 08c179f, which is there to stop Android animating a
+layout-mode change). In clamshell the window is inset, so the same
+strips sat harmlessly in open screen and nobody noticed them.
+
+shouldShowWindowDecor() gates only decoration lifecycle — onTaskOpening
+and onTaskChanging — so returning false creates nothing and tears down
+anything that predates the flag. Nothing in device/fydeos references the
+decor. persist.fydroid.window_decor=1 restores stock behaviour.
+
+Verified on device by A/B: with the property set, Caption container of
+Task=N and DragResizeInputListener appear in the layer tree and claim 4
+input windows; with it clear, zero. Flips live, no SystemUI restart.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Id3cfda1cec2d60e50f4076c83bf0845cb7d38bda
+---
+ .../CaptionWindowDecorViewModel.java          | 23 +++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/CaptionWindowDecorViewModel.java b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/CaptionWindowDecorViewModel.java
+index 6b7ca421f5ed..fd128dcfe493 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/CaptionWindowDecorViewModel.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/windowdecor/CaptionWindowDecorViewModel.java
+@@ -23,6 +23,7 @@ import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+ import android.app.ActivityManager.RunningTaskInfo;
+ import android.content.Context;
+ import android.os.Handler;
++import android.os.SystemProperties;
+ import android.util.SparseArray;
+ import android.view.Choreographer;
+ import android.view.MotionEvent;
+@@ -145,6 +146,28 @@ public class CaptionWindowDecorViewModel implements WindowDecorViewModel {
+     }
+ 
+     private boolean shouldShowWindowDecor(RunningTaskInfo taskInfo) {
++        // fydroid-rt: never. Chrome draws the caption for every ARC window and
++        // owns resizing it, so Android's freeform decor is not a second opinion
++        // — it is interference, and it is invisible interference because the
++        // caption window is NOT_VISIBLE while still owning input.
++        //
++        // It bites hardest in tablet mode, where the window fills the work
++        // area, so the decor's edge strips land on furniture the user needs:
++        // measured on device with a 2560x1520 window, the DragResizeInputListener
++        // claimed UI y 1519-1573 (the shelf) and the caption window claimed UI
++        // y 0-75 — exactly where ash starts the multitask menu drag. In
++        // clamshell the window is inset, so the same strips sit harmlessly in
++        // open screen and nobody noticed them.
++        //
++        // Both windows exist only for WINDOWING_MODE_FREEFORM tasks, so they
++        // appeared in tablet mode when the tablet steady state moved to
++        // FREEFORM (device/fydeos 08c179f, which is there to stop Android
++        // animating a layout-mode change).
++        //
++        // persist.fydroid.window_decor=1 restores the stock behaviour.
++        if (!SystemProperties.getBoolean("persist.fydroid.window_decor", false)) {
++            return false;
++        }
+         return taskInfo.getWindowingMode() == WINDOWING_MODE_FREEFORM
+                 || (taskInfo.getActivityType() == ACTIVITY_TYPE_STANDARD
+                 && taskInfo.configuration.windowConfiguration.getDisplayWindowingMode()
+-- 
+2.43.0
+

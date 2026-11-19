@@ -1,0 +1,36 @@
+cc_binary {
+    name: "fydroid_arcwlservice",
+    stem: "arcwlservice",
+
+    srcs: [
+        "main.cpp",
+        "ArcWakeLockMojoService.cpp",
+        "ArcWakeLockServiceImpl.cpp",
+        "com/android/server/arc/power/IArcWakeLockService.aidl",
+    ],
+
+    aidl: {
+        include_dirs: ["frameworks/native/aidl/binder"],
+    },
+
+    shared_libs: [
+        "libarcbridge",
+        "libarcbridgeservice",
+        "libbase",
+        "libbinder",
+        "libchrome",
+        "liblog",
+        "libmojo",
+        "libutils",
+    ],
+
+    // init.cheets.rc already defines the "arcwlservice" service.
+    // Do NOT install an init_rc here — duplicate service definitions
+    // cause init to silently ignore the service.
+
+    // Install to /system/bin (not /vendor/bin)
+    vendor: false,
+
+    // Required for Binder IPC thread pool
+    static_libs: [],
+}

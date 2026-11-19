@@ -1,0 +1,4118 @@
+From 854f3cf53fc0938733def6748d8b7adb79ce5990 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 14 Apr 2026 16:28:15 +0800
+Subject: [PATCH 1/6] Add ARC DocumentsUI classes for fydroid-rt
+
+Add 23 org.chromium.arc.* classes that bridge Android's DocumentsUI
+with Chrome OS's file system via Mojo IPC:
+
+- FileSystemInstance/Host Mojo bridge (FileSystemInstanceImpl,
+  FileSystemHostHolder, ArcFileSystemService)
+- DocumentsProvider integration (DocumentsProviderHandler,
+  DocumentsProviderRoots) for root enumeration and document operations
+- Chrome content providers (ChromeContentProvider, ArcVolumeProvider,
+  ArcFileProvider) for Chrome OS file access from Android
+- File picker activities (ArcSelectFilesActivity,
+  ArcSelectFilesEventHandlerActivity) for Chrome-integrated file selection
+- Intent launching with display/window awareness (IntentLauncher,
+  DisplayIdTranslator, OpenUrlsHandler)
+- MediaStore monitoring (MediaStoreDelegate, MediaStoreObserver)
+- Display configuration (ArcDisplay, ArcDisplayLayout)
+- URI conversion utilities (ArcContentUriUtils)
+- Wayland service binder interface (IWaylandService)
+
+Also adds Mojo library dependencies (org.chromium.arc.mojom,
+org.chromium.arc.bridge, android.mojo, org.chromium.arc) and switches
+to platform_apis for hidden API access.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I73a93a701ba1a4305f6837d15decb5939472ed54
+---
+ Android.bp                                    |  18 +-
+ AndroidManifest.xml                           |  84 +++
+ .../IArcDataDeviceProviderService.aidl        |  24 +
+ .../arc/data_device/IImageDropListener.aidl   |  10 +
+ ...rc_select_files_event_handler_activity.xml |  24 +
+ res/xml/file_paths.xml                        |   5 +
+ .../arc/applauncher/AppShortcutItemInfo.java  |  61 +++
+ .../arc/applauncher/ChromeWindowState.java    |  36 ++
+ .../arc/applauncher/IntentLauncher.java       |  66 +++
+ .../applauncher/util/DisplayIdTranslator.java |  89 ++++
+ src/org/chromium/arc/display/ArcDisplay.java  | 123 +++++
+ .../arc/display/ArcDisplayLayout.java         |  63 +++
+ .../arc/file_system/ArcContentUriUtils.java   | 194 +++++++
+ .../arc/file_system/ArcFileProvider.java      |  38 ++
+ .../arc/file_system/ArcFileSystemService.java |  60 +++
+ .../file_system/ArcSelectFilesActivity.java   | 282 ++++++++++
+ .../ArcSelectFilesEventHandlerActivity.java   | 168 ++++++
+ .../arc/file_system/ArcVolumeProvider.java    | 181 +++++++
+ .../file_system/ChromeContentProvider.java    | 309 +++++++++++
+ .../file_system/ContentProviderHandler.java   |  78 +++
+ .../file_system/DocumentsProviderHandler.java | 472 +++++++++++++++++
+ .../file_system/DocumentsProviderRoots.java   | 443 ++++++++++++++++
+ .../arc/file_system/FileSystemHostHolder.java |  71 +++
+ .../file_system/FileSystemInstanceImpl.java   | 483 ++++++++++++++++++
+ .../arc/file_system/MediaStoreDelegate.java   |  97 ++++
+ .../arc/file_system/MediaStoreObserver.java   |  72 +++
+ .../arc/file_system/MojoAsyncTask.java        |  28 +
+ .../arc/file_system/OpenUrlsHandler.java      | 164 ++++++
+ .../chromium/arc/wayland/IWaylandService.java |  64 +++
+ 29 files changed, 3805 insertions(+), 2 deletions(-)
+ create mode 100644 aidl/com/android/server/arc/data_device/IArcDataDeviceProviderService.aidl
+ create mode 100644 aidl/com/android/server/arc/data_device/IImageDropListener.aidl
+ create mode 100644 res/layout/arc_select_files_event_handler_activity.xml
+ create mode 100644 res/xml/file_paths.xml
+ create mode 100644 src/org/chromium/arc/applauncher/AppShortcutItemInfo.java
+ create mode 100644 src/org/chromium/arc/applauncher/ChromeWindowState.java
+ create mode 100644 src/org/chromium/arc/applauncher/IntentLauncher.java
+ create mode 100644 src/org/chromium/arc/applauncher/util/DisplayIdTranslator.java
+ create mode 100644 src/org/chromium/arc/display/ArcDisplay.java
+ create mode 100644 src/org/chromium/arc/display/ArcDisplayLayout.java
+ create mode 100644 src/org/chromium/arc/file_system/ArcContentUriUtils.java
+ create mode 100644 src/org/chromium/arc/file_system/ArcFileProvider.java
+ create mode 100644 src/org/chromium/arc/file_system/ArcFileSystemService.java
+ create mode 100644 src/org/chromium/arc/file_system/ArcSelectFilesActivity.java
+ create mode 100644 src/org/chromium/arc/file_system/ArcSelectFilesEventHandlerActivity.java
+ create mode 100644 src/org/chromium/arc/file_system/ArcVolumeProvider.java
+ create mode 100644 src/org/chromium/arc/file_system/ChromeContentProvider.java
+ create mode 100644 src/org/chromium/arc/file_system/ContentProviderHandler.java
+ create mode 100644 src/org/chromium/arc/file_system/DocumentsProviderHandler.java
+ create mode 100644 src/org/chromium/arc/file_system/DocumentsProviderRoots.java
+ create mode 100644 src/org/chromium/arc/file_system/FileSystemHostHolder.java
+ create mode 100644 src/org/chromium/arc/file_system/FileSystemInstanceImpl.java
+ create mode 100644 src/org/chromium/arc/file_system/MediaStoreDelegate.java
+ create mode 100644 src/org/chromium/arc/file_system/MediaStoreObserver.java
+ create mode 100644 src/org/chromium/arc/file_system/MojoAsyncTask.java
+ create mode 100644 src/org/chromium/arc/file_system/OpenUrlsHandler.java
+ create mode 100644 src/org/chromium/arc/wayland/IWaylandService.java
+
+diff --git a/Android.bp b/Android.bp
+index 6cda44131..94d55957e 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -46,6 +46,10 @@ java_defaults {
+ 
+     libs: [
+         "app-compat-annotations",
++        "org.chromium.arc.mojom",
++        "org.chromium.arc.bridge",
++        "android.mojo",
++        "org.chromium.arc",
+     ],
+ 
+     privileged: true,
+@@ -56,8 +60,7 @@ java_defaults {
+         proguard_flags_files: ["proguard.flags"],
+     },
+ 
+-    sdk_version: "system_current",
+-    target_sdk_version: "30",
++    platform_apis: true,
+     min_sdk_version: "29",
+ 
+     plugins: [
+@@ -79,6 +82,12 @@ filegroup {
+     ],
+ }
+ 
++filegroup {
++    name: "DocumentsUI-aidl",
++    srcs: ["aidl/**/*.aidl"],
++    path: "aidl",
++}
++
+ java_library {
+     name: "docsui-statsd",
+     srcs: [
+@@ -158,8 +167,13 @@ android_app {
+ 
+     srcs: [
+         ":DocumentsUI-srcs",
++        ":DocumentsUI-aidl",
+     ],
+ 
++    aidl: {
++        local_include_dirs: ["aidl"],
++    },
++
+     resource_dirs: [
+         "res",
+     ],
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index e15805e28..e84e468e2 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -22,6 +22,8 @@
+     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="30"/>
+ 
+     <uses-permission android:name="android.permission.MANAGE_DOCUMENTS" />
++    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
++    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+     <uses-permission android:name="android.permission.REMOVE_TASKS" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+@@ -49,6 +51,11 @@
+         android:fullBackupOnly="false"
+         android:crossProfile="true">
+ 
++        <uses-library android:name="org.chromium.arc.mojom" />
++        <uses-library android:name="org.chromium.arc.bridge" />
++        <uses-library android:name="android.mojo" />
++        <uses-library android:name="org.chromium.arc" />
++
+         <meta-data
+             android:name="com.google.android.backup.api_key"
+             android:value="AEdPqrEAAAAInBA8ued0O_ZyYUsVhwinUF-x50NIe9K0GzBW4A" />
+@@ -214,5 +221,82 @@
+             </intent-filter>
+         </activity>
+ 
++        <!-- ARC File System Service -->
++        <service
++            android:name="org.chromium.arc.file_system.ArcFileSystemService"
++            android:exported="false" />
++
++        <receiver
++            android:name="org.chromium.arc.file_system.ArcFileSystemService$Receiver"
++            android:exported="true">
++            <intent-filter>
++                <action android:name="android.intent.action.BOOT_COMPLETED" />
++            </intent-filter>
++        </receiver>
++
++        <!-- ARC File Provider -->
++        <provider
++            android:name="org.chromium.arc.file_system.ArcFileProvider"
++            android:authorities="org.chromium.arc.file_system.fileprovider"
++            android:grantUriPermissions="true"
++            android:exported="false">
++            <meta-data
++                android:name="android.support.FILE_PROVIDER_PATHS"
++                android:resource="@xml/file_paths" />
++        </provider>
++
++        <!-- Chrome Content Provider -->
++        <provider
++            android:name="org.chromium.arc.file_system.ChromeContentProvider"
++            android:authorities="org.chromium.arc.chromecontentprovider"
++            android:grantUriPermissions="true"
++            android:exported="true" />
++
++        <!-- ARC Volume Provider -->
++        <provider
++            android:name="org.chromium.arc.file_system.ArcVolumeProvider"
++            android:authorities="org.chromium.arc.volumeprovider"
++            android:grantUriPermissions="true"
++            android:exported="true" />
++
++        <!-- ARC Select Files Activity -->
++        <activity
++            android:name="org.chromium.arc.file_system.ArcSelectFilesActivity"
++            android:exported="true"
++            android:theme="@android:style/Theme.Translucent.NoTitleBar">
++            <intent-filter android:priority="200">
++                <action android:name="android.intent.action.OPEN_DOCUMENT" />
++                <category android:name="android.intent.category.DEFAULT" />
++                <category android:name="android.intent.category.OPENABLE" />
++                <data android:mimeType="*/*" />
++            </intent-filter>
++            <intent-filter android:priority="200">
++                <action android:name="android.intent.action.CREATE_DOCUMENT" />
++                <category android:name="android.intent.category.DEFAULT" />
++                <category android:name="android.intent.category.OPENABLE" />
++                <data android:mimeType="*/*" />
++            </intent-filter>
++            <intent-filter android:priority="200">
++                <action android:name="android.intent.action.GET_CONTENT" />
++                <category android:name="android.intent.category.DEFAULT" />
++                <category android:name="android.intent.category.OPENABLE" />
++                <data android:mimeType="*/*" />
++            </intent-filter>
++            <intent-filter android:priority="200">
++                <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++            <intent-filter>
++                <action android:name="org.chromium.arc.file_system.action.OPEN_MEDIA_STORE_FILES" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++        </activity>
++
++        <!-- ARC Select Files Event Handler Activity -->
++        <activity
++            android:name="org.chromium.arc.file_system.ArcSelectFilesEventHandlerActivity"
++            android:exported="false"
++            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
++
+     </application>
+ </manifest>
+diff --git a/aidl/com/android/server/arc/data_device/IArcDataDeviceProviderService.aidl b/aidl/com/android/server/arc/data_device/IArcDataDeviceProviderService.aidl
+new file mode 100644
+index 000000000..f5c0e60d2
+--- /dev/null
++++ b/aidl/com/android/server/arc/data_device/IArcDataDeviceProviderService.aidl
+@@ -0,0 +1,24 @@
++package com.android.server.arc.data_device;
++
++import android.os.SharedMemory;
++import com.android.server.arc.data_device.IImageDropListener;
++
++/**
++ * ARC data device provider binder interface.
++ * Provides content provider access for image clipboard/drag data.
++ * Methods ordered to match proprietary transaction IDs exactly.
++ */
++interface IArcDataDeviceProviderService {
++    // 1
++    SharedMemory getDataForContentProvider(String uri, String callingPackage);
++    // 2
++    String getMimeTypeForContentProvider(String uri);
++    // 3
++    boolean isUriAccessedBy(String uri, String packageName);
++    // 4
++    void addImageDropListener(IImageDropListener listener);
++    // 5
++    void removeImageDropListener(IImageDropListener listener);
++    // 6
++    void notifyContentProviderAccess(String uri, int uid);
++}
+diff --git a/aidl/com/android/server/arc/data_device/IImageDropListener.aidl b/aidl/com/android/server/arc/data_device/IImageDropListener.aidl
+new file mode 100644
+index 000000000..342dbd35a
+--- /dev/null
++++ b/aidl/com/android/server/arc/data_device/IImageDropListener.aidl
+@@ -0,0 +1,10 @@
++package com.android.server.arc.data_device;
++
++/**
++ * Callback for image drop events.
++ * Registered by ArcInputMethodService to receive notifications when images are dropped.
++ */
++oneway interface IImageDropListener {
++    // 1
++    void onImageDrop(in String[] uris);
++}
+diff --git a/res/layout/arc_select_files_event_handler_activity.xml b/res/layout/arc_select_files_event_handler_activity.xml
+new file mode 100644
+index 000000000..40a7679b1
+--- /dev/null
++++ b/res/layout/arc_select_files_event_handler_activity.xml
+@@ -0,0 +1,24 @@
++<?xml version="1.0" encoding="utf-8"?>
++<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:orientation="vertical">
++
++    <TextView
++        android:id="@+id/search_src_text"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content" />
++
++    <LinearLayout
++        android:id="@+id/roots_list"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="vertical" />
++
++    <LinearLayout
++        android:id="@+id/dir_list"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="vertical" />
++
++</LinearLayout>
+diff --git a/res/xml/file_paths.xml b/res/xml/file_paths.xml
+new file mode 100644
+index 000000000..6e608b05e
+--- /dev/null
++++ b/res/xml/file_paths.xml
+@@ -0,0 +1,5 @@
++<?xml version="1.0" encoding="utf-8"?>
++<paths>
++    <external-path name="download" path="Download/" />
++    <external-path name="external_files" path="." />
++</paths>
+diff --git a/src/org/chromium/arc/applauncher/AppShortcutItemInfo.java b/src/org/chromium/arc/applauncher/AppShortcutItemInfo.java
+new file mode 100644
+index 000000000..50069de95
+--- /dev/null
++++ b/src/org/chromium/arc/applauncher/AppShortcutItemInfo.java
+@@ -0,0 +1,61 @@
++package org.chromium.arc.applauncher;
++
++import android.os.Parcel;
++import android.os.Parcelable;
++
++public class AppShortcutItemInfo implements Parcelable {
++    public String shortcutId;
++    public String shortLabel;
++    public boolean isAdaptiveIcon;
++    public byte[] iconPng;
++    public byte[] foregroundIconPng;
++    public byte[] backgroundIconPng;
++    public String packageName;
++    public int type;
++    public int rank;
++
++    public AppShortcutItemInfo() {
++    }
++
++    protected AppShortcutItemInfo(Parcel in) {
++        shortcutId = in.readString();
++        shortLabel = in.readString();
++        isAdaptiveIcon = in.readInt() != 0;
++        iconPng = in.createByteArray();
++        foregroundIconPng = in.createByteArray();
++        backgroundIconPng = in.createByteArray();
++        packageName = in.readString();
++        type = in.readInt();
++        rank = in.readInt();
++    }
++
++    @Override
++    public void writeToParcel(Parcel dest, int flags) {
++        dest.writeString(shortcutId);
++        dest.writeString(shortLabel);
++        dest.writeInt(isAdaptiveIcon ? 1 : 0);
++        dest.writeByteArray(iconPng);
++        dest.writeByteArray(foregroundIconPng);
++        dest.writeByteArray(backgroundIconPng);
++        dest.writeString(packageName);
++        dest.writeInt(type);
++        dest.writeInt(rank);
++    }
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    public static final Creator<AppShortcutItemInfo> CREATOR = new Creator<AppShortcutItemInfo>() {
++        @Override
++        public AppShortcutItemInfo createFromParcel(Parcel in) {
++            return new AppShortcutItemInfo(in);
++        }
++
++        @Override
++        public AppShortcutItemInfo[] newArray(int size) {
++            return new AppShortcutItemInfo[size];
++        }
++    };
++}
+diff --git a/src/org/chromium/arc/applauncher/ChromeWindowState.java b/src/org/chromium/arc/applauncher/ChromeWindowState.java
+new file mode 100644
+index 000000000..83e39c51a
+--- /dev/null
++++ b/src/org/chromium/arc/applauncher/ChromeWindowState.java
+@@ -0,0 +1,36 @@
++package org.chromium.arc.applauncher;
++
++public class ChromeWindowState {
++    public static final int kNull = -1;
++    public static final int kDefault = 0;
++    public static final int kNormal = 1;
++    public static final int kMinimized = 2;
++    public static final int kMaximized = 3;
++    public static final int kInactive = 4;
++    public static final int kFullscreen = 5;
++    public static final int kLeftSnapped = 6;
++    public static final int kRightSnapped = 7;
++    public static final int kTrustedPinned = 8;
++    public static final int kPinned = 9;
++    public static final int kFloated = 10;
++    public static final int kPip = 11;
++
++    public static String toString(int state) {
++        switch (state) {
++            case kNull: return "kNull";
++            case kDefault: return "kDefault";
++            case kNormal: return "kNormal";
++            case kMinimized: return "kMinimized";
++            case kMaximized: return "kMaximized";
++            case kInactive: return "kInactive";
++            case kFullscreen: return "kFullscreen";
++            case kLeftSnapped: return "kLeftSnapped";
++            case kRightSnapped: return "kRightSnapped";
++            case kTrustedPinned: return "kTrustedPinned";
++            case kPinned: return "kPinned";
++            case kFloated: return "kFloated";
++            case kPip: return "kPip";
++            default: return "Unknown(" + state + ")";
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/applauncher/IntentLauncher.java b/src/org/chromium/arc/applauncher/IntentLauncher.java
+new file mode 100644
+index 000000000..721a3155f
+--- /dev/null
++++ b/src/org/chromium/arc/applauncher/IntentLauncher.java
+@@ -0,0 +1,66 @@
++package org.chromium.arc.applauncher;
++
++import android.app.ActivityOptions;
++import android.content.Context;
++import android.content.Intent;
++import android.util.Log;
++import org.chromium.arc.applauncher.util.DisplayIdTranslator;
++import org.chromium.arc.mojom.Rect;
++import org.chromium.arc.mojom.WindowInfo;
++
++public class IntentLauncher {
++    private static final String TAG = "ArcIntentLauncher";
++    private Context mContext;
++    private final DisplayIdTranslator mDisplayIdTranslator;
++
++    public IntentLauncher(Context context) {
++        this(context, new DisplayIdTranslator(context));
++    }
++
++    public IntentLauncher(Context context, DisplayIdTranslator displayIdTranslator) {
++        mContext = context;
++        mDisplayIdTranslator = displayIdTranslator;
++    }
++
++    public int translateChromeDisplayId(long chromeDisplayId) {
++        return mDisplayIdTranslator.translate(chromeDisplayId);
++    }
++
++    public void startActivityWithWindowInfo(Intent intent, WindowInfo windowInfo) {
++        ActivityOptions options = ActivityOptions.makeBasic();
++        int displayId = translateChromeDisplayId(windowInfo.displayId);
++        if (displayId != -1) {
++            options.setLaunchDisplayId(displayId);
++        }
++        if (windowInfo.bounds != null) {
++            Rect rect = windowInfo.bounds;
++            options.setLaunchBounds(
++                    new android.graphics.Rect(rect.left, rect.top, rect.right, rect.bottom));
++        }
++        if (windowInfo.windowId > 0) {
++            intent.setIdentifier("window_session_id=" + windowInfo.windowId);
++        }
++        int state = windowInfo.state;
++        if (state != -1) {
++            if (state == ChromeWindowState.kDefault) {
++                options.setLaunchWindowingMode(0);
++            } else if (state == ChromeWindowState.kNormal) {
++                options.setLaunchWindowingMode(5); // FREEFORM
++            } else if (state == ChromeWindowState.kMinimized) {
++                options.setAvoidMoveToFront();
++            } else if (state == ChromeWindowState.kMaximized
++                    || state == ChromeWindowState.kFullscreen) {
++                options.setLaunchWindowingMode(1); // FULLSCREEN
++            } else {
++                Log.w(TAG, "launch intent with unsupported window state: "
++                        + ChromeWindowState.toString(windowInfo.state));
++            }
++        } else if (windowInfo.windowId > 1000000000) {
++            return;
++        } else {
++            Log.w(TAG, "Launch intent with closed state but no ARC ghost window");
++        }
++        mContext.startActivity(intent, options.toBundle());
++        Log.i(TAG, "Activity launched for " + intent.toUri(0));
++    }
++}
+diff --git a/src/org/chromium/arc/applauncher/util/DisplayIdTranslator.java b/src/org/chromium/arc/applauncher/util/DisplayIdTranslator.java
+new file mode 100644
+index 000000000..dbfa45065
+--- /dev/null
++++ b/src/org/chromium/arc/applauncher/util/DisplayIdTranslator.java
+@@ -0,0 +1,89 @@
++package org.chromium.arc.applauncher.util;
++
++import android.content.Context;
++import android.hardware.display.DisplayManager;
++import android.os.Handler;
++import android.os.IBinder;
++import android.os.Looper;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.util.Log;
++import android.view.Display;
++import android.view.DisplayAddress;
++import java.util.NoSuchElementException;
++import org.chromium.arc.wayland.IWaylandService;
++
++public class DisplayIdTranslator implements DisplayManager.DisplayListener {
++    private static final String TAG = "DisplayIdTranslator";
++    private final DisplayManager mDisplayManager;
++    private Display[] mDisplays;
++    private IWaylandService mWaylandService;
++    private final Object mLock = new Object();
++
++    public DisplayIdTranslator(Context context) {
++        mDisplayManager = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
++        mDisplays = mDisplayManager.getDisplays();
++        mDisplayManager.registerDisplayListener(this, new Handler(Looper.getMainLooper()));
++    }
++
++    public int translate(long chromeDisplayId) {
++        if (chromeDisplayId == -1) {
++            return -1;
++        }
++        if (chromeDisplayId == 255) {
++            return 0;
++        }
++        synchronized (mLock) {
++            IWaylandService service = getWaylandService();
++            if (service == null) {
++                Log.e(TAG, "Failed to get Wayland service");
++                return -1;
++            }
++            try {
++                return getLogicalDisplayId(service.translateDisplayId(chromeDisplayId));
++            } catch (RemoteException | NoSuchElementException e) {
++                Log.e(TAG, "Failed translating display ID " + chromeDisplayId);
++                return -1;
++            }
++        }
++    }
++
++    private IWaylandService getWaylandService() {
++        if (mWaylandService == null) {
++            IBinder binder = ServiceManager.getService("Wayland");
++            if (binder != null) {
++                mWaylandService = IWaylandService.Stub.asInterface(binder);
++            }
++        }
++        return mWaylandService;
++    }
++
++    private int getLogicalDisplayId(long physicalId) {
++        DisplayAddress.Physical physical = DisplayAddress.fromPhysicalDisplayId(physicalId);
++        for (Display display : mDisplays) {
++            if (physical.equals(display.getAddress())) {
++                return display.getDisplayId();
++            }
++        }
++        Log.e(TAG, "Unknown physical display ID " + physicalId);
++        return -1;
++    }
++
++    @Override
++    public void onDisplayAdded(int displayId) {
++        synchronized (mLock) {
++            mDisplays = mDisplayManager.getDisplays();
++        }
++    }
++
++    @Override
++    public void onDisplayRemoved(int displayId) {
++        synchronized (mLock) {
++            mDisplays = mDisplayManager.getDisplays();
++        }
++    }
++
++    @Override
++    public void onDisplayChanged(int displayId) {
++    }
++}
+diff --git a/src/org/chromium/arc/display/ArcDisplay.java b/src/org/chromium/arc/display/ArcDisplay.java
+new file mode 100644
+index 000000000..259565ef1
+--- /dev/null
++++ b/src/org/chromium/arc/display/ArcDisplay.java
+@@ -0,0 +1,123 @@
++package org.chromium.arc.display;
++
++import android.os.Parcel;
++import android.os.Parcelable;
++
++public class ArcDisplay implements Parcelable {
++    public long physicalDisplayId;
++    public int globalPositionX;
++    public int globalPositionY;
++    public int widthPixels;
++    public int heightPixels;
++    public int transform;
++    public int insetsLeft;
++    public int insetsTop;
++    public int insetsRight;
++    public int insetsBottom;
++    public int stableInsetsLeft;
++    public int stableInsetsTop;
++    public int stableInsetsRight;
++    public int stableInsetsBottom;
++    public boolean autoHide;
++    public float deviceScaleFactor;
++    public int dpi;
++    public int overrideDpi;
++    public boolean displayRemapped;
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    @Override
++    public final void writeToParcel(Parcel parcel, int flags) {
++        int startPos = parcel.dataPosition();
++        parcel.writeInt(0); // placeholder for length
++        parcel.writeLong(physicalDisplayId);
++        parcel.writeInt(globalPositionX);
++        parcel.writeInt(globalPositionY);
++        parcel.writeInt(widthPixels);
++        parcel.writeInt(heightPixels);
++        parcel.writeInt(transform);
++        parcel.writeInt(insetsLeft);
++        parcel.writeInt(insetsTop);
++        parcel.writeInt(insetsRight);
++        parcel.writeInt(insetsBottom);
++        parcel.writeInt(stableInsetsLeft);
++        parcel.writeInt(stableInsetsTop);
++        parcel.writeInt(stableInsetsRight);
++        parcel.writeInt(stableInsetsBottom);
++        parcel.writeInt(autoHide ? 1 : 0);
++        parcel.writeFloat(deviceScaleFactor);
++        parcel.writeInt(dpi);
++        parcel.writeInt(overrideDpi);
++        parcel.writeInt(displayRemapped ? 1 : 0);
++        int endPos = parcel.dataPosition();
++        parcel.setDataPosition(startPos);
++        parcel.writeInt(endPos - startPos);
++        parcel.setDataPosition(endPos);
++    }
++
++    public final void readFromParcel(Parcel parcel) {
++        int startPos = parcel.dataPosition();
++        int length = parcel.readInt();
++        if (length < 0) {
++            return;
++        }
++        try {
++            physicalDisplayId = parcel.readLong();
++            if (parcel.dataPosition() - startPos >= length) return;
++            globalPositionX = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            globalPositionY = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            widthPixels = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            heightPixels = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            transform = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            insetsLeft = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            insetsTop = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            insetsRight = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            insetsBottom = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            stableInsetsLeft = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            stableInsetsTop = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            stableInsetsRight = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            stableInsetsBottom = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            autoHide = parcel.readInt() != 0;
++            if (parcel.dataPosition() - startPos >= length) return;
++            deviceScaleFactor = parcel.readFloat();
++            if (parcel.dataPosition() - startPos >= length) return;
++            dpi = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            overrideDpi = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            displayRemapped = parcel.readInt() != 0;
++        } finally {
++            parcel.setDataPosition(startPos + length);
++        }
++    }
++
++    public static final Creator<ArcDisplay> CREATOR = new Creator<ArcDisplay>() {
++        @Override
++        public ArcDisplay createFromParcel(Parcel parcel) {
++            ArcDisplay display = new ArcDisplay();
++            display.readFromParcel(parcel);
++            return display;
++        }
++
++        @Override
++        public ArcDisplay[] newArray(int size) {
++            return new ArcDisplay[size];
++        }
++    };
++}
+diff --git a/src/org/chromium/arc/display/ArcDisplayLayout.java b/src/org/chromium/arc/display/ArcDisplayLayout.java
+new file mode 100644
+index 000000000..7c7272333
+--- /dev/null
++++ b/src/org/chromium/arc/display/ArcDisplayLayout.java
+@@ -0,0 +1,63 @@
++package org.chromium.arc.display;
++
++import android.os.Parcel;
++import android.os.Parcelable;
++
++public class ArcDisplayLayout implements Parcelable {
++    public int layoutMode;
++    public long primaryPhysicalDisplayId;
++    public ArcDisplay[] displays;
++    public float defaultDeviceScaleFactor;
++
++    @Override
++    public int describeContents() {
++        return 0;
++    }
++
++    @Override
++    public final void writeToParcel(Parcel parcel, int flags) {
++        int startPos = parcel.dataPosition();
++        parcel.writeInt(0); // placeholder for length
++        parcel.writeInt(layoutMode);
++        parcel.writeLong(primaryPhysicalDisplayId);
++        parcel.writeTypedArray(displays, 0);
++        parcel.writeFloat(defaultDeviceScaleFactor);
++        int endPos = parcel.dataPosition();
++        parcel.setDataPosition(startPos);
++        parcel.writeInt(endPos - startPos);
++        parcel.setDataPosition(endPos);
++    }
++
++    public final void readFromParcel(Parcel parcel) {
++        int startPos = parcel.dataPosition();
++        int length = parcel.readInt();
++        if (length < 0) {
++            return;
++        }
++        try {
++            layoutMode = parcel.readInt();
++            if (parcel.dataPosition() - startPos >= length) return;
++            primaryPhysicalDisplayId = parcel.readLong();
++            if (parcel.dataPosition() - startPos >= length) return;
++            displays = parcel.createTypedArray(ArcDisplay.CREATOR);
++            if (parcel.dataPosition() - startPos >= length) return;
++            defaultDeviceScaleFactor = parcel.readFloat();
++        } finally {
++            parcel.setDataPosition(startPos + length);
++        }
++    }
++
++    public static final Creator<ArcDisplayLayout> CREATOR = new Creator<ArcDisplayLayout>() {
++        @Override
++        public ArcDisplayLayout createFromParcel(Parcel parcel) {
++            ArcDisplayLayout layout = new ArcDisplayLayout();
++            layout.readFromParcel(parcel);
++            return layout;
++        }
++
++        @Override
++        public ArcDisplayLayout[] newArray(int size) {
++            return new ArcDisplayLayout[size];
++        }
++    };
++}
+diff --git a/src/org/chromium/arc/file_system/ArcContentUriUtils.java b/src/org/chromium/arc/file_system/ArcContentUriUtils.java
+new file mode 100644
+index 000000000..1347e8d1f
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ArcContentUriUtils.java
+@@ -0,0 +1,194 @@
++package org.chromium.arc.file_system;
++
++import android.content.Context;
++import android.database.Cursor;
++import android.net.Uri;
++import android.provider.DocumentsContract;
++import android.provider.MediaStore;
++import android.util.Log;
++import java.util.regex.Pattern;
++
++class ArcContentUriUtils {
++    private static final String TAG = "ArcContentUriUtils";
++    private static final Pattern PATTERN_UUID_PATH =
++            Pattern.compile("^/(?:[0-9A-Fa-f]+(?:-[0-9A-Fa-f]+)*)/(?:.*)$");
++    private static final int[] MEDIA_TYPES = {2, 1, 3}; // audio, image, video
++
++    ArcContentUriUtils() {
++    }
++
++    static String convertArcContentUriToPath(Uri uri) {
++        String authority = uri.getAuthority();
++        if (authority == null) {
++            Log.e(TAG, "No authority is found for content URI: " + uri);
++            return null;
++        }
++        String path = uri.getPath();
++        if (path == null) {
++            Log.e(TAG, "No path is found for content URI: " + uri);
++            return null;
++        }
++        if ("org.chromium.arc.file_system.fileprovider".equals(authority)) {
++            if (path.startsWith("/download/")) {
++                return path.replaceFirst("/download/", "/storage/emulated/0/Download/");
++            }
++            if (path.startsWith("/external_files/")) {
++                return path.replaceFirst("/external_files/", "/storage/emulated/0/");
++            }
++            Log.e(TAG, "Invalid ArcFileProvider URI: " + uri);
++            return null;
++        }
++        if ("org.chromium.arc.volumeprovider".equals(authority)) {
++            if (path.startsWith("/download/")) {
++                return path.replaceFirst("/download/", "/storage/emulated/0/Download/");
++            }
++            if (path.startsWith("/external_files/")) {
++                return path.replaceFirst("/external_files/", "/storage/emulated/0/");
++            }
++            if (path.startsWith("/myfiles/")) {
++                return path.replaceFirst("/myfiles/",
++                        "/storage/0000000000000000000000000000CAFEF00D2019/");
++            }
++            if (path.startsWith("/MyDrive/root/")) {
++                return path.replaceFirst("/MyDrive/root/",
++                        "/var/run/arc/mount/GoogleDrive/MyDrive/");
++            }
++            if (path.startsWith("/MyDrive/team_drives/")) {
++                return path.replaceFirst("/MyDrive/team_drives/",
++                        "/var/run/arc/mount/GoogleDrive/SharedDrives/");
++            }
++            if (path.startsWith("/MyDrive/Computers/")) {
++                return path.replaceFirst("/MyDrive/Computers/",
++                        "/var/run/arc/mount/GoogleDrive/Computers/");
++            }
++            if (path.startsWith("/MyDrive/.files-by-id/")) {
++                return path.replaceFirst("/MyDrive/.files-by-id/",
++                        "/var/run/arc/mount/GoogleDrive/SharedWithMe/");
++            }
++            if (path.startsWith("/MyDrive/.shortcut-targets-by-id/")) {
++                return path.replaceFirst("/MyDrive/.shortcut-targets-by-id/",
++                        "/var/run/arc/mount/GoogleDrive/ShortcutsSharedWithMe/");
++            }
++            if (path.startsWith("/archive/")) {
++                return path.replaceFirst("/archive/", "/var/run/arc/mount/archive/");
++            }
++            if (path.startsWith("/smb/")) {
++                return path.replaceFirst("/smb/", "/var/run/arc/mount/smb/");
++            }
++            if (!PATTERN_UUID_PATH.matcher(path).find()) {
++                Log.e(TAG, "Invalid ArcVolumeProvider URI: " + uri);
++                return null;
++            }
++            return "/storage" + path;
++        }
++        if ("org.chromium.arc.chromecontentprovider".equals(authority)) {
++            return null;
++        }
++        Log.e(TAG, "Unknown authority: " + authority);
++        return null;
++    }
++
++    private static Uri queryMediaStoreUri(Context context, String filePath, int mediaType) {
++        Uri collection;
++        if (mediaType == 1) {
++            collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
++        } else if (mediaType == 2) {
++            collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
++        } else if (mediaType == 3) {
++            collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
++        } else {
++            Log.e(TAG, "Unexpected media type: " + mediaType);
++            return null;
++        }
++        try {
++            Cursor cursor = context.getContentResolver().query(collection,
++                    new String[]{"_data", "volume_name", "_id"},
++                    "_data LIKE ?", new String[]{filePath}, null);
++            if (cursor != null) {
++                try {
++                    if (cursor.moveToFirst()) {
++                        String volumeName = cursor.getString(
++                                cursor.getColumnIndexOrThrow("volume_name"));
++                        long id = cursor.getLong(cursor.getColumnIndexOrThrow("_id"));
++                        if (mediaType == 1) {
++                            return MediaStore.Images.Media.getContentUri(volumeName, id);
++                        } else if (mediaType == 2) {
++                            return MediaStore.Audio.Media.getContentUri(volumeName, id);
++                        } else {
++                            return MediaStore.Video.Media.getContentUri(volumeName, id);
++                        }
++                    }
++                } finally {
++                    cursor.close();
++                }
++            }
++        } catch (Exception e) {
++            Log.e(TAG, "Failed to query from MediaStore: ", e);
++        }
++        Log.w(TAG, "No MediaStore URI is found for path: " + filePath);
++        return null;
++    }
++
++    static Uri convertArcContentUriToMediaStoreUri(Context context, Uri uri) {
++        String path = convertArcContentUriToPath(uri);
++        if (path == null) {
++            return null;
++        }
++        for (int mediaType : MEDIA_TYPES) {
++            Uri result = queryMediaStoreUri(context, path, mediaType);
++            if (result != null) {
++                return result;
++            }
++        }
++        return null;
++    }
++
++    private static String getMediaDocumentsProviderType(int mediaType) {
++        switch (mediaType) {
++            case 1: return "image";
++            case 2: return "audio";
++            case 3: return "video";
++            case 6: return "document";
++            default:
++                Log.w(TAG, "Unsupported media type: " + mediaType);
++                return null;
++        }
++    }
++
++    private static Uri getMediaDocumentsProviderUri(int mediaType, long id) {
++        String type = getMediaDocumentsProviderType(mediaType);
++        if (type == null) {
++            return null;
++        }
++        return DocumentsContract.buildDocumentUri(
++                "com.android.providers.media.documents", type + ":" + id);
++    }
++
++    static Uri convertArcContentUriToMediaDocumentsProviderUri(Context context, Uri uri) {
++        String path = convertArcContentUriToPath(uri);
++        if (path == null) {
++            return null;
++        }
++        try {
++            Cursor cursor = context.getContentResolver().query(
++                    MediaStore.Files.getContentUri("external"),
++                    new String[]{"_data", "media_type", "_id"},
++                    "_data LIKE ?", new String[]{path}, null);
++            if (cursor != null) {
++                try {
++                    if (cursor.moveToFirst()) {
++                        return getMediaDocumentsProviderUri(
++                                cursor.getInt(cursor.getColumnIndexOrThrow("media_type")),
++                                cursor.getLong(cursor.getColumnIndexOrThrow("_id")));
++                    }
++                } finally {
++                    cursor.close();
++                }
++            }
++        } catch (Exception e) {
++            Log.e(TAG, "Failed to query from MediaStore: ", e);
++        }
++        Log.w(TAG, "No MediaDocumentsProvider URI is found for path: " + path);
++        return null;
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ArcFileProvider.java b/src/org/chromium/arc/file_system/ArcFileProvider.java
+new file mode 100644
+index 000000000..f127892e7
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ArcFileProvider.java
+@@ -0,0 +1,38 @@
++package org.chromium.arc.file_system;
++
++import android.net.Uri;
++import android.os.Binder;
++import android.os.ParcelFileDescriptor;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.util.Log;
++import androidx.core.content.FileProvider;
++import com.android.server.arc.data_device.IArcDataDeviceProviderService;
++import java.io.FileNotFoundException;
++import java.util.concurrent.atomic.AtomicReference;
++
++public class ArcFileProvider extends FileProvider {
++    private static final String TAG = "ArcFileProvider";
++    private final AtomicReference<IArcDataDeviceProviderService> mDataDeviceProviderService =
++            new AtomicReference<>();
++
++    @Override
++    public boolean onCreate() {
++        mDataDeviceProviderService.set(IArcDataDeviceProviderService.Stub.asInterface(
++                ServiceManager.getService("arc_data_device_provider_service")));
++        return super.onCreate();
++    }
++
++    @Override
++    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
++        try {
++            IArcDataDeviceProviderService service = mDataDeviceProviderService.get();
++            if (service != null) {
++                service.notifyContentProviderAccess(uri.toString(), Binder.getCallingUid());
++            }
++        } catch (RemoteException e) {
++            Log.e(TAG, "Failed to call notifyContentProviderAccess", e);
++        }
++        return super.openFile(uri, mode);
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ArcFileSystemService.java b/src/org/chromium/arc/file_system/ArcFileSystemService.java
+new file mode 100644
+index 000000000..19aa73da8
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ArcFileSystemService.java
+@@ -0,0 +1,60 @@
++package org.chromium.arc.file_system;
++
++import android.app.Service;
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.os.IBinder;
++import android.util.Log;
++import org.chromium.arc.bridge.ArcBridgeSupport;
++import org.chromium.arc.bridge.ArcService;
++import org.chromium.arc.mojom.ArcBridgeHost;
++
++public class ArcFileSystemService extends Service implements ArcService {
++    private static final String TAG = ArcFileSystemService.class.getSimpleName();
++    private FileSystemInstanceImpl mInstanceImpl;
++    private MediaStoreDelegate mMediaStoreDelegate;
++
++    @Override
++    public IBinder onBind(Intent intent) {
++        return null;
++    }
++
++    @Override
++    public int onStartCommand(Intent intent, int flags, int startId) {
++        return START_STICKY;
++    }
++
++    public static class Receiver extends BroadcastReceiver {
++        @Override
++        public void onReceive(Context context, Intent intent) {
++            context.startService(new Intent(context, ArcFileSystemService.class));
++        }
++    }
++
++    @Override
++    public void onCreate() {
++        Log.i(TAG, "Starting service...");
++        super.onCreate();
++        mInstanceImpl = new FileSystemInstanceImpl(this);
++        mMediaStoreDelegate = new MediaStoreDelegate(this);
++        ArcBridgeSupport.getInstance().requestArcBridgeProxyAsync(
++                getApplicationContext(), this, 13);
++    }
++
++    @Override
++    public void onDestroy() {
++        Log.i(TAG, "Stopping service...");
++        mMediaStoreDelegate.onDestroy();
++        super.onDestroy();
++    }
++
++    public void onBridgeReady(ArcBridgeHost arcBridgeHost) {
++        Log.i(TAG, "Bridge ready.");
++        arcBridgeHost.onFileSystemInstanceReady(mInstanceImpl);
++    }
++
++    public void onBridgeVersionMismatch(int version) {
++        Log.e(TAG, "Bridge version mismatch: " + version);
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ArcSelectFilesActivity.java b/src/org/chromium/arc/file_system/ArcSelectFilesActivity.java
+new file mode 100644
+index 000000000..d7e06d9cb
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ArcSelectFilesActivity.java
+@@ -0,0 +1,282 @@
++package org.chromium.arc.file_system;
++
++import android.app.Activity;
++import android.app.ActivityManager;
++import android.app.ActivityOptions;
++import android.app.IApplicationThread;
++import android.content.ClipData;
++import android.content.ComponentName;
++import android.content.ContentProviderClient;
++import android.content.ContentResolver;
++import android.content.Intent;
++import android.graphics.Rect;
++import android.net.Uri;
++import android.os.AsyncTask;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.RemoteException;
++import android.provider.DocumentsContract;
++import android.util.Log;
++import com.android.documentsui.DocumentsApplication;
++import java.io.FileNotFoundException;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.concurrent.CancellationException;
++import java.util.concurrent.ExecutionException;
++import org.chromium.arc.FutureCallback;
++import org.chromium.arc.mojom.DocumentPath;
++import org.chromium.arc.mojom.FileSelectorElement;
++import org.chromium.arc.mojom.FileSelectorEvent;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.arc.mojom.SelectFilesRequest;
++import org.chromium.arc.mojom.SelectFilesResult;
++import org.chromium.url.mojom.Url;
++import java.util.List;
++
++public class ArcSelectFilesActivity extends Activity {
++    private static final String TAG = "ArcSelectFilesActivity";
++    private static final Rect EVENT_HANDLER_ACTIVITY_BOUNDS = new Rect(0, 0, 400, 400);
++    private final Handler mHandler = new Handler();
++
++    @Override
++    public void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        Intent intent = getIntent();
++        if (intent == null) {
++            setResult(RESULT_CANCELED);
++            finish();
++            return;
++        }
++        SelectFilesRequest request = createSelectFilesRequest(intent);
++        new AsyncTask<Void, Void, Void>() {
++            @Override
++            public Void doInBackground(Void... params) {
++                if (!sendSelectFilesRequestSynchronously(request)) {
++                    setResult(RESULT_CANCELED);
++                    finish();
++                }
++                return null;
++            }
++        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
++
++        Intent eventHandlerIntent = new Intent(this,
++                ArcSelectFilesEventHandlerActivity.class)
++                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
++                .putExtra("org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_TASK_ID",
++                        getTaskId());
++        ActivityOptions options = ActivityOptions.makeBasic();
++        options.setLaunchBounds(EVENT_HANDLER_ACTIVITY_BOUNDS);
++        mHandler.postDelayed(() -> startActivity(eventHandlerIntent, options.toBundle()),
++                3000);
++    }
++
++    @Override
++    protected void onDestroy() {
++        mHandler.removeCallbacksAndMessages(null);
++        sendFileSelectorCancelEventSynchronously();
++        sendBroadcast(new Intent(
++                "org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_DESTROYED")
++                .putExtra("org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_TASK_ID",
++                        getTaskId()));
++        super.onDestroy();
++    }
++
++    @Override
++    public void onActivityResult(int requestCode, int resultCode, Intent data) {
++        if (requestCode == 1) {
++            setResult(resultCode, data);
++        } else {
++            Log.e(TAG, "Invalid request code: " + requestCode);
++            setResult(RESULT_CANCELED);
++        }
++        finish();
++    }
++
++    private SelectFilesRequest createSelectFilesRequest(Intent intent) {
++        SelectFilesRequest request = new SelectFilesRequest();
++        String action = intent.getAction();
++        if (Intent.ACTION_OPEN_DOCUMENT.equals(action)) {
++            request.actionType = 1;
++        } else if (Intent.ACTION_CREATE_DOCUMENT.equals(action)) {
++            request.actionType = 3;
++        } else if (Intent.ACTION_GET_CONTENT.equals(action)) {
++            request.actionType = 0;
++        } else if (Intent.ACTION_OPEN_DOCUMENT_TREE.equals(action)) {
++            request.actionType = 2;
++        } else if ("org.chromium.arc.file_system.action.OPEN_MEDIA_STORE_FILES".equals(action)
++                && "com.google.android.apps.photos".equals(getCallingPackage())) {
++            request.actionType = 4;
++        } else {
++            throw new UnsupportedOperationException("Unsupported action : " + action);
++        }
++
++        String type = intent.getType();
++        if (intent.hasExtra(Intent.EXTRA_MIME_TYPES)) {
++            request.mimeTypes = Arrays.stream(
++                    intent.getStringArrayExtra(Intent.EXTRA_MIME_TYPES))
++                    .filter(s -> s != null)
++                    .distinct()
++                    .toArray(String[]::new);
++        } else if (type != null && !"*/*".equals(type)) {
++            request.mimeTypes = new String[]{type};
++        } else {
++            request.mimeTypes = new String[0];
++        }
++        request.openableOnly = intent.hasCategory(Intent.CATEGORY_OPENABLE);
++        request.allowMultiple = intent.getBooleanExtra(
++                Intent.EXTRA_ALLOW_MULTIPLE, false);
++        String title = intent.getStringExtra(Intent.EXTRA_TITLE);
++        request.defaultFileName = title != null ? title : "";
++        String query = intent.getStringExtra("android.intent.extra.CONTENT_QUERY");
++        request.searchQuery = query != null ? query : "";
++        Uri initialUri = intent.getParcelableExtra("android.provider.extra.INITIAL_URI");
++        request.initialContentUri = initialUri != null ? initialUri.toString() : "";
++        request.initialDocumentPath = createMojoDocumentPath(initialUri);
++        request.taskId = getTaskId();
++        return request;
++    }
++
++    private DocumentPath createMojoDocumentPath(Uri uri) {
++        if (uri == null) return null;
++        try {
++            ContentProviderClient client =
++                    DocumentsApplication.acquireUnstableProviderOrThrow(
++                            getContentResolver(), uri.getAuthority());
++            try {
++                DocumentsContract.Path path = DocumentsContract.findDocumentPath(
++                        ContentResolver.wrap(client), uri);
++                DocumentPath docPath = new DocumentPath();
++                docPath.authority = uri.getAuthority();
++                List<String> pathList = path.getPath();
++                docPath.path = pathList.toArray(new String[0]);
++                docPath.rootId = path.getRootId();
++                return docPath;
++            } finally {
++                client.close();
++            }
++        } catch (RemoteException | FileNotFoundException | RuntimeException e) {
++            Log.e(TAG, "Failed to construct DocumentPath for " + uri, e);
++            return null;
++        }
++    }
++
++    private boolean sendSelectFilesRequestSynchronously(SelectFilesRequest request) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<SelectFilesResult> future =
++                new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(9);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return false;
++            }
++            host.selectFiles(request, result -> future.set(result));
++            try {
++                handleSelectFilesResult(request, future.get());
++                return true;
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return false;
++            }
++        }
++    }
++
++    private void handleSelectFilesResult(SelectFilesRequest request,
++            SelectFilesResult result) {
++        try {
++            ActivityManager.getService().moveTaskToFront(
++                    null, "com.android.documentsui", getTaskId(), 0, null);
++        } catch (RemoteException | RuntimeException e) {
++            Log.w(TAG, "Failed to refocus ArcSelectFilesActivity", e);
++        }
++
++        String pickerActivity = result.pickerActivity;
++        if (pickerActivity != null && !pickerActivity.isEmpty()) {
++            String[] parts = pickerActivity.split("/");
++            if (parts.length != 2) {
++                Log.e(TAG, "Invalid picker_activity value: " + pickerActivity);
++                setResult(RESULT_CANCELED);
++                finish();
++                return;
++            }
++            Intent intent = new Intent(getIntent());
++            intent.setFlags(intent.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK);
++            intent.setComponent(new ComponentName(parts[0], parts[1]));
++            startActivityForResult(intent, 1);
++            return;
++        }
++
++        ArrayList<Uri> uris = new ArrayList<>();
++        if (request.actionType == 4) {
++            for (Url url : result.urls) {
++                Uri uri = Uri.parse(url.url);
++                Uri mediaUri = ArcContentUriUtils.convertArcContentUriToMediaStoreUri(
++                        this, uri);
++                if (mediaUri == null) {
++                    Intent data = new Intent();
++                    data.putExtra(
++                            "org.chromium.arc.file_system.extra.FILE_NAME",
++                            uri.getLastPathSegment());
++                    setResult(100, data);
++                    finish();
++                    return;
++                }
++                uris.add(mediaUri);
++            }
++        } else {
++            for (Url url : result.urls) {
++                Uri uri = Uri.parse(url.url);
++                Uri docsUri = ArcContentUriUtils
++                        .convertArcContentUriToMediaDocumentsProviderUri(this, uri);
++                uris.add(docsUri != null ? docsUri : uri);
++            }
++        }
++
++        if (uris.isEmpty()) {
++            setResult(RESULT_CANCELED);
++            finish();
++            return;
++        }
++
++        Intent data = new Intent();
++        if (uris.size() == 1) {
++            data.setData(uris.get(0));
++        } else {
++            ClipData clipData = new ClipData(null, request.mimeTypes,
++                    new ClipData.Item(uris.get(0)));
++            for (int i = 1; i < uris.size(); i++) {
++                clipData.addItem(new ClipData.Item(uris.get(i)));
++            }
++            data.setClipData(clipData);
++        }
++        int actionType = request.actionType;
++        if (actionType == 0) {
++            data.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
++        } else if (actionType == 2) {
++            data.addFlags(195); // READ|WRITE|PREFIX|PERSISTABLE
++        } else {
++            data.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
++                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
++        }
++        setResult(RESULT_OK, data);
++        finish();
++    }
++
++    private void sendFileSelectorCancelEventSynchronously() {
++        FileSelectorEvent event = new FileSelectorEvent();
++        event.type = 3; // cancel
++        FileSelectorElement target = new FileSelectorElement();
++        event.clickTarget = target;
++        target.name = "";
++        event.creatorTaskId = getTaskId();
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(11);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++            } else {
++                host.onFileSelectorEvent(event, () -> {});
++            }
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ArcSelectFilesEventHandlerActivity.java b/src/org/chromium/arc/file_system/ArcSelectFilesEventHandlerActivity.java
+new file mode 100644
+index 000000000..753cdbdbc
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ArcSelectFilesEventHandlerActivity.java
+@@ -0,0 +1,168 @@
++package org.chromium.arc.file_system;
++
++import android.app.Activity;
++import android.content.BroadcastReceiver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.IntentFilter;
++import android.os.Bundle;
++import android.os.Handler;
++import android.os.Looper;
++import android.util.Log;
++import android.view.View;
++import android.view.WindowManager;
++import android.widget.Button;
++import android.widget.LinearLayout;
++import android.widget.TextView;
++import com.android.documentsui.R;
++import java.util.concurrent.CancellationException;
++import java.util.concurrent.ExecutionException;
++import org.chromium.arc.FutureCallback;
++import org.chromium.arc.mojom.FileSelectorElement;
++import org.chromium.arc.mojom.FileSelectorElements;
++import org.chromium.arc.mojom.FileSelectorEvent;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.arc.mojom.GetFileSelectorElementsRequest;
++
++public class ArcSelectFilesEventHandlerActivity extends Activity {
++    private static final String TAG = "ArcSelectFilesEventHandlerActivity";
++    private BroadcastReceiver mBroadcastReceiver;
++    private int mSelectFilesActivityTaskId = -1;
++
++    @Override
++    public void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        Intent intent = getIntent();
++        if (intent != null) {
++            mSelectFilesActivityTaskId = intent.getIntExtra(
++                    "org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_TASK_ID", -1);
++        }
++        mBroadcastReceiver = new BroadcastReceiver() {
++            @Override
++            public void onReceive(Context context, Intent intent) {
++                if ("org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_DESTROYED"
++                        .equals(intent.getAction())
++                        && intent.getIntExtra(
++                                "org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_TASK_ID",
++                                -1) == mSelectFilesActivityTaskId) {
++                    finish();
++                }
++            }
++        };
++        registerReceiver(mBroadcastReceiver, new IntentFilter(
++                "org.chromium.arc.file_system.SELECT_FILES_ACTIVITY_DESTROYED"));
++    }
++
++    @Override
++    public void onResume() {
++        super.onResume();
++        setContentView(R.layout.arc_select_files_event_handler_activity);
++        WindowManager.LayoutParams lp = getWindow().getAttributes();
++        lp.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
++        lp.format = -2; // TRANSLUCENT
++        lp.alpha = 0.0f;
++        getWindow().setAttributes(lp);
++        updateViewSynchronously();
++    }
++
++    @Override
++    public void onDestroy() {
++        unregisterReceiver(mBroadcastReceiver);
++        super.onDestroy();
++    }
++
++    private boolean updateViewSynchronously() {
++        if (isDestroyed()) return false;
++        GetFileSelectorElementsRequest request = new GetFileSelectorElementsRequest();
++        request.creatorTaskId = mSelectFilesActivityTaskId;
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<FileSelectorElements> future =
++                new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(11);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return false;
++            }
++            host.getFileSelectorElements(request, result -> future.set(result));
++            try {
++                handleFileSelectorElements(future.get());
++                return true;
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return false;
++            }
++        }
++    }
++
++    private void handleFileSelectorElements(FileSelectorElements elements) {
++        if (elements.directoryElements.length == 0
++                && elements.fileElements.length == 0) {
++            Log.e(TAG, "Finishing the activity because file selector doesn't exist.");
++            finish();
++            return;
++        }
++        TextView searchText = (TextView) findViewById(R.id.search_src_text);
++        searchText.setText(elements.searchQuery);
++
++        LinearLayout rootsList = (LinearLayout) findViewById(R.id.roots_list);
++        rootsList.removeAllViews();
++        for (FileSelectorElement dirElement : elements.directoryElements) {
++            Button button = new Button(this);
++            button.setText(dirElement.name);
++            button.setAllCaps(false);
++            button.setOnClickListener(v ->
++                    sendFileSelectorEventSynchronously(1, dirElement.name));
++            rootsList.addView(button, -1, -2);
++        }
++
++        LinearLayout dirList = (LinearLayout) findViewById(R.id.dir_list);
++        dirList.removeAllViews();
++        for (FileSelectorElement fileElement : elements.fileElements) {
++            Button button = new Button(this);
++            button.setText(fileElement.name);
++            button.setAllCaps(false);
++            button.setOnClickListener(v ->
++                    sendFileSelectorEventSynchronously(2, fileElement.name));
++            dirList.addView(button, -1, -2);
++            if (elements.searchQuery == null) {
++                searchText.setText(fileElement.name);
++            }
++        }
++    }
++
++    private boolean sendFileSelectorEventSynchronously(int type, String name) {
++        if (isDestroyed()) return false;
++        FileSelectorEvent event = new FileSelectorEvent();
++        event.type = type;
++        FileSelectorElement target = new FileSelectorElement();
++        event.clickTarget = target;
++        target.name = name;
++        event.creatorTaskId = mSelectFilesActivityTaskId;
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(11);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return false;
++            }
++            Log.i(TAG, "Routing a click event to Files app: eventType=" + type
++                    + ", clickTarget=" + name);
++            host.onFileSelectorEvent(event, () -> onFileSelectorEventExecuted(type));
++            return true;
++        }
++    }
++
++    private void onFileSelectorEventExecuted(int type) {
++        if (isDestroyed()) return;
++        if (type == 1) { // directory click
++            new Handler(Looper.getMainLooper()).postDelayed(
++                    this::updateViewSynchronously, 2000);
++        } else if (type == 2) { // file click
++            new Handler(Looper.getMainLooper()).postDelayed(
++                    () -> sendFileSelectorEventSynchronously(0, ""), 16000);
++        } else if (type == 0) { // done
++            finish();
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ArcVolumeProvider.java b/src/org/chromium/arc/file_system/ArcVolumeProvider.java
+new file mode 100644
+index 000000000..6cfaf3a95
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ArcVolumeProvider.java
+@@ -0,0 +1,181 @@
++package org.chromium.arc.file_system;
++
++import android.content.ContentProvider;
++import android.content.ContentValues;
++import android.database.Cursor;
++import android.database.MatrixCursor;
++import android.net.Uri;
++import android.os.Binder;
++import android.os.ParcelFileDescriptor;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.util.Log;
++import android.webkit.MimeTypeMap;
++import com.android.server.arc.data_device.IArcDataDeviceProviderService;
++import java.io.File;
++import java.io.FileNotFoundException;
++import java.io.IOException;
++import java.util.concurrent.atomic.AtomicReference;
++import java.util.regex.Pattern;
++
++public class ArcVolumeProvider extends ContentProvider {
++    private static final String TAG = "ArcVolumeProvider";
++    private static final String[] SUPPORTED_QUERY_COLUMNS = {
++            "_display_name", "_size", "document_id", "mime_type", "last_modified", "flags"};
++    private static final Pattern PATTERN_UUID_PATH =
++            Pattern.compile("^/([0-9A-Fa-f]+(-[0-9A-Fa-f]+)*)/(.*)$");
++
++    private File mStorageDirectory = new File("/storage");
++    private File mSdCardDirectory = new File("/storage/emulated/0");
++    private File mDrivefsDirectory = new File("/var/run/arc/mount/GoogleDrive");
++    private final AtomicReference<IArcDataDeviceProviderService> mDataDeviceProviderService =
++            new AtomicReference<>();
++
++    void setStorageDirectoryForTest(File dir) { mStorageDirectory = dir; }
++    void setSdCardDirectoryForTest(File dir) { mSdCardDirectory = dir; }
++    void setDrivefsDirectoryForTest(File dir) { mDrivefsDirectory = dir; }
++
++    @Override
++    public boolean onCreate() {
++        mDataDeviceProviderService.set(IArcDataDeviceProviderService.Stub.asInterface(
++                ServiceManager.getService("arc_data_device_provider_service")));
++        return true;
++    }
++
++    @Override
++    public Cursor query(Uri uri, String[] projection, String selection,
++            String[] selectionArgs, String sortOrder) {
++        if (projection == null) {
++            projection = SUPPORTED_QUERY_COLUMNS;
++        }
++        MatrixCursor cursor = new MatrixCursor(projection);
++        try {
++            File file = createFileForPath(uri.getPath());
++            MatrixCursor.RowBuilder row = cursor.newRow();
++            for (String column : projection) {
++                switch (column) {
++                    case "_display_name":
++                        row.add(column, file.getName());
++                        break;
++                    case "_size":
++                        row.add(column, file.length());
++                        break;
++                    case "document_id":
++                        row.add(column, uri.getPath());
++                        break;
++                    case "mime_type":
++                        row.add(column, getType(uri));
++                        break;
++                    case "last_modified":
++                        row.add(column, file.lastModified());
++                        break;
++                    case "flags":
++                        row.add(column, 0);
++                        break;
++                }
++            }
++        } catch (FileNotFoundException e) {
++            Log.e(TAG, "File not found: " + uri, e);
++        }
++        return cursor;
++    }
++
++    @Override
++    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
++        try {
++            IArcDataDeviceProviderService service = mDataDeviceProviderService.get();
++            if (service != null) {
++                service.notifyContentProviderAccess(uri.toString(), Binder.getCallingUid());
++            }
++        } catch (RemoteException e) {
++            Log.e(TAG, "Failed to call notifyContentProviderAccess", e);
++        }
++        try {
++            return ParcelFileDescriptor.open(
++                    createFileForPath(uri.getPath()),
++                    ParcelFileDescriptor.parseMode(mode));
++        } catch (IllegalArgumentException e) {
++            throw new FileNotFoundException("Cannot open " + uri + " with mode " + mode);
++        }
++    }
++
++    @Override
++    public String getType(Uri uri) {
++        try {
++            String extension = MimeTypeMap.getFileExtensionFromUrl(
++                    Uri.fromFile(createFileForPath(uri.getPath())).toString());
++            String type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
++            return type != null ? type : "application/octet-stream";
++        } catch (FileNotFoundException e) {
++            return null;
++        }
++    }
++
++    @Override
++    public int delete(Uri uri, String selection, String[] selectionArgs) {
++        return 0;
++    }
++
++    @Override
++    public Uri insert(Uri uri, ContentValues values) {
++        return null;
++    }
++
++    @Override
++    public int update(Uri uri, ContentValues values, String selection,
++            String[] selectionArgs) {
++        return 0;
++    }
++
++    File createFileForPath(String path) throws FileNotFoundException {
++        File base;
++        if (path.startsWith("/MyDrive/root/")) {
++            base = mDrivefsDirectory;
++            path = path.replaceFirst("/root", "");
++        } else if (path.startsWith("/MyDrive/team_drives/")) {
++            base = mDrivefsDirectory;
++            path = path.replaceFirst("/MyDrive/team_drives", "/SharedDrives");
++        } else if (path.startsWith("/MyDrive/Computers/")) {
++            base = mDrivefsDirectory;
++            path = path.replaceFirst("/MyDrive/Computers", "/Computers");
++        } else if (path.startsWith("/MyDrive/.files-by-id/")) {
++            base = mDrivefsDirectory;
++            path = path.replaceFirst("/MyDrive/.files-by-id", "/SharedWithMe");
++        } else if (path.startsWith("/MyDrive/.shortcut-targets-by-id/")) {
++            base = mDrivefsDirectory;
++            path = path.replaceFirst("/MyDrive/.shortcut-targets-by-id",
++                    "/ShortcutsSharedWithMe");
++        } else if (path.startsWith("/download/")) {
++            base = mSdCardDirectory;
++            path = path.replaceFirst("/download", "/Download");
++        } else if (path.startsWith("/external_files/")) {
++            base = mSdCardDirectory;
++            path = path.replaceFirst("/external_files", "");
++        } else if (path.startsWith("/myfiles/")) {
++            base = mStorageDirectory;
++            path = path.replaceFirst("myfiles",
++                    "0000000000000000000000000000CAFEF00D2019");
++        } else if (path.startsWith("/archive/")) {
++            base = new File("/var/run/arc/mount/archive");
++            path = path.replaceFirst("/archive", "");
++        } else if (path.startsWith("/smb/")) {
++            base = new File("/var/run/arc/mount/SMB");
++            path = path.replaceFirst("/smb", "");
++        } else {
++            if (!PATTERN_UUID_PATH.matcher(path).find()) {
++                throw new FileNotFoundException("Invalid path " + path);
++            }
++            base = mStorageDirectory;
++        }
++        try {
++            File canonical = new File(base, path).getCanonicalFile();
++            if (canonical.getPath().startsWith(base.toString() + "/")) {
++                return canonical;
++            }
++            throw new FileNotFoundException("Invalid path " + path);
++        } catch (IOException e) {
++            throw (FileNotFoundException)
++                    new FileNotFoundException("Error when resolving " + path).initCause(e);
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ChromeContentProvider.java b/src/org/chromium/arc/file_system/ChromeContentProvider.java
+new file mode 100644
+index 000000000..d84ae3fe3
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ChromeContentProvider.java
+@@ -0,0 +1,309 @@
++package org.chromium.arc.file_system;
++
++import android.content.ContentProvider;
++import android.content.ContentValues;
++import android.database.Cursor;
++import android.database.MatrixCursor;
++import android.net.Uri;
++import android.os.Binder;
++import android.os.Build;
++import android.os.ParcelFileDescriptor;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.util.Log;
++import com.android.server.arc.data_device.IArcDataDeviceProviderService;
++import java.io.File;
++import java.io.FileNotFoundException;
++import java.util.concurrent.CancellationException;
++import java.util.concurrent.ExecutionException;
++import java.util.concurrent.atomic.AtomicReference;
++import org.chromium.arc.FutureCallback;
++import org.chromium.arc.bridge.ArcBridgeSupport;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.mojo.system.UntypedHandle;
++import org.chromium.mojo_base.mojom.Time;
++import org.chromium.url.mojom.Url;
++
++public class ChromeContentProvider extends ContentProvider {
++    private static final String TAG = ChromeContentProvider.class.getSimpleName();
++    private static final String DATA_DEVICE_PROVIDER_SERVICE_NAME =
++            "arc_data_device_provider_service";
++    public static final long UNIX_EPOCH_SINCE_WINDOWS_EPOCH_IN_MICROSECONDS =
++            11644473600000000L;
++    private static String sVirtualFilesPath = "/var/run/arc/media/virtual_files/";
++    private static final String[] DEFAULT_PROJECTION = {
++            "_display_name", "_size", "document_id", "mime_type", "last_modified", "flags"};
++
++    private final AtomicReference<IArcDataDeviceProviderService> mDataDeviceProviderService =
++            new AtomicReference<>();
++
++    @Override
++    public boolean onCreate() {
++        mDataDeviceProviderService.set(IArcDataDeviceProviderService.Stub.asInterface(
++                ServiceManager.getService(DATA_DEVICE_PROVIDER_SERVICE_NAME)));
++        return true;
++    }
++
++    public static void setVirtualFilesPathForTest(String path) {
++        sVirtualFilesPath = path;
++    }
++
++    @Override
++    public Cursor query(Uri uri, String[] projection, String selection,
++            String[] selectionArgs, String sortOrder) {
++        if (projection == null) {
++            projection = DEFAULT_PROJECTION;
++        }
++        MatrixCursor cursor = new MatrixCursor(projection);
++        MatrixCursor.RowBuilder row = cursor.newRow();
++        for (String column : projection) {
++            switch (column) {
++                case "_display_name": {
++                    String name = callGetNameSynchronously(uri.toString());
++                    if (name == null) {
++                        Log.e(TAG, "Failed to get the display name of " + uri);
++                        return null;
++                    }
++                    row.add(column, name);
++                    break;
++                }
++                case "_size": {
++                    long size = callGetSizeSynchronously(uri.toString());
++                    if (size < 0) {
++                        Log.e(TAG, "Failed to get the size of " + uri);
++                        return null;
++                    }
++                    row.add(column, size);
++                    break;
++                }
++                case "document_id":
++                    row.add(column, uri.getPath());
++                    break;
++                case "mime_type": {
++                    String type = getType(uri);
++                    if (type == null) {
++                        Log.e(TAG, "Failed to get the type of " + uri);
++                        return null;
++                    }
++                    row.add(column, type);
++                    break;
++                }
++                case "last_modified": {
++                    Time time = callGetLastModifiedSynchronously(uri.toString());
++                    if (time == null) {
++                        Log.w(TAG, "Failed to get the last modified time of " + uri);
++                    } else {
++                        row.add(column, getMillisecondsSinceUnixEpoch(time));
++                    }
++                    break;
++                }
++                case "flags":
++                    row.add(column, 0);
++                    break;
++            }
++        }
++        return cursor;
++    }
++
++    @Override
++    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
++        if (ParcelFileDescriptor.parseMode(mode) != 268435456) {
++            throw new FileNotFoundException("Cannot open " + uri + " with mode " + mode);
++        }
++        if ("cheets".equals(Build.HARDWARE)) {
++            UntypedHandle handle = callOpenFileToReadSynchronously(uri.toString());
++            if (handle == null) {
++                throw new FileNotFoundException("Cannot read " + uri);
++            }
++            notifyContentProviderAccess(uri);
++            return ParcelFileDescriptor.adoptFd(
++                    ArcBridgeSupport.getInstance().convertMojoHandleToFileDescriptor(handle));
++        }
++        String virtualFileId = callGetVirtualFileIdSynchronously(uri.toString());
++        if (virtualFileId == null) {
++            throw new FileNotFoundException("Cannot get virtual file id");
++        }
++        notifyContentProviderAccess(uri);
++        try {
++            return ParcelFileDescriptor.open(
++                    new File(sVirtualFilesPath, virtualFileId), 268435456);
++        } catch (Exception e) {
++            if (!callHandleIdReleasedSynchronously(virtualFileId)) {
++                Log.e(TAG, "Cannot release virtual file id: " + virtualFileId);
++            }
++            throw new FileNotFoundException("Cannot open " + uri + ". Exception: " + e);
++        }
++    }
++
++    @Override
++    public String getType(Uri uri) {
++        return callGetTypeSynchronously(uri.toString());
++    }
++
++    @Override
++    public int delete(Uri uri, String selection, String[] selectionArgs) {
++        return 0;
++    }
++
++    @Override
++    public Uri insert(Uri uri, ContentValues values) {
++        return null;
++    }
++
++    @Override
++    public int update(Uri uri, ContentValues values, String selection,
++            String[] selectionArgs) {
++        return 0;
++    }
++
++    private void notifyContentProviderAccess(Uri uri) {
++        try {
++            IArcDataDeviceProviderService service = mDataDeviceProviderService.get();
++            if (service != null) {
++                service.notifyContentProviderAccess(uri.toString(), Binder.getCallingUid());
++            }
++        } catch (RemoteException e) {
++            Log.e(TAG, "Failed to call notifyContentProviderAccess", e);
++        }
++    }
++
++    private String callGetNameSynchronously(String url) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<String> future = new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(6);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return null;
++            }
++            host.getFileName(url, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return null;
++            }
++        }
++    }
++
++    private long callGetSizeSynchronously(String url) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<Long> future = new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(6);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return -1;
++            }
++            host.getFileSize(url, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return -1;
++            }
++        }
++    }
++
++    private Time callGetLastModifiedSynchronously(String url) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<Time> future = new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(20);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return null;
++            }
++            Url mojoUrl = new Url();
++            mojoUrl.url = url;
++            host.getLastModified(mojoUrl, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return null;
++            }
++        }
++    }
++
++    private String callGetTypeSynchronously(String url) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<String> future = new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(6);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return null;
++            }
++            host.getFileType(url, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return null;
++            }
++        }
++    }
++
++    private String callGetVirtualFileIdSynchronously(String url) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<String> future = new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(6);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return null;
++            }
++            host.getVirtualFileId(url, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return null;
++            }
++        }
++    }
++
++    private boolean callHandleIdReleasedSynchronously(String virtualFileId) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<Boolean> future = new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(16);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return false;
++            }
++            host.handleIdReleased(virtualFileId, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return false;
++            }
++        }
++    }
++
++    private UntypedHandle callOpenFileToReadSynchronously(String url) {
++        FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++        FutureCallback<UntypedHandle> future =
++                new FutureCallback<>(holder.getCancellationRelay());
++        synchronized (holder) {
++            FileSystemHost host = holder.getLocked(6);
++            if (host == null) {
++                Log.e(TAG, "FileSystemHost is not ready.");
++                return null;
++            }
++            host.openFileToRead(url, result -> future.set(result));
++            try {
++                return future.get();
++            } catch (InterruptedException | CancellationException | ExecutionException e) {
++                Log.e(TAG, "Method call failed ", e);
++                return null;
++            }
++        }
++    }
++
++    private long getMillisecondsSinceUnixEpoch(Time time) {
++        return (time.internalValue - UNIX_EPOCH_SINCE_WINDOWS_EPOCH_IN_MICROSECONDS) / 1000;
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/ContentProviderHandler.java b/src/org/chromium/arc/file_system/ContentProviderHandler.java
+new file mode 100644
+index 000000000..59c2b2e7e
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/ContentProviderHandler.java
+@@ -0,0 +1,78 @@
++package org.chromium.arc.file_system;
++
++import android.content.ContentResolver;
++import android.content.Context;
++import android.database.Cursor;
++import android.net.Uri;
++import android.os.ParcelFileDescriptor;
++import android.provider.OpenableColumns;
++import android.util.Log;
++import android.webkit.MimeTypeMap;
++import java.io.FileNotFoundException;
++
++public class ContentProviderHandler {
++    private static final String TAG = "ContentProviderHandler";
++    private final Context mContext;
++
++    public ContentProviderHandler(Context context) {
++        mContext = context;
++    }
++
++    public long getFileSize(String uriString) {
++        Uri uri = Uri.parse(uriString);
++        if ("file".equals(uri.getScheme())) {
++            try {
++                ParcelFileDescriptor pfd = mContext.getContentResolver().openFileDescriptor(uri, "r");
++                if (pfd != null) {
++                    long size = pfd.getStatSize();
++                    pfd.close();
++                    return size;
++                }
++            } catch (Exception e) {
++                Log.e(TAG, "Failed to get file size for " + uriString, e);
++            }
++            return -1;
++        }
++        Cursor cursor = null;
++        try {
++            cursor = mContext.getContentResolver().query(uri,
++                    new String[]{OpenableColumns.SIZE}, null, null, null);
++            if (cursor != null && cursor.moveToFirst()) {
++                int index = cursor.getColumnIndex(OpenableColumns.SIZE);
++                if (index >= 0 && !cursor.isNull(index)) {
++                    return cursor.getLong(index);
++                }
++            }
++        } catch (Exception e) {
++            Log.e(TAG, "Failed to get file size for " + uriString, e);
++        } finally {
++            if (cursor != null) {
++                cursor.close();
++            }
++        }
++        return -1;
++    }
++
++    public String getMimeType(String uriString) {
++        Uri uri = Uri.parse(uriString);
++        String type = mContext.getContentResolver().getType(uri);
++        if (type != null) {
++            return type;
++        }
++        String ext = MimeTypeMap.getFileExtensionFromUrl(uriString);
++        if (ext != null) {
++            type = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
++        }
++        return type != null ? type : "application/octet-stream";
++    }
++
++    public ParcelFileDescriptor openFileToRead(String uriString) throws FileNotFoundException {
++        Uri uri = Uri.parse(uriString);
++        return mContext.getContentResolver().openFileDescriptor(uri, "r");
++    }
++
++    public ParcelFileDescriptor openFileToWrite(String uriString) throws FileNotFoundException {
++        Uri uri = Uri.parse(uriString);
++        return mContext.getContentResolver().openFileDescriptor(uri, "w");
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/DocumentsProviderHandler.java b/src/org/chromium/arc/file_system/DocumentsProviderHandler.java
+new file mode 100644
+index 000000000..fe8a70c6d
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/DocumentsProviderHandler.java
+@@ -0,0 +1,472 @@
++package org.chromium.arc.file_system;
++
++import android.content.Context;
++import android.content.res.AssetFileDescriptor;
++import android.database.ContentObserver;
++import android.database.Cursor;
++import android.graphics.Point;
++import android.net.Uri;
++import android.os.Bundle;
++import android.os.ParcelFileDescriptor;
++import android.provider.DocumentsContract;
++import android.provider.MediaStore;
++import android.util.Log;
++import java.io.Closeable;
++import java.io.FileNotFoundException;
++import java.io.IOException;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.HashMap;
++import java.util.Iterator;
++import java.util.List;
++import java.util.Map;
++import org.chromium.arc.mojom.Document;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.arc.mojom.Root;
++import org.chromium.arc.mojom.RootSize;
++
++class DocumentsProviderHandler {
++    private static final int FILE_SYSTEM_HOST_DOCUMENT_WATCHER_VERSION = 3;
++    private static final int FILE_SYSTEM_HOST_ON_ROOTS_CHANGED_VERSION = 10;
++    private static final String MEDIA_DOCUMENTS_PROVIDER_AUTHORITY =
++            "com.android.providers.media.documents";
++    private static final int SLEEP_INTERVAL_FOR_CLOUD_SYNC = 1500;
++    private static final String TAG = "DocumentsProviderHandler";
++
++    private final Context mContext;
++    final FileSystemHostHolder mHostHolder;
++    private final DocumentsProviderRoots mProviderRoots;
++    private final WatcherSet mWatcherSet = new WatcherSet();
++    private final RootsObserver mRootsObserver = new RootsObserver();
++
++    public DocumentsProviderHandler(Context context, FileSystemHostHolder hostHolder) {
++        mContext = context;
++        mHostHolder = hostHolder;
++        mProviderRoots = new DocumentsProviderRoots(context);
++        mProviderRoots.registerObserver(mRootsObserver);
++        mProviderRoots.startMonitoring();
++    }
++
++    public Document getDocument(String authority, String documentId) {
++        Document[] docs = queryDocuments(
++                DocumentsContract.buildDocumentUri(authority, documentId),
++                isMediaDocumentsProvider(authority), -1);
++        if (docs == null || docs.length < 1) {
++            return null;
++        }
++        if (docs.length >= 2) {
++            Log.e(TAG, "queryDocument query returned multiple documents; ignoring rest");
++        }
++        return docs[0];
++    }
++
++    public Document[] getChildDocuments(String authority, String documentId) {
++        if (!isDirectory(getDocument(authority, documentId))) {
++            return null;
++        }
++        return queryDocuments(
++                DocumentsContract.buildChildDocumentsUri(authority, documentId),
++                isMediaDocumentsProvider(authority), -1);
++    }
++
++    public Document[] getRecentDocuments(String authority, String rootId) {
++        return queryDocuments(
++                DocumentsContract.buildRecentDocumentsUri(authority, rootId),
++                isMediaDocumentsProvider(authority), 1000);
++    }
++
++    public Root[] getRoots() {
++        return mProviderRoots.getRoots();
++    }
++
++    public RootSize getRootSize(String authority, String rootId) {
++        return mProviderRoots.getRootSize(authority, rootId);
++    }
++
++    public boolean deleteDocument(String authority, String documentId) {
++        try {
++            return DocumentsContract.deleteDocument(mContext.getContentResolver(),
++                    DocumentsContract.buildDocumentUri(authority, documentId));
++        } catch (FileNotFoundException e) {
++            Log.e(TAG, "Document not found: ", e);
++            return false;
++        } catch (Throwable t) {
++            return false;
++        }
++    }
++
++    public Document renameDocument(String authority, String documentId,
++            String displayName) {
++        try {
++            return queryDocument(DocumentsContract.renameDocument(
++                    mContext.getContentResolver(),
++                    DocumentsContract.buildDocumentUri(authority, documentId),
++                    displayName));
++        } catch (FileNotFoundException e) {
++            Log.e(TAG, "Document not found: ", e);
++            return null;
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
++    public Document createDocument(String authority, String parentDocumentId,
++            String mimeType, String displayName) {
++        Document result = null;
++        try {
++            result = queryDocument(DocumentsContract.createDocument(
++                    mContext.getContentResolver(),
++                    DocumentsContract.buildDocumentUri(authority, parentDocumentId),
++                    mimeType, displayName));
++            Thread.sleep(SLEEP_INTERVAL_FOR_CLOUD_SYNC);
++        } catch (FileNotFoundException e) {
++            Log.e(TAG, "Document not found: ", e);
++        } catch (IllegalArgumentException | InterruptedException e) {
++            Log.e(TAG, "Failed to sleep during sync: ", e);
++        } catch (Throwable t) {
++            // fall through
++        }
++        return result;
++    }
++
++    public Document copyDocument(String authority, String documentId,
++            String targetParentDocumentId) {
++        try {
++            return queryDocument(DocumentsContract.copyDocument(
++                    mContext.getContentResolver(),
++                    DocumentsContract.buildDocumentUri(authority, documentId),
++                    DocumentsContract.buildDocumentUri(authority, targetParentDocumentId)));
++        } catch (FileNotFoundException e) {
++            Log.e(TAG, "Document not found: ", e);
++            return null;
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
++    public Document moveDocument(String authority, String documentId,
++            String sourceParentDocumentId, String targetParentDocumentId) {
++        try {
++            return queryDocument(DocumentsContract.moveDocument(
++                    mContext.getContentResolver(),
++                    DocumentsContract.buildDocumentUri(authority, documentId),
++                    DocumentsContract.buildDocumentUri(authority, sourceParentDocumentId),
++                    DocumentsContract.buildDocumentUri(authority, targetParentDocumentId)));
++        } catch (FileNotFoundException e) {
++            Log.e(TAG, "Document not found: ", e);
++            return null;
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
++    public ParcelFileDescriptor openThumbnail(Uri uri, Point size) {
++        try {
++            Bundle opts = new Bundle();
++            opts.putParcelable("android.content.extra.SIZE", size);
++            AssetFileDescriptor afd = mContext.getContentResolver()
++                    .openTypedAssetFileDescriptor(uri, "*/*", opts, null);
++            if (afd == null) {
++                return null;
++            }
++            if (afd.getDeclaredLength() == -1) {
++                return afd.getParcelFileDescriptor();
++            }
++            Log.w(TAG, "Not a whole file: " + uri);
++            try {
++                afd.close();
++            } catch (IOException e) {
++                Log.e(TAG, "Failed to close AssetFileDescriptor", e);
++            }
++            return null;
++        } catch (FileNotFoundException | RuntimeException e) {
++            Log.e(TAG, "Failed to open: " + uri, e);
++            return null;
++        }
++    }
++
++    public long addWatcher(String authority, String documentId) {
++        if (!isDirectory(getDocument(authority, documentId))) {
++            return -1;
++        }
++        Uri childUri = DocumentsContract.buildChildDocumentsUri(authority, documentId);
++        try {
++            Cursor cursor = mContext.getContentResolver().query(childUri,
++                    new String[]{"document_id"}, null, null, null);
++            if (cursor == null) {
++                return -1;
++            }
++            return mWatcherSet.add(authority, documentId, cursor);
++        } catch (RuntimeException e) {
++            Log.e(TAG, "Failed to query: " + childUri, e);
++            return -1;
++        }
++    }
++
++    public boolean removeWatcher(long watcherId) {
++        return mWatcherSet.remove(watcherId);
++    }
++
++    void updateRootsForTesting(String authority) {
++        mProviderRoots.updateRootsForAuthorityForTesting(authority);
++    }
++
++    void cleanupForTesting() {
++        mProviderRoots.stopMonitoring();
++        mProviderRoots.unregisterObserver(mRootsObserver);
++    }
++
++    static boolean isDirectory(Document doc) {
++        return doc != null && "vnd.android.document/directory".equals(doc.mimeType);
++    }
++
++    private static boolean isMediaDocumentsProvider(String authority) {
++        return MEDIA_DOCUMENTS_PROVIDER_AUTHORITY.equals(authority);
++    }
++
++    private Document[] queryDocuments(Uri uri, boolean isMedia, int limit) {
++        ArrayList<Document> docs = new ArrayList<>();
++        String[] projection = {"document_id", "_display_name", "mime_type",
++                "_size", "last_modified", "flags"};
++        Bundle queryArgs = new Bundle();
++        final String limitKey = "android:query-arg-limit";
++        if (limit >= 0) {
++            queryArgs.putInt(limitKey, limit);
++        }
++        try {
++            Cursor cursor = mContext.getContentResolver().query(uri, projection,
++                    queryArgs, null);
++            if (cursor == null) {
++                return null;
++            }
++            try {
++                Bundle extras = cursor.getExtras();
++                if (extras == null) extras = Bundle.EMPTY;
++                String[] honoredArgs = extras.getStringArray(
++                        "android.content.extra.HONORED_ARGS");
++                if (limit >= 0 && (honoredArgs == null
++                        || !Arrays.stream(honoredArgs).anyMatch(limitKey::equals))) {
++                    Log.e(TAG, "Trying to set limit, but QUERY_ARG_LIMIT is ignored.");
++                }
++                int idCol = cursor.getColumnIndexOrThrow("document_id");
++                int nameCol = cursor.getColumnIndexOrThrow("_display_name");
++                int mimeCol = cursor.getColumnIndexOrThrow("mime_type");
++                int sizeCol = cursor.getColumnIndexOrThrow("_size");
++                int modifiedCol = cursor.getColumnIndexOrThrow("last_modified");
++                int flagsCol = cursor.getColumnIndexOrThrow("flags");
++                cursor.moveToFirst();
++                while (!cursor.isAfterLast()) {
++                    if (cursor.isNull(idCol) || cursor.isNull(mimeCol)) {
++                        Log.e(TAG, "Received a document missing required fields.");
++                    } else {
++                        String docId = cursor.getString(idCol);
++                        String name = cursor.isNull(nameCol) ? "" : cursor.getString(nameCol);
++                        String mime = cursor.getString(mimeCol);
++                        long size = cursor.isNull(sizeCol) ? -1L : cursor.getLong(sizeCol);
++                        long modified = cursor.isNull(modifiedCol) ? 0L
++                                : cursor.getLong(modifiedCol);
++                        int flags = cursor.getInt(flagsCol);
++                        Document doc = new Document();
++                        doc.documentId = docId;
++                        doc.displayName = name;
++                        doc.mimeType = mime;
++                        doc.size = size;
++                        doc.lastModified = modified;
++                        doc.supportsDelete = (flags & 4) != 0;
++                        doc.supportsRename = (flags & 64) != 0;
++                        doc.supportsWrite = (flags & 2) != 0;
++                        doc.dirSupportsCreate = (flags & 8) != 0;
++                        doc.supportsCopy = (flags & 128) != 0;
++                        doc.supportsMove = (flags & 256) != 0;
++                        doc.supportsThumbnail = (flags & 1) != 0;
++                        docs.add(doc);
++                    }
++                    cursor.moveToNext();
++                }
++            } catch (IllegalArgumentException e) {
++                Log.e(TAG, "Required column(s) are missing.");
++                return null;
++            } finally {
++                cursor.close();
++            }
++            if (isMedia) {
++                queryMediaStoreDocumentLocations(docs);
++            }
++            return docs.toArray(new Document[0]);
++        } catch (RuntimeException e) {
++            Log.e(TAG, "Failed to query: " + uri, e);
++            return null;
++        }
++    }
++
++    private Document queryDocument(Uri uri) {
++        Document[] docs = queryDocuments(uri, false, 1);
++        if (docs == null || docs.length != 1) {
++            Log.e(TAG, "Failed to query a single document: " + uri);
++            return null;
++        }
++        return docs[0];
++    }
++
++    private void queryMediaStoreDocumentLocations(List<Document> docs) {
++        Map<Long, Document> imageMap = new HashMap<>();
++        Map<Long, Document> videoMap = new HashMap<>();
++        Map<Long, Document> audioMap = new HashMap<>();
++        Map<Long, Document> otherMap = new HashMap<>();
++        for (Document doc : docs) {
++            if (isDirectory(doc)) continue;
++            int colonIdx = doc.documentId.indexOf(':');
++            if (colonIdx < 0) {
++                Log.w(TAG, "Failed to parse a media document ID: " + doc.documentId);
++                continue;
++            }
++            String type = doc.documentId.substring(0, colonIdx);
++            try {
++                long id = Long.parseLong(doc.documentId.substring(colonIdx + 1));
++                switch (type) {
++                    case "image": imageMap.put(id, doc); break;
++                    case "video": videoMap.put(id, doc); break;
++                    case "audio": audioMap.put(id, doc); break;
++                    default: otherMap.put(id, doc); break;
++                }
++            } catch (NumberFormatException e) {
++                Log.w(TAG, "Failed to parse a media document ID: " + doc.documentId);
++            }
++        }
++        queryMediaStoreDocumentLocations(
++                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, imageMap);
++        queryMediaStoreDocumentLocations(
++                MediaStore.Video.Media.EXTERNAL_CONTENT_URI, videoMap);
++        queryMediaStoreDocumentLocations(
++                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, audioMap);
++        queryMediaStoreDocumentLocations(
++                MediaStore.Files.getContentUri("external"), otherMap);
++    }
++
++    private void queryMediaStoreDocumentLocations(Uri collection,
++            Map<Long, Document> docMap) {
++        if (docMap.isEmpty()) return;
++        StringBuilder selection = new StringBuilder("_id IN (");
++        boolean first = true;
++        for (Long id : docMap.keySet()) {
++            if (!first) selection.append(", ");
++            first = false;
++            selection.append(id);
++        }
++        selection.append(")");
++        try {
++            Cursor cursor = mContext.getContentResolver().query(collection,
++                    new String[]{"_id", "_data"}, selection.toString(), null, null);
++            if (cursor == null) return;
++            try {
++                int idCol = cursor.getColumnIndex("_id");
++                int dataCol = cursor.getColumnIndex("_data");
++                if (idCol < 0 || dataCol < 0) {
++                    Log.e(TAG, "Required columns are missing.");
++                    return;
++                }
++                cursor.moveToFirst();
++                while (!cursor.isAfterLast()) {
++                    if (!cursor.isNull(idCol) && !cursor.isNull(dataCol)) {
++                        long id = cursor.getLong(idCol);
++                        String path = cursor.getString(dataCol);
++                        Document doc = docMap.get(id);
++                        if (doc != null) {
++                            doc.androidFileSystemPath = path;
++                        }
++                    }
++                    cursor.moveToNext();
++                }
++            } finally {
++                cursor.close();
++            }
++        } catch (RuntimeException e) {
++            Log.e(TAG, "Failed to query: " + collection, e);
++        }
++    }
++
++    private class Watcher extends ContentObserver implements Closeable {
++        private final String mAuthority;
++        private final String mDocumentId;
++        private final Cursor mCursor;
++        private final long mWatcherId;
++        private boolean mClosed = false;
++
++        public Watcher(long watcherId, String authority, String documentId,
++                Cursor cursor) {
++            super(null);
++            mWatcherId = watcherId;
++            mAuthority = authority;
++            mDocumentId = documentId;
++            mCursor = cursor;
++            cursor.registerContentObserver(this);
++        }
++
++        @Override
++        public void close() {
++            synchronized (this) {
++                if (!mClosed) {
++                    mCursor.unregisterContentObserver(this);
++                    mCursor.close();
++                    mClosed = true;
++                }
++            }
++        }
++
++        @Override
++        public void onChange(boolean selfChange) {
++            boolean deleted = !DocumentsProviderHandler.isDirectory(
++                    DocumentsProviderHandler.this.getDocument(mAuthority, mDocumentId));
++            synchronized (this) {
++                if (mClosed) return;
++                synchronized (mHostHolder) {
++                    FileSystemHost host = mHostHolder.getLocked(
++                            FILE_SYSTEM_HOST_DOCUMENT_WATCHER_VERSION);
++                    if (host != null) {
++                        host.onDocumentChanged(mWatcherId, deleted ? 1 : 0);
++                    }
++                }
++            }
++        }
++    }
++
++    private class WatcherSet {
++        private long mNextWatcherId = 1;
++        private final Map<Long, Watcher> mWatcherMap = new HashMap<>();
++
++        public long add(String authority, String documentId, Cursor cursor) {
++            long id;
++            synchronized (this) {
++                id = mNextWatcherId++;
++            }
++            Watcher watcher = new Watcher(id, authority, documentId, cursor);
++            synchronized (this) {
++                mWatcherMap.put(id, watcher);
++            }
++            return id;
++        }
++
++        public boolean remove(long watcherId) {
++            Watcher watcher;
++            synchronized (this) {
++                watcher = mWatcherMap.remove(watcherId);
++            }
++            if (watcher == null) return false;
++            watcher.close();
++            return true;
++        }
++    }
++
++    private class RootsObserver implements DocumentsProviderRoots.Observer {
++        @Override
++        public void onRootsChanged() {
++            synchronized (mHostHolder) {
++                FileSystemHost host = mHostHolder.getLocked(
++                        FILE_SYSTEM_HOST_ON_ROOTS_CHANGED_VERSION);
++                if (host != null) {
++                    host.onRootsChanged();
++                }
++            }
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/DocumentsProviderRoots.java b/src/org/chromium/arc/file_system/DocumentsProviderRoots.java
+new file mode 100644
+index 000000000..b82cd3367
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/DocumentsProviderRoots.java
+@@ -0,0 +1,443 @@
++package org.chromium.arc.file_system;
++
++import android.content.BroadcastReceiver;
++import android.content.ContentProviderClient;
++import android.content.ContentResolver;
++import android.content.Context;
++import android.content.Intent;
++import android.content.IntentFilter;
++import android.content.pm.PackageManager;
++import android.content.pm.ProviderInfo;
++import android.content.pm.ResolveInfo;
++import android.database.ContentObserver;
++import android.database.Cursor;
++import android.graphics.Bitmap;
++import android.graphics.Canvas;
++import android.graphics.drawable.BitmapDrawable;
++import android.graphics.drawable.Drawable;
++import android.net.Uri;
++import android.os.DeadObjectException;
++import android.os.Handler;
++import android.os.Looper;
++import android.os.RemoteException;
++import android.provider.DocumentsContract;
++import android.util.Log;
++import java.nio.ByteBuffer;
++import java.util.ArrayList;
++import java.util.HashSet;
++import java.util.Iterator;
++import java.util.Objects;
++import java.util.Set;
++import java.util.TreeMap;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++import java.util.concurrent.Future;
++import libcore.io.IoUtils;
++import org.chromium.arc.mojom.ArcBitmap;
++import org.chromium.arc.mojom.Root;
++import org.chromium.arc.mojom.RootSize;
++
++final class DocumentsProviderRoots {
++    private static final Set<String> AUTHORITIES_TO_AVOID_CACHING = Set.of(
++            "com.android.externalstorage.documents",
++            "com.android.providers.downloads.documents",
++            "com.android.providers.media.documents",
++            "com.google.android.apps.docs.storage");
++    private static final String TAG = "DocumentsProviderRoots";
++
++    private final Context mContext;
++    private final ArrayList<Observer> mObservers = new ArrayList<>();
++    private final Object mCachedRootsLock = new Object();
++    private TreeMap<String, ArrayList<Root>> mCachedRoots = new TreeMap<>();
++    private final ContentObserver mRootsChangedObserver = new RootsChangedObserver();
++    private final Set<String> mObservedAuthorities = new HashSet<>();
++    private final BroadcastReceiver mPackageReceiver = new BroadcastReceiver() {
++        @Override
++        public void onReceive(Context context, Intent intent) {
++            Uri data = intent.getData();
++            new UpdateRootsTaskForPackage(
++                    data != null ? data.getSchemeSpecificPart() : null).executeOnExecutor();
++        }
++    };
++
++    public interface Observer {
++        void onRootsChanged();
++    }
++
++    private class RootsChangedObserver extends ContentObserver {
++        public RootsChangedObserver() {
++            super(new Handler(Looper.getMainLooper()));
++        }
++
++        @Override
++        public void onChange(boolean selfChange, Uri uri) {
++            if (uri == null) {
++                Log.w(TAG, "Received onChange event for null url. Skipping.");
++                return;
++            }
++            if (AUTHORITIES_TO_AVOID_CACHING.contains(uri.getAuthority())) {
++                return;
++            }
++            new UpdateRootsTaskForAuthority(uri.getAuthority()).executeOnExecutor();
++        }
++    }
++
++    public DocumentsProviderRoots(Context context) {
++        mContext = context;
++    }
++
++    public void updateRootsForAuthorityForTesting(String authority) {
++        try {
++            new UpdateRootsTaskForAuthority(authority).execute().get();
++        } catch (Exception e) {
++            Log.e(TAG, "Failed to update roots from " + authority, e);
++        }
++    }
++
++    public void startMonitoring() {
++        registerPackageReceiver();
++        new UpdateRootsTaskForPackage(null).executeOnExecutor();
++    }
++
++    public void stopMonitoring() {
++        if (!mObservedAuthorities.isEmpty()) {
++            mContext.getContentResolver().unregisterContentObserver(mRootsChangedObserver);
++            mObservedAuthorities.clear();
++        }
++        mContext.unregisterReceiver(mPackageReceiver);
++    }
++
++    public void registerObserver(Observer observer) {
++        mObservers.add(observer);
++    }
++
++    public void unregisterObserver(Observer observer) {
++        mObservers.remove(observer);
++    }
++
++    public Root[] getRoots() {
++        ArrayList<Root> allRoots = new ArrayList<>();
++        synchronized (mCachedRootsLock) {
++            for (String key : mCachedRoots.keySet()) {
++                allRoots.addAll(mCachedRoots.get(key));
++            }
++        }
++        return allRoots.toArray(new Root[0]);
++    }
++
++    public RootSize getRootSize(String authority, String rootId) {
++        ContentResolver resolver = mContext.getContentResolver();
++        Cursor cursor = null;
++        try {
++            cursor = getCursorForUri(resolver,
++                    DocumentsContract.buildRootsUri(authority), authority,
++                    new String[]{"root_id", "available_bytes", "capacity_bytes"});
++            if (cursor == null) {
++                return null;
++            }
++            int rootIdCol = cursor.getColumnIndexOrThrow("root_id");
++            int availCol = cursor.getColumnIndex("available_bytes");
++            int capacityCol = cursor.getColumnIndex("capacity_bytes");
++            while (cursor.moveToNext()) {
++                if (rootId.equals(cursor.getString(rootIdCol))) {
++                    RootSize size = new RootSize();
++                    size.availableBytes = availCol >= 0 ? cursor.getLong(availCol) : -1L;
++                    size.capacityBytes = capacityCol >= 0 ? cursor.getLong(capacityCol) : -1L;
++                    return size;
++                }
++            }
++        } catch (IllegalArgumentException e) {
++            Log.e(TAG, "Required root column is missing.");
++        } catch (Exception e) {
++            Log.w(TAG, "Failed to load root from " + authority, e);
++        } finally {
++            IoUtils.closeQuietly(cursor);
++        }
++        return null;
++    }
++
++    private class UpdateRootsTaskForPackage {
++        private boolean mIsCacheModified = false;
++        private final String mPackageName;
++
++        public UpdateRootsTaskForPackage(String packageName) {
++            mPackageName = packageName;
++        }
++
++        public void executeOnExecutor() {
++            ExecutorService executor = Executors.newSingleThreadExecutor();
++            Handler handler = new Handler(Looper.getMainLooper());
++            executor.execute(() -> {
++                TreeMap<String, ArrayList<Root>> newRoots = new TreeMap<>();
++                ArrayList<String> unchangedAuthorities = new ArrayList<>();
++                for (ResolveInfo info : mContext.getPackageManager()
++                        .queryIntentContentProviders(
++                                new Intent("android.content.action.DOCUMENTS_PROVIDER"), 0)) {
++                    ProviderInfo providerInfo = info.providerInfo;
++                    String authority = providerInfo.authority;
++                    if (authority == null
++                            || AUTHORITIES_TO_AVOID_CACHING.contains(authority)) {
++                        continue;
++                    }
++                    if (mPackageName == null
++                            || mPackageName.equals(providerInfo.packageName)) {
++                        ArrayList<Root> roots = loadRootsForAuthority(authority);
++                        if (roots != null) {
++                            newRoots.put(authority, roots);
++                        }
++                    } else {
++                        unchangedAuthorities.add(authority);
++                    }
++                }
++                synchronized (mCachedRootsLock) {
++                    for (String auth : unchangedAuthorities) {
++                        ArrayList<Root> existing = mCachedRoots.get(auth);
++                        if (existing != null) {
++                            newRoots.put(auth, existing);
++                        }
++                    }
++                    if (!isSameRoots(mCachedRoots, newRoots)) {
++                        mCachedRoots = newRoots;
++                        mIsCacheModified = true;
++                    }
++                }
++                handler.post(() -> {
++                    if (mIsCacheModified) {
++                        notifyRootsChanged();
++                    }
++                });
++            });
++        }
++    }
++
++    private class UpdateRootsTaskForAuthority {
++        private final String mAuthority;
++        private boolean mIsCacheModified = false;
++        private final ExecutorService mExecutor = Executors.newSingleThreadExecutor();
++        private final Runnable mUpdateRootsRunnable;
++
++        public UpdateRootsTaskForAuthority(String authority) {
++            mAuthority = authority;
++            Handler handler = new Handler(Looper.getMainLooper());
++            mUpdateRootsRunnable = () -> {
++                ArrayList<Root> roots = loadRootsForAuthority(mAuthority);
++                synchronized (mCachedRootsLock) {
++                    if (!isSameRoots(mCachedRoots.get(mAuthority), roots)) {
++                        if (roots == null) {
++                            mCachedRoots.remove(mAuthority);
++                        } else {
++                            mCachedRoots.put(mAuthority, roots);
++                        }
++                        mIsCacheModified = true;
++                    }
++                }
++                handler.post(() -> {
++                    if (mIsCacheModified) {
++                        notifyRootsChanged();
++                    }
++                });
++            };
++        }
++
++        public void executeOnExecutor() {
++            mExecutor.execute(mUpdateRootsRunnable);
++        }
++
++        public Future<?> execute() {
++            return mExecutor.submit(mUpdateRootsRunnable);
++        }
++    }
++
++    ArrayList<Root> loadRootsForAuthority(String authority) {
++        ArrayList<Root> roots = new ArrayList<>();
++        ContentResolver resolver = mContext.getContentResolver();
++        ProviderInfo providerInfo = getProviderInfo(resolver,
++                mContext.getPackageManager(), authority);
++        if (providerInfo == null) {
++            return null;
++        }
++        Uri rootsUri = DocumentsContract.buildRootsUri(authority);
++        if (!mObservedAuthorities.contains(authority)) {
++            mContext.getContentResolver().registerContentObserver(
++                    rootsUri, true, mRootsChangedObserver);
++            mObservedAuthorities.add(authority);
++        }
++        Cursor cursor = null;
++        try {
++            cursor = getCursorForUri(resolver, rootsUri, authority,
++                    new String[]{"root_id", "document_id", "title", "summary",
++                            "icon", "flags", "mime_types"});
++            if (cursor == null) {
++                return null;
++            }
++            int rootIdCol = cursor.getColumnIndexOrThrow("root_id");
++            int docIdCol = cursor.getColumnIndexOrThrow("document_id");
++            int titleCol = cursor.getColumnIndexOrThrow("title");
++            int summaryCol = cursor.getColumnIndex("summary");
++            int iconCol = cursor.getColumnIndexOrThrow("icon");
++            int flagsCol = cursor.getColumnIndexOrThrow("flags");
++            int mimeCol = cursor.getColumnIndex("mime_types");
++            while (cursor.moveToNext()) {
++                Root root = new Root();
++                root.authority = authority;
++                root.rootId = cursor.getString(rootIdCol);
++                root.documentId = cursor.getString(docIdCol);
++                root.title = cursor.getString(titleCol);
++                root.summary = summaryCol >= 0 ? cursor.getString(summaryCol) : null;
++                root.icon = createRootIcon(
++                        iconCol >= 0 ? cursor.getInt(iconCol) : 0, providerInfo);
++                root.supportsCreate = (cursor.getInt(flagsCol) & 1) != 0;
++                String mimeTypes = mimeCol >= 0 ? cursor.getString(mimeCol) : null;
++                if (mimeTypes != null) {
++                    root.mimeTypes = mimeTypes.split("\n");
++                }
++                roots.add(root);
++            }
++        } catch (IllegalArgumentException e) {
++            Log.e(TAG, "Required column(s) are missing.");
++            IoUtils.closeQuietly(cursor);
++            return null;
++        } catch (Exception e) {
++            Log.w(TAG, "Failed to load some roots from " + authority, e);
++            if (roots.isEmpty()) roots = null;
++        } finally {
++            IoUtils.closeQuietly(cursor);
++        }
++        return (roots != null && roots.isEmpty()) ? null : roots;
++    }
++
++    private static Cursor getCursorForUri(ContentResolver resolver, Uri uri,
++            String authority, String[] projection) {
++        ContentProviderClient client = null;
++        try {
++            client = acquireUnstableProviderOrThrow(resolver, authority);
++            Cursor cursor;
++            try {
++                cursor = client.query(uri, projection, null, null, null);
++            } catch (DeadObjectException e) {
++                IoUtils.closeQuietly(client);
++                client = acquireUnstableProviderOrThrow(resolver, authority);
++                cursor = client.query(uri, projection, null, null, null);
++            }
++            IoUtils.closeQuietly(client);
++            return cursor;
++        } catch (Exception e) {
++            Log.w(TAG, "Failed to get cursor for Uri from " + authority, e);
++            IoUtils.closeQuietly(client);
++            return null;
++        }
++    }
++
++    private static ProviderInfo getProviderInfo(ContentResolver resolver,
++            PackageManager pm, String authority) {
++        ProviderInfo info = pm.resolveContentProvider(authority, 128);
++        if (info == null) {
++            Log.w(TAG, "Failed to get provider info for " + authority);
++            return null;
++        }
++        if (!info.exported) {
++            Log.w(TAG, "Provider is not exported. Failed to load roots for " + authority);
++            return null;
++        }
++        if (!info.grantUriPermissions) {
++            Log.w(TAG, "Provider doesn't grantUriPermissions. Failed to load roots for "
++                    + authority);
++            return null;
++        }
++        if (!"android.permission.MANAGE_DOCUMENTS".equals(info.readPermission)
++                || !"android.permission.MANAGE_DOCUMENTS".equals(info.writePermission)) {
++            Log.w(TAG, "Provider is not protected by MANAGE_DOCUMENTS. "
++                    + "Failed to load roots for " + authority);
++            return null;
++        }
++        return info;
++    }
++
++    private static ContentProviderClient acquireUnstableProviderOrThrow(
++            ContentResolver resolver, String authority) throws RemoteException {
++        ContentProviderClient client =
++                resolver.acquireUnstableContentProviderClient(authority);
++        if (client == null) {
++            throw new RemoteException("Failed to acquire provider for " + authority);
++        }
++        client.setDetectNotResponding(20000);
++        return client;
++    }
++
++    private ArcBitmap createRootIcon(int iconRes, ProviderInfo providerInfo) {
++        if (iconRes == 0) return null;
++        Drawable drawable = mContext.getPackageManager().getDrawable(
++                providerInfo.packageName, iconRes, providerInfo.applicationInfo);
++        Bitmap scaled = Bitmap.createScaledBitmap(
++                convertDrawableToBitmap(drawable), 32, 32, false);
++        ByteBuffer buffer = ByteBuffer.allocate(scaled.getAllocationByteCount());
++        scaled.copyPixelsToBuffer(buffer);
++        ArcBitmap bitmap = new ArcBitmap();
++        bitmap.pixelData = buffer.array();
++        bitmap.width = scaled.getWidth();
++        bitmap.height = scaled.getHeight();
++        return bitmap;
++    }
++
++    private Bitmap convertDrawableToBitmap(Drawable drawable) {
++        if (drawable == null) return null;
++        if (drawable instanceof BitmapDrawable) {
++            return ((BitmapDrawable) drawable).getBitmap();
++        }
++        Bitmap bitmap = Bitmap.createBitmap(
++                Math.max(drawable.getIntrinsicWidth(), 1),
++                Math.max(drawable.getIntrinsicHeight(), 1),
++                Bitmap.Config.ARGB_8888);
++        Canvas canvas = new Canvas(bitmap);
++        drawable.setBounds(0, 0, canvas.getWidth(), canvas.getHeight());
++        drawable.draw(canvas);
++        return bitmap;
++    }
++
++    boolean isSameRoots(TreeMap<String, ArrayList<Root>> a,
++            TreeMap<String, ArrayList<Root>> b) {
++        if (a == null || b == null) return a == b;
++        if (!a.keySet().equals(b.keySet())) return false;
++        for (String key : a.keySet()) {
++            if (!isSameRoots(a.get(key), b.get(key))) return false;
++        }
++        return true;
++    }
++
++    boolean isSameRoots(ArrayList<Root> a, ArrayList<Root> b) {
++        if (a == null || b == null) return a == b;
++        if (a.size() != b.size()) return false;
++        Iterator<Root> it1 = a.iterator();
++        Iterator<Root> it2 = b.iterator();
++        while (it1.hasNext()) {
++            if (!isSameRoot(it1.next(), it2.next())) return false;
++        }
++        return true;
++    }
++
++    private boolean isSameRoot(Root a, Root b) {
++        return Objects.equals(a.authority, b.authority)
++                && Objects.equals(a.rootId, b.rootId)
++                && Objects.equals(a.documentId, b.documentId)
++                && Objects.equals(a.title, b.title)
++                && Objects.equals(a.summary, b.summary)
++                && a.supportsCreate == b.supportsCreate
++                && Objects.equals(a.mimeTypes, b.mimeTypes);
++    }
++
++    private void registerPackageReceiver() {
++        IntentFilter filter = new IntentFilter();
++        filter.addAction(Intent.ACTION_PACKAGE_ADDED);
++        filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
++        filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
++        filter.addAction(Intent.ACTION_PACKAGE_DATA_CLEARED);
++        filter.addDataScheme("package");
++        mContext.registerReceiver(mPackageReceiver, filter);
++    }
++
++    void notifyRootsChanged() {
++        for (Observer observer : mObservers) {
++            observer.onRootsChanged();
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/FileSystemHostHolder.java b/src/org/chromium/arc/file_system/FileSystemHostHolder.java
+new file mode 100644
+index 000000000..cc1a087b4
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/FileSystemHostHolder.java
+@@ -0,0 +1,71 @@
++package org.chromium.arc.file_system;
++
++import android.util.Log;
++import org.chromium.arc.CancellationRelay;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.mojo.bindings.Callbacks;
++import org.chromium.mojo.bindings.ConnectionErrorHandler;
++import org.chromium.mojo.system.MojoException;
++
++class FileSystemHostHolder implements ConnectionErrorHandler {
++    private static final String TAG = FileSystemHostHolder.class.getSimpleName();
++    private static final FileSystemHostHolder sInstance = new FileSystemHostHolder();
++    private FileSystemHost mHost = null;
++    private int mHostVersion = -1;
++    private final CancellationRelay mCancellationRelay = new CancellationRelay();
++
++    private FileSystemHostHolder() {
++    }
++
++    public static FileSystemHostHolder getInstance() {
++        return sInstance;
++    }
++
++    public void set(FileSystemHost host, int version, Callbacks.Callback0 callback) {
++        synchronized (this) {
++            if ((mHost != null && host != null) || (mHost == null && host == null)) {
++                Log.e(TAG, "Overwriting " + mHost + " with " + host);
++            }
++            if (mHost != null) {
++                mHost.close();
++            }
++            mHost = host;
++            mHostVersion = host == null ? -1 : version;
++            if (host == null) {
++                mCancellationRelay.cancel(true);
++            } else {
++                ((FileSystemHost.Proxy) host).getProxyHandler().setErrorHandler(this);
++            }
++            callback.call();
++        }
++    }
++
++    void setForTesting(FileSystemHost host, int version) {
++        synchronized (this) {
++            mHost = host;
++            mHostVersion = host == null ? -1 : version;
++        }
++    }
++
++    public FileSystemHost getLocked(int minVersion) {
++        if (!Thread.holdsLock(this)) {
++            throw new RuntimeException("Lock must be held!");
++        }
++        if (mHost != null && mHostVersion >= minVersion) {
++            return mHost;
++        }
++        Log.w(TAG, "FileSystemHost unavailable; requires version " + minVersion
++                + ", but actual version is " + mHostVersion);
++        return null;
++    }
++
++    @Override
++    public void onConnectionError(MojoException e) {
++        Log.e(TAG, "Mojo connection error.", e);
++        set(null, -1, () -> {});
++    }
++
++    public CancellationRelay getCancellationRelay() {
++        return mCancellationRelay;
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java b/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java
+new file mode 100644
+index 000000000..cc3ff4b68
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java
+@@ -0,0 +1,483 @@
++package org.chromium.arc.file_system;
++
++import android.content.Context;
++import android.database.Cursor;
++import android.graphics.Point;
++import android.media.MediaScannerConnection;
++import android.net.Uri;
++import android.os.ParcelFileDescriptor;
++import android.provider.MediaStore;
++import android.util.Log;
++import java.io.IOException;
++import java.nio.file.Files;
++import java.nio.file.LinkOption;
++import java.nio.file.Paths;
++import java.util.HashMap;
++import java.util.Map;
++import java.util.concurrent.atomic.AtomicLong;
++import org.chromium.arc.bridge.ArcBridgeSupport;
++import org.chromium.arc.mojom.FileSession;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.arc.mojom.FileSystemInstance;
++import org.chromium.arc.mojom.OpenUrlsRequest;
++import org.chromium.arc.mojom.Size;
++import org.chromium.arc.mojom.WindowInfo;
++import org.chromium.mojo.bindings.ConnectionErrorHandler;
++import org.chromium.mojo.system.MojoException;
++import org.chromium.mojo.system.UntypedHandle;
++import org.chromium.url.mojom.Url;
++
++class FileSystemInstanceImpl implements FileSystemInstance {
++    private static final String TAG = FileSystemInstanceImpl.class.getSimpleName();
++    private final ContentProviderHandler mContentProviderHandler;
++    private final Context mContext;
++    private final DocumentsProviderHandler mDocumentsProviderHandler;
++    private final OpenUrlsHandler mOpenUrlsHandler;
++    private final AtomicLong mIdCounter = new AtomicLong(1);
++    private final Map<String, ParcelFileDescriptor> mFileSessionMap = new HashMap<>();
++
++    public FileSystemInstanceImpl(Context context) {
++        mContext = context;
++        mContentProviderHandler = new ContentProviderHandler(context);
++        mDocumentsProviderHandler = new DocumentsProviderHandler(context,
++                FileSystemHostHolder.getInstance());
++        mOpenUrlsHandler = new OpenUrlsHandler(context);
++    }
++
++    void updateRootsForTesting(String authority) {
++        mDocumentsProviderHandler.updateRootsForTesting(authority);
++    }
++
++    private String createUrlID(String url) {
++        return url + "_" + mIdCounter.incrementAndGet();
++    }
++
++    private UntypedHandle updateFileSessionMapAndGetHandle(String urlId,
++            ParcelFileDescriptor pfd) {
++        int fd = pfd.getFd();
++        UntypedHandle handle = null;
++        try {
++            handle = ArcBridgeSupport.getInstance().convertFileDescriptorToMojoHandle(
++                    pfd.dup().detachFd());
++        } catch (IOException | NullPointerException e) {
++            Log.e(TAG, "Failed to open file to write for fd: " + fd, e);
++            return null;
++        }
++        if (handle == null) {
++            Log.e(TAG, "Failed to obtain mojo handle from fd: " + fd);
++            try {
++                pfd.close();
++            } catch (IOException e) {
++                // ignore
++            }
++            return null;
++        }
++        synchronized (this) {
++            if (mFileSessionMap.containsKey(urlId)) {
++                Log.wtf(TAG, "Unexpected FileSession map already contains ID: " + fd);
++                try {
++                    pfd.close();
++                } catch (IOException e) {
++                    // ignore
++                }
++                return null;
++            }
++            mFileSessionMap.put(urlId, pfd);
++        }
++        return handle;
++    }
++
++    @Override
++    public void onConnectionError(MojoException e) {
++        Log.e(TAG, "Mojo connection error.", e);
++    }
++
++    @Override
++    public void close() {
++        Log.i(TAG, "Mojo connection closed.");
++    }
++
++    @Override
++    public void init(FileSystemHost host, InitResponse callback) {
++        ArcBridgeSupport.buildThreadSafeProxy(host, FileSystemHost.MANAGER,
++                (ConnectionErrorHandler) null,
++                (proxy, version) -> FileSystemHostHolder.getInstance().set(
++                        proxy, version, callback));
++    }
++
++    @Override
++    public void requestMediaScan(String[] paths) {
++        MediaScannerConnection.scanFile(mContext, paths, null, null);
++    }
++
++    @Override
++    public void reindexDirectory(String directory) {
++        requestMediaScan(new String[]{directory});
++        try {
++            Cursor cursor = mContext.getContentResolver().query(
++                    MediaStore.Files.getContentUri("external"),
++                    new String[]{"_data"}, "_data LIKE ?",
++                    new String[]{directory + "/%"}, null);
++            if (cursor != null) {
++                try {
++                    while (cursor.moveToNext()) {
++                        requestMediaScan(new String[]{
++                                cursor.getString(cursor.getColumnIndex("_data"))});
++                    }
++                } finally {
++                    cursor.close();
++                }
++            }
++        } catch (Exception e) {
++            Log.e(TAG, "Failed to query media files from MediaStore.");
++        }
++    }
++
++    @Override
++    public void requestFileRemovalScan(String[] directories) {
++        for (String dir : directories) {
++            try {
++                Cursor cursor = mContext.getContentResolver().query(
++                        MediaStore.Files.getContentUri("external"),
++                        new String[]{"_data", "media_type"},
++                        "_data LIKE ? AND _data NOT LIKE ?",
++                        new String[]{dir + "/%", dir + "/%/%"}, null);
++                if (cursor != null) {
++                    try {
++                        while (cursor.moveToNext()) {
++                            String path = cursor.getString(
++                                    cursor.getColumnIndex("_data"));
++                            if (!Files.exists(Paths.get(path), LinkOption.NOFOLLOW_LINKS)) {
++                                if (cursor.getInt(cursor.getColumnIndex("media_type")) != 0) {
++                                    requestMediaScan(new String[]{path});
++                                } else {
++                                    reindexDirectory(path);
++                                }
++                            }
++                        }
++                    } finally {
++                        cursor.close();
++                    }
++                }
++            } catch (Exception e) {
++                Log.e(TAG, "Failed to query media files from MediaStore.");
++            }
++        }
++    }
++
++    @Override
++    public void getFileSize(String url, GetFileSizeResponse callback) {
++        try {
++            callback.call(mContentProviderHandler.getFileSize(Uri.parse(url)));
++        } catch (Throwable t) {
++            try {
++                callback.call(-1L);
++            } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e);
++            }
++            throw t;
++        }
++    }
++
++    @Override
++    public void getMimeType(String url, GetMimeTypeResponse callback) {
++        try {
++            callback.call(mContentProviderHandler.getMimeType(Uri.parse(url)));
++        } catch (Throwable t) {
++            try {
++                callback.call(null);
++            } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e);
++            }
++            throw t;
++        }
++    }
++
++    @Override
++    public void openThumbnail(String url, Size size,
++            OpenThumbnailResponse callback) {
++        new MojoAsyncTask<UntypedHandle>() {
++            @Override
++            protected UntypedHandle doInBackground() {
++                ParcelFileDescriptor pfd = mDocumentsProviderHandler.openThumbnail(
++                        Uri.parse(url), new Point(size.width, size.height));
++                if (pfd == null) {
++                    return null;
++                }
++                return ArcBridgeSupport.getInstance().convertFileDescriptorToMojoHandle(
++                        pfd.detachFd());
++            }
++
++            @Override
++            protected void onPostExecute(UntypedHandle handle) {
++                try {
++                    callback.call(handle);
++                } catch (MojoException e) {
++                    Log.e(TAG, "Failed to call the callback: ", e);
++                }
++            }
++        }.execute();
++    }
++
++    @Override
++    public void closeFileSession(String urlId, String error) {
++        try {
++            synchronized (this) {
++                ParcelFileDescriptor pfd = mFileSessionMap.get(urlId);
++                if (pfd == null) {
++                    Log.e(TAG, "Failed to find the file descriptor for URL ID: " + urlId);
++                    return;
++                }
++                mFileSessionMap.remove(urlId);
++                if (error.isEmpty()) {
++                    pfd.close();
++                } else {
++                    pfd.closeWithError(error);
++                }
++            }
++        } catch (IOException | NullPointerException e) {
++            Log.e(TAG, "Failed to close the file descriptor for URL ID: " + urlId, e);
++        }
++    }
++
++    @Override
++    public void openFileSessionToWrite(Url url,
++            OpenFileSessionToWriteResponse callback) {
++        new MojoAsyncTask<FileSession>() {
++            @Override
++            protected FileSession doInBackground() {
++                try {
++                    String urlStr = url.url;
++                    ParcelFileDescriptor pfd = mContentProviderHandler.openFileToWrite(
++                            Uri.parse(urlStr));
++                    if (pfd == null) {
++                        Log.e(TAG, "Failed to obtain fd for URL: " + urlStr);
++                        return null;
++                    }
++                    String urlId = createUrlID(urlStr);
++                    UntypedHandle handle = updateFileSessionMapAndGetHandle(urlId, pfd);
++                    if (handle == null) {
++                        Log.e(TAG, "Failed to obtain handle for URL: " + urlStr);
++                        return null;
++                    }
++                    FileSession session = new FileSession();
++                    session.urlId = urlId;
++                    session.fd = handle;
++                    return session;
++                } catch (Throwable e) {
++                    return null;
++                }
++            }
++
++            @Override
++            protected void onPostExecute(FileSession session) {
++                try {
++                    callback.call(session);
++                } catch (MojoException e) {
++                    Log.e(TAG, "Failed to call the callback: ", e);
++                }
++            }
++        }.execute();
++    }
++
++    @Override
++    public void openFileSessionToRead(Url url,
++            OpenFileSessionToReadResponse callback) {
++        new MojoAsyncTask<FileSession>() {
++            @Override
++            protected FileSession doInBackground() {
++                try {
++                    String urlStr = url.url;
++                    ParcelFileDescriptor pfd = mContentProviderHandler.openFileToRead(
++                            Uri.parse(urlStr));
++                    if (pfd == null) {
++                        Log.e(TAG, "Failed to obtain fd for URL: " + urlStr);
++                        return null;
++                    }
++                    String urlId = createUrlID(urlStr);
++                    UntypedHandle handle = updateFileSessionMapAndGetHandle(urlId, pfd);
++                    if (handle == null) {
++                        Log.e(TAG, "Failed to obtain handle for URL: " + urlStr);
++                        return null;
++                    }
++                    FileSession session = new FileSession();
++                    session.urlId = urlId;
++                    session.fd = handle;
++                    return session;
++                } catch (Throwable e) {
++                    return null;
++                }
++            }
++
++            @Override
++            protected void onPostExecute(FileSession session) {
++                try {
++                    callback.call(session);
++                } catch (MojoException e) {
++                    Log.e(TAG, "Failed to call the callback: ", e);
++                }
++            }
++        }.execute();
++    }
++
++    @Override
++    public void getDocument(String authority, String documentId,
++            GetDocumentResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.getDocument(authority, documentId));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void getChildDocuments(String authority, String documentId,
++            GetChildDocumentsResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.getChildDocuments(authority, documentId));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void getRecentDocuments(String authority, String rootId,
++            GetRecentDocumentsResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.getRecentDocuments(authority, rootId));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void getRoots(GetRootsResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.getRoots());
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void getRootSize(String authority, String rootId,
++            GetRootSizeResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.getRootSize(authority, rootId));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void deleteDocument(String authority, String documentId,
++            DeleteDocumentResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.deleteDocument(authority, documentId));
++        } catch (Throwable t) {
++            try { callback.call(false); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void renameDocument(String authority, String documentId,
++            String displayName, RenameDocumentResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.renameDocument(
++                    authority, documentId, displayName));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void createDocument(String authority, String parentDocumentId,
++            String mimeType, String displayName, CreateDocumentResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.createDocument(
++                    authority, parentDocumentId, mimeType, displayName));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void copyDocument(String authority, String documentId,
++            String targetParentDocumentId, CopyDocumentResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.copyDocument(
++                    authority, documentId, targetParentDocumentId));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void moveDocument(String authority, String documentId,
++            String sourceParentDocumentId, String targetParentDocumentId,
++            MoveDocumentResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.moveDocument(
++                    authority, documentId, sourceParentDocumentId, targetParentDocumentId));
++        } catch (Throwable t) {
++            try { callback.call(null); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void addWatcher(String authority, String documentId,
++            AddWatcherResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.addWatcher(authority, documentId));
++        } catch (Throwable t) {
++            try { callback.call(-1L); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void removeWatcher(long watcherId, RemoveWatcherResponse callback) {
++        try {
++            callback.call(mDocumentsProviderHandler.removeWatcher(watcherId));
++        } catch (Throwable t) {
++            try { callback.call(false); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++
++    @Override
++    public void openUrlsWithPermissionAndWindowInfo(OpenUrlsRequest request,
++            WindowInfo windowInfo,
++            OpenUrlsWithPermissionAndWindowInfoResponse callback) {
++        try {
++            mOpenUrlsHandler.openUrlsWithPermission(request, windowInfo);
++            callback.call();
++        } catch (Throwable t) {
++            try { callback.call(); } catch (MojoException e) {
++                Log.e(TAG, "Failed to call the callback: ", e); }
++            throw t;
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/MediaStoreDelegate.java b/src/org/chromium/arc/file_system/MediaStoreDelegate.java
+new file mode 100644
+index 000000000..580ed69bb
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/MediaStoreDelegate.java
+@@ -0,0 +1,97 @@
++package org.chromium.arc.file_system;
++
++import android.content.Context;
++import android.net.Uri;
++import android.provider.MediaStore;
++import android.util.Log;
++import java.util.HashSet;
++import java.util.Map;
++import java.util.Set;
++import java.util.concurrent.TimeUnit;
++import org.chromium.arc.mojom.FileSystemHost;
++import org.chromium.arc.mojom.MediaStoreDownloadMetadata;
++import org.chromium.arc.mojom.MediaStoreMetadata;
++import org.chromium.mojo_base.mojom.FilePath;
++import org.chromium.url.mojom.Url;
++
++class MediaStoreDelegate {
++    private static final String TAG = "MediaStoreDelegate";
++    private MediaStoreObserver mDownloadAddedObserver;
++
++    MediaStoreDelegate(Context context) {
++        mDownloadAddedObserver = new MediaStoreObserver(
++                MediaStore.Downloads.EXTERNAL_CONTENT_URI) {
++            private final long mCreationTimeMillis = System.currentTimeMillis();
++            private final Set<Integer> mNotifiedUris = new HashSet<>();
++
++            @Override
++            public String[] getProjection() {
++                return new String[]{"_display_name", "owner_package_name", "relative_path"};
++            }
++
++            @Override
++            public String getSelection() {
++                return String.format("(%s >= %d) AND (%s = 0) AND (%s IS NOT NULL)",
++                        "date_added",
++                        TimeUnit.MILLISECONDS.toSeconds(mCreationTimeMillis),
++                        "is_pending",
++                        "owner_package_name");
++            }
++
++            @Override
++            public void onChange(Uri uri, Map<String, String> values) {
++                if (!mNotifiedUris.add(uri.hashCode())) {
++                    return;
++                }
++                FileSystemHostHolder holder = FileSystemHostHolder.getInstance();
++                synchronized (holder) {
++                    FileSystemHost host = holder.getLocked(23);
++                    if (host == null) {
++                        Log.e(TAG, "Failed to obtain host for 'onMediaStoreUriAdded()' event.");
++                    } else {
++                        host.onMediaStoreUriAdded(toUrl(uri), toMojo(values));
++                    }
++                }
++            }
++
++            private MediaStoreMetadata toMojo(Map<String, String> values) {
++                MediaStoreMetadata metadata = new MediaStoreMetadata();
++                metadata.setDownload(new MediaStoreDownloadMetadata());
++                for (Map.Entry<String, String> entry : values.entrySet()) {
++                    switch (entry.getKey()) {
++                        case "_display_name":
++                            metadata.getDownload().displayName = entry.getValue();
++                            break;
++                        case "owner_package_name":
++                            metadata.getDownload().ownerPackageName = entry.getValue();
++                            break;
++                        case "relative_path":
++                            metadata.getDownload().relativePath = toFilePath(entry.getValue());
++                            break;
++                    }
++                }
++                return metadata;
++            }
++
++            private FilePath toFilePath(String path) {
++                FilePath filePath = new FilePath();
++                filePath.path = path;
++                return filePath;
++            }
++
++            private Url toUrl(Uri uri) {
++                Url url = new Url();
++                url.url = uri.toString();
++                return url;
++            }
++        };
++        mDownloadAddedObserver.registerWith(context.getContentResolver());
++    }
++
++    void onDestroy() {
++        if (mDownloadAddedObserver != null) {
++            mDownloadAddedObserver.unregister();
++            mDownloadAddedObserver = null;
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/MediaStoreObserver.java b/src/org/chromium/arc/file_system/MediaStoreObserver.java
+new file mode 100644
+index 000000000..df4e02460
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/MediaStoreObserver.java
+@@ -0,0 +1,72 @@
++package org.chromium.arc.file_system;
++
++import android.content.ContentResolver;
++import android.database.ContentObserver;
++import android.database.Cursor;
++import android.net.Uri;
++import android.util.Log;
++import java.util.HashMap;
++import java.util.Map;
++
++class MediaStoreObserver extends ContentObserver {
++    private static final String TAG = MediaStoreObserver.class.getSimpleName();
++    private ContentResolver mContentResolver;
++    private final Uri mRootUri;
++
++    protected String[] getProjection() {
++        return null;
++    }
++
++    protected String getSelection() {
++        return null;
++    }
++
++    protected void onChange(Uri uri, Map<String, String> values) {
++    }
++
++    MediaStoreObserver(Uri rootUri) {
++        super(null);
++        mRootUri = rootUri;
++    }
++
++    void registerWith(ContentResolver contentResolver) {
++        if (mContentResolver != null) {
++            unregister();
++        }
++        mContentResolver = contentResolver;
++        contentResolver.registerContentObserver(mRootUri, true, this);
++    }
++
++    void unregister() {
++        if (mContentResolver != null) {
++            mContentResolver.unregisterContentObserver(this);
++            mContentResolver = null;
++        }
++    }
++
++    @Override
++    public void onChange(boolean selfChange, Uri uri) {
++        super.onChange(selfChange, uri);
++        if (uri.toString().startsWith(mRootUri.toString())) {
++            try {
++                Cursor cursor = mContentResolver.query(uri, getProjection(),
++                        getSelection(), null, null);
++                if (cursor != null) {
++                    try {
++                        if (cursor.moveToFirst()) {
++                            HashMap<String, String> values = new HashMap<>();
++                            for (int i = 0; i < cursor.getColumnCount(); i++) {
++                                values.put(cursor.getColumnName(i), cursor.getString(i));
++                            }
++                            onChange(uri, values);
++                        }
++                    } finally {
++                        cursor.close();
++                    }
++                }
++            } catch (IllegalArgumentException e) {
++                Log.e(TAG, e.getMessage());
++            }
++        }
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/MojoAsyncTask.java b/src/org/chromium/arc/file_system/MojoAsyncTask.java
+new file mode 100644
+index 000000000..8f4af502d
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/MojoAsyncTask.java
+@@ -0,0 +1,28 @@
++package org.chromium.arc.file_system;
++
++import android.util.Log;
++import java.util.concurrent.LinkedBlockingQueue;
++import java.util.concurrent.ThreadPoolExecutor;
++import java.util.concurrent.TimeUnit;
++import org.chromium.arc.bridge.ArcBridgeSupport;
++
++public abstract class MojoAsyncTask<Result> {
++    private static final String TAG = "MojoAsyncTask";
++    private static final ThreadPoolExecutor sExecutor = new ThreadPoolExecutor(
++            0, 10, 3, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
++
++    protected abstract Result doInBackground();
++
++    protected abstract void onPostExecute(Result result);
++
++    public void execute() {
++        sExecutor.execute(() -> {
++            try {
++                Result result = doInBackground();
++                ArcBridgeSupport.runOnMojoThread(() -> onPostExecute(result));
++            } catch (Exception e) {
++                Log.e(TAG, "Error in MojoAsyncTask", e);
++            }
++        });
++    }
++}
+diff --git a/src/org/chromium/arc/file_system/OpenUrlsHandler.java b/src/org/chromium/arc/file_system/OpenUrlsHandler.java
+new file mode 100644
+index 000000000..0e7612190
+--- /dev/null
++++ b/src/org/chromium/arc/file_system/OpenUrlsHandler.java
+@@ -0,0 +1,164 @@
++package org.chromium.arc.file_system;
++
++import android.content.ActivityNotFoundException;
++import android.content.ClipData;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.net.Uri;
++import android.os.Parcelable;
++import android.util.Log;
++import java.util.ArrayList;
++import java.util.Map;
++import org.chromium.arc.applauncher.IntentLauncher;
++import org.chromium.arc.mojom.ActivityName;
++import org.chromium.arc.mojom.ContentUrlWithMimeType;
++import org.chromium.arc.mojom.OpenUrlsRequest;
++import org.chromium.arc.mojom.WindowInfo;
++
++class OpenUrlsHandler {
++    private static final String TAG = "OpenUrlsHandler";
++    private static final int ACTION_VIEW = 0;
++    private static final int ACTION_SEND = 1;
++    private static final int ACTION_SEND_MULTIPLE = 2;
++    private static final int ACTION_CREATE_NOTE = 3;
++    private static final int ACTION_EDIT = 4;
++
++    private final Context mContext;
++    private final IntentLauncher mIntentLauncher;
++
++    public OpenUrlsHandler(Context context) {
++        this(context, new IntentLauncher(context));
++    }
++
++    OpenUrlsHandler(Context context, IntentLauncher intentLauncher) {
++        mContext = context;
++        mIntentLauncher = intentLauncher;
++    }
++
++    public void openUrlsWithPermission(OpenUrlsRequest request, WindowInfo windowInfo) {
++        Intent[] intents = constructIntents(request.actionType, request.urls, mContext);
++        ActivityName activityName = request.activityName;
++        for (Intent intent : intents) {
++            String activity = activityName.activityName;
++            if (activity != null && !activity.isEmpty()) {
++                intent.setComponent(new ComponentName(
++                        activityName.packageName, activityName.activityName));
++            } else {
++                intent.setPackage(activityName.packageName);
++            }
++            intent.addFlags(268435459); // FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TOP | FLAG_GRANT_READ_URI_PERMISSION | FLAG_GRANT_WRITE_URI_PERMISSION
++            intent.putExtra("com.android.browser.application_id", mContext.getPackageName());
++            Map<String, String> extras = request.extras;
++            if (extras != null) {
++                for (String key : extras.keySet()) {
++                    Object value = request.extras.get(key);
++                    if (value instanceof String) {
++                        intent.putExtra(key, (String) value);
++                    }
++                }
++            }
++            if (request.actionType == ACTION_EDIT
++                    && activityName.packageName.equals("com.google.android.apps.photos")) {
++                intent.putExtra("output", intent.getData());
++            }
++            try {
++                mIntentLauncher.startActivityWithWindowInfo(intent, windowInfo);
++            } catch (ActivityNotFoundException e) {
++                Log.e(TAG, "Failed to start "
++                        + (activityName.activityName != null
++                            ? activityName.packageName + "/" + activityName.activityName
++                            : activityName.packageName));
++            } catch (SecurityException e) {
++                Log.e(TAG, "Lacking permissions for intent: " + intent);
++            }
++        }
++    }
++
++    private static Intent[] constructIntents(int actionType,
++            ContentUrlWithMimeType[] urls, Context context) {
++        switch (actionType) {
++            case ACTION_VIEW: {
++                Intent[] intents = new Intent[urls.length];
++                for (int i = 0; i < urls.length; i++) {
++                    intents[i] = new Intent(Intent.ACTION_VIEW);
++                    intents[i].setDataAndType(
++                            mojoUrlToUri(context, urls[i]), urls[i].mimeType);
++                }
++                return intents;
++            }
++            case ACTION_SEND: {
++                Intent[] intents = new Intent[urls.length];
++                for (int i = 0; i < urls.length; i++) {
++                    intents[i] = new Intent(Intent.ACTION_SEND);
++                    intents[i].setType(urls[i].mimeType);
++                    intents[i].putExtra(Intent.EXTRA_STREAM,
++                            mojoUrlToUri(context, urls[i]));
++                }
++                return intents;
++            }
++            case ACTION_SEND_MULTIPLE: {
++                Intent intent = new Intent(Intent.ACTION_SEND_MULTIPLE);
++                ArrayList<Uri> uris = new ArrayList<>();
++                for (ContentUrlWithMimeType url : urls) {
++                    uris.add(mojoUrlToUri(context, url));
++                }
++                intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
++                intent.setType(calculateCommonMimeType(urls));
++                return new Intent[]{intent};
++            }
++            case ACTION_CREATE_NOTE: {
++                if (urls.length < 1) {
++                    return new Intent[]{
++                            new Intent("org.chromium.arc.intent.action.CREATE_NOTE")};
++                }
++                Intent[] intents = new Intent[urls.length];
++                for (int i = 0; i < urls.length; i++) {
++                    intents[i] = new Intent("org.chromium.arc.intent.action.CREATE_NOTE");
++                    intents[i].setClipData(ClipData.newUri(
++                            context.getContentResolver(), "attachment",
++                            mojoUrlToUri(context, urls[i])));
++                }
++                return intents;
++            }
++            case ACTION_EDIT: {
++                Intent[] intents = new Intent[urls.length];
++                for (int i = 0; i < urls.length; i++) {
++                    intents[i] = new Intent(Intent.ACTION_EDIT);
++                    intents[i].setDataAndType(
++                            mojoUrlToUri(context, urls[i]), urls[i].mimeType);
++                }
++                return intents;
++            }
++            default:
++                throw new IllegalArgumentException("Unknown ActionType " + actionType);
++        }
++    }
++
++    private static String calculateCommonMimeType(ContentUrlWithMimeType[] urls) {
++        if (urls.length == 0) {
++            return "*/*";
++        }
++        String[] parts = urls[0].mimeType.split("/");
++        if (parts.length != 2) {
++            return "*/*";
++        }
++        for (int i = 1; i < urls.length; i++) {
++            String[] otherParts = urls[i].mimeType.split("/");
++            if (otherParts.length != 2 || !parts[0].equals(otherParts[0])) {
++                return "*/*";
++            }
++            if (!parts[1].equals(otherParts[1])) {
++                parts[1] = "*";
++            }
++        }
++        return parts[0] + "/" + parts[1];
++    }
++
++    private static Uri mojoUrlToUri(Context context, ContentUrlWithMimeType url) {
++        Uri uri = Uri.parse(url.contentUrl.url);
++        Uri mediaUri = ArcContentUriUtils.convertArcContentUriToMediaDocumentsProviderUri(
++                context, uri);
++        return mediaUri != null ? mediaUri : uri;
++    }
++}
+diff --git a/src/org/chromium/arc/wayland/IWaylandService.java b/src/org/chromium/arc/wayland/IWaylandService.java
+new file mode 100644
+index 000000000..01eb49f54
+--- /dev/null
++++ b/src/org/chromium/arc/wayland/IWaylandService.java
+@@ -0,0 +1,64 @@
++package org.chromium.arc.wayland;
++
++import android.os.IBinder;
++import android.os.IInterface;
++import android.os.Parcel;
++import android.os.RemoteException;
++
++public interface IWaylandService extends IInterface {
++    static final String DESCRIPTOR = "org.chromium.arc.wayland.IWaylandService";
++    static final int TRANSACTION_translateDisplayId = 12;
++
++    int translateDisplayId(long chromeDisplayId) throws RemoteException;
++
++    abstract class Stub extends android.os.Binder implements IWaylandService {
++        public Stub() {
++            attachInterface(this, DESCRIPTOR);
++        }
++
++        public static IWaylandService asInterface(IBinder binder) {
++            if (binder == null) {
++                return null;
++            }
++            IInterface localInterface = binder.queryLocalInterface(DESCRIPTOR);
++            if (localInterface instanceof IWaylandService) {
++                return (IWaylandService) localInterface;
++            }
++            return new Proxy(binder);
++        }
++
++        @Override
++        public IBinder asBinder() {
++            return this;
++        }
++    }
++
++    class Proxy implements IWaylandService {
++        private final IBinder mRemote;
++
++        Proxy(IBinder remote) {
++            mRemote = remote;
++        }
++
++        @Override
++        public IBinder asBinder() {
++            return mRemote;
++        }
++
++        @Override
++        public int translateDisplayId(long chromeDisplayId) throws RemoteException {
++            Parcel data = Parcel.obtain();
++            Parcel reply = Parcel.obtain();
++            try {
++                data.writeInterfaceToken(DESCRIPTOR);
++                data.writeLong(chromeDisplayId);
++                mRemote.transact(TRANSACTION_translateDisplayId, data, reply, 0);
++                reply.readException();
++                return reply.readInt();
++            } finally {
++                reply.recycle();
++                data.recycle();
++            }
++        }
++    }
++}
+-- 
+2.43.0
+

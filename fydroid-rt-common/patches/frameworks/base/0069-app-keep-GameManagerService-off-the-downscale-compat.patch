@@ -1,0 +1,79 @@
+From aeb8b360b60dcca7370f9d50d9d85f99e226ae56 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 15 Sep 2026 12:18:57 +0800
+Subject: [PATCH 69/75] app: keep GameManagerService off the downscale compat
+ overrides so ArcAppService owns game scaling
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Ic775b2acba1840f258f66b0b77ffcee8f1d23bf5
+---
+ .../internal/fydroid/FydroidDefaults.java       | 17 +++++++++++++++++
+ .../android/server/app/GameManagerService.java  | 11 +++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/core/java/com/android/internal/fydroid/FydroidDefaults.java b/core/java/com/android/internal/fydroid/FydroidDefaults.java
+index e7b1f6c626d8..c72112ab7aa8 100644
+--- a/core/java/com/android/internal/fydroid/FydroidDefaults.java
++++ b/core/java/com/android/internal/fydroid/FydroidDefaults.java
+@@ -41,5 +41,22 @@ public final class FydroidDefaults {
+      */
+     public static final boolean ENABLE_SHELL_TRANSITIONS = false;
+ 
++    /**
++     * GameManagerService game-mode downscaling: always off. GameManagerService
++     * never writes the CompatModePackages DOWNSCALED / DOWNSCALE_* overrides;
++     * arc-services' ArcAppService is their only writer and picks the step for
++     * every game from the panel size.
++     *
++     * <p>Both services write the same per-package overrides, so the last writer
++     * wins. GameManagerService disables DOWNSCALED for every game without a
++     * game-mode config at user unlock, on each package add/remove and on
++     * {@code game_overlay} DeviceConfig changes, which silently undoes
++     * ArcAppService's choice — an app update could leave a game at full
++     * resolution until the next boot.
++     *
++     * <p>Read by GameManagerService. Its frame-rate overrides are unaffected.
++     */
++    public static final boolean ENABLE_GAME_MODE_DOWNSCALING = false;
++
+     private FydroidDefaults() {}
+ }
+diff --git a/services/core/java/com/android/server/app/GameManagerService.java b/services/core/java/com/android/server/app/GameManagerService.java
+index ac782289606a..dd3e8785b4f2 100644
+--- a/services/core/java/com/android/server/app/GameManagerService.java
++++ b/services/core/java/com/android/server/app/GameManagerService.java
+@@ -95,6 +95,7 @@ import com.android.internal.annotations.GuardedBy;
+ import com.android.internal.annotations.VisibleForTesting;
+ import com.android.internal.compat.CompatibilityOverrideConfig;
+ import com.android.internal.compat.IPlatformCompat;
++import com.android.internal.fydroid.FydroidDefaults;
+ import com.android.internal.os.BackgroundThread;
+ import com.android.internal.util.ArrayUtils;
+ import com.android.internal.util.FrameworkStatsLog;
+@@ -1281,6 +1282,11 @@ public final class GameManagerService extends IGameManagerService.Stub {
+      */
+     @VisibleForTesting
+     public void disableCompatScale(String packageName) {
++        // fydroid-rt: ArcAppService owns game downscaling; see
++        // FydroidDefaults#ENABLE_GAME_MODE_DOWNSCALING.
++        if (!FydroidDefaults.ENABLE_GAME_MODE_DOWNSCALING) {
++            return;
++        }
+         final long uid = Binder.clearCallingIdentity();
+         try {
+             Slog.i(TAG, "Disabling downscale for " + packageName);
+@@ -1312,6 +1318,11 @@ public final class GameManagerService extends IGameManagerService.Stub {
+     }
+ 
+     private void enableCompatScale(String packageName, long scaleId) {
++        // fydroid-rt: ArcAppService owns game downscaling; see
++        // FydroidDefaults#ENABLE_GAME_MODE_DOWNSCALING.
++        if (!FydroidDefaults.ENABLE_GAME_MODE_DOWNSCALING) {
++            return;
++        }
+         final long uid = Binder.clearCallingIdentity();
+         try {
+             Slog.i(TAG, "Enabling downscale: " + scaleId + " for " + packageName);
+-- 
+2.43.0
+

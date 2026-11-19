@@ -1,0 +1,59 @@
+// Copyright (C) 2024 The FydeOS Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+
+#define LOG_TAG "fydroid_arcpower"
+
+#include "PowerStats.h"
+
+#include <log/log.h>
+
+namespace fydroid {
+namespace power {
+
+using ::aidl::android::hardware::power::stats::Channel;
+using ::aidl::android::hardware::power::stats::EnergyConsumer;
+using ::aidl::android::hardware::power::stats::EnergyConsumerResult;
+using ::aidl::android::hardware::power::stats::EnergyMeasurement;
+using ::aidl::android::hardware::power::stats::PowerEntity;
+using ::aidl::android::hardware::power::stats::StateResidencyResult;
+
+::ndk::ScopedAStatus PowerStats::getPowerEntityInfo(std::vector<PowerEntity>* _aidl_return) {
+    _aidl_return->clear();
+    return ::ndk::ScopedAStatus::ok();
+}
+
+::ndk::ScopedAStatus PowerStats::getStateResidency(
+    const std::vector<int32_t>&, std::vector<StateResidencyResult>* _aidl_return) {
+    _aidl_return->clear();
+    return ::ndk::ScopedAStatus::ok();
+}
+
+::ndk::ScopedAStatus PowerStats::getEnergyConsumerInfo(std::vector<EnergyConsumer>* _aidl_return) {
+    _aidl_return->clear();
+    return ::ndk::ScopedAStatus::ok();
+}
+
+::ndk::ScopedAStatus PowerStats::getEnergyConsumed(
+    const std::vector<int32_t>&, std::vector<EnergyConsumerResult>* _aidl_return) {
+    _aidl_return->clear();
+    return ::ndk::ScopedAStatus::ok();
+}
+
+::ndk::ScopedAStatus PowerStats::getEnergyMeterInfo(std::vector<Channel>* _aidl_return) {
+    _aidl_return->clear();
+    return ::ndk::ScopedAStatus::ok();
+}
+
+::ndk::ScopedAStatus PowerStats::readEnergyMeter(const std::vector<int32_t>&,
+                                                 std::vector<EnergyMeasurement>* _aidl_return) {
+    _aidl_return->clear();
+    return ::ndk::ScopedAStatus::ok();
+}
+
+}  // namespace power
+}  // namespace fydroid

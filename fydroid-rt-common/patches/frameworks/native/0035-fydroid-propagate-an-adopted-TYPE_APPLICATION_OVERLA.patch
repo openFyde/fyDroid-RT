@@ -1,0 +1,108 @@
+From 8c4340a2fbe99ff489fdf3e38e0a130410c889f5 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 17 Aug 2026 17:40:43 +0800
+Subject: [PATCH 35/40] fydroid: propagate an adopted TYPE_APPLICATION_OVERLAY
+ down the layer subtree
+
+Change-Id: I645eb6c7e0375add756874f00957c548754d3aff
+---
+ services/surfaceflinger/Layer.cpp | 62 +++++++++++++++++++++++++++++++
+ 1 file changed, 62 insertions(+)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 7116fbe31c..83f7da1dd5 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -82,6 +82,11 @@ namespace android {
+ namespace {
+ constexpr int kDumpTableRowLength = 159;
+ const ui::Transform kIdentityTransform;
++#ifdef FYDROID_WAYLAND_COMPOSER
++// WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY. The only window type
++// this file propagates down a subtree — see setMetadata().
++constexpr int32_t kFydroidTypeApplicationOverlay = 2038;
++#endif
+ } // namespace
+ 
+ using namespace ftl::flag_operators;
+@@ -1096,6 +1101,39 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+         });
+         ALOGI("IsDialog propagation: set on '%s' isDialog=%d", mName.c_str(), isDialog);
+     }
++    // An ADOPTED OVERLAY's type has to reach the layer that actually carries
++    // the buffer, or the compositor cannot tell it apart from a real window.
++    //
++    // The case is the WM Shell's PIP menu: ArcSystemUI stamps the pinned task's
++    // TaskId on it so it composites inside the PIP window, and
++    // CompositionEngineArc then refuses to let it enlarge the task footprint —
++    // but that refusal keys off the window type, and the surface we can reach
++    // (SystemWindows' leash) is not the surface that has bounds. The menu is a
++    // WINDOWLESS window, so WMS never created its SurfaceControl and never
++    // stamped METADATA_WINDOW_TYPE on it; the ViewRootImpl layer underneath the
++    // leash ('PipMenuView#100') therefore had no type at all, went into the
++    // main union, and every time the Shell moved the menu the task's virtual
++    // display followed it (measured 900x506 -> 928x577 across a rotation, and
++    // -> 2532x1572 on entry).
++    //
++    // Deliberately ONLY TYPE_APPLICATION_OVERLAY. Propagating window types in
++    // general would be wrong — a task's own window type says nothing about its
++    // children, and sub-window classification depends on children keeping the
++    // types WMS gave them. This one value means "decoration adopted onto
++    // someone else's task", which IS a property of the whole subtree.
++    if (data.has(METADATA_WINDOW_TYPE)) {
++        const int32_t windowType = data.getInt32(METADATA_WINDOW_TYPE, 0);
++        if (windowType == kFydroidTypeApplicationOverlay) {
++            mCurrentChildren.traverse([&](Layer* child) {
++                if (child->mDrawingState.metadata.has(METADATA_WINDOW_TYPE)) return;
++                child->mDrawingState.metadata.setInt32(METADATA_WINDOW_TYPE, windowType);
++                child->mDrawingState.sequence++;
++                child->mDrawingState.modified = true;
++                child->setTransactionFlags(eTransactionNeeded);
++            });
++            ALOGI("WindowType propagation: overlay set on '%s'", mName.c_str());
++        }
++    }
+     // Same story for IsGame: WindowManager stamps it on the task layer, but the
+     // task layer carries no buffer and never reaches HWC — only its window
+     // descendants do. Without this the compositor never learns it is a game.
+@@ -1763,6 +1801,23 @@ void Layer::addChild(const sp<Layer>& layer) {
+                   layer->mName.c_str(), mName.c_str());
+         }
+     }
++    // Inherit an ADOPTED-OVERLAY type from the nearest ancestor that has it.
++    // The Shell's PIP menu builds its ViewRootImpl layer under the leash we
++    // stamped, so the layer that carries the buffer is created after — and
++    // therefore below — the stamp. Only TYPE_APPLICATION_OVERLAY travels; see
++    // setMetadata().
++    if (!layer->mDrawingState.metadata.has(METADATA_WINDOW_TYPE)) {
++        for (sp<Layer> ancestor = this; ancestor != nullptr;
++             ancestor = ancestor->mCurrentParent.promote()) {
++            if (!ancestor->mDrawingState.metadata.has(METADATA_WINDOW_TYPE)) continue;
++            if (ancestor->mDrawingState.metadata.getInt32(METADATA_WINDOW_TYPE, 0) ==
++                kFydroidTypeApplicationOverlay) {
++                layer->mDrawingState.metadata.setInt32(METADATA_WINDOW_TYPE,
++                                                       kFydroidTypeApplicationOverlay);
++            }
++            break;  // nearest ancestor with a type decides, whatever it is
++        }
++    }
+     // Inherit IsGame from nearest ancestor that has it.
+     if (!layer->mDrawingState.metadata.has(METADATA_IS_GAME)) {
+         for (sp<Layer> ancestor = this; ancestor != nullptr;
+@@ -1809,6 +1864,13 @@ void Layer::addChild(const sp<Layer>& layer) {
+     inheritToSubtree(METADATA_TASK_ID, true /* skipFloating */);
+     inheritToSubtree(METADATA_IS_DIALOG, false /* skipFloating */);
+     inheritToSubtree(METADATA_IS_GAME, false /* skipFloating */);
++    // Only carries the value when it is the adopted-overlay one: the block
++    // above never writes any other type, so anything else here came from WMS
++    // and belongs to that layer alone.
++    if (layer->mDrawingState.metadata.getInt32(METADATA_WINDOW_TYPE, 0) ==
++        kFydroidTypeApplicationOverlay) {
++        inheritToSubtree(METADATA_WINDOW_TYPE, false /* skipFloating */);
++    }
+ #endif
+ }
+ 
+-- 
+2.43.0
+

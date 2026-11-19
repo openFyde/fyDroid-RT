@@ -1,0 +1,124 @@
+From 1cc4eafb42a3d16989405c44a22bc99266974dc9 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 24 Apr 2026 18:27:52 +0800
+Subject: [PATCH 09/75] Skip uninstall confirmation dialog for trusted callers
+ (CrOS)
+
+Chrome OS sends uninstall intents via ArcAppService (uid 1000) after
+the user has already confirmed on the Chrome side. Previously, the
+UninstallerActivity would either fail (uid 0 has no package name for
+AppOps check) or show a redundant confirmation dialog.
+
+Trust root (0), system (1000), and shell (2000) callers: skip
+permission checks and the confirmation dialog, proceed directly
+to background uninstall with notification.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I97a48662b6079537049d0c6e9dc3f96abd1537a6
+---
+ .../packageinstaller/UninstallerActivity.java | 74 +++++++++++--------
+ 1 file changed, 45 insertions(+), 29 deletions(-)
+
+diff --git a/packages/PackageInstaller/src/com/android/packageinstaller/UninstallerActivity.java b/packages/PackageInstaller/src/com/android/packageinstaller/UninstallerActivity.java
+index 0198168f9fda..0d11e0141898 100755
+--- a/packages/PackageInstaller/src/com/android/packageinstaller/UninstallerActivity.java
++++ b/packages/PackageInstaller/src/com/android/packageinstaller/UninstallerActivity.java
+@@ -94,42 +94,51 @@ public class UninstallerActivity extends Activity {
+         // be stale, if e.g. the app was uninstalled while the activity was destroyed.
+         super.onCreate(null);
+ 
++        boolean isTrustedCaller = false;
+         try {
+             int callingUid = ActivityManager.getService().getLaunchedFromUid(getActivityToken());
+ 
+-            String callingPackage = getPackageNameForUid(callingUid);
+-            if (callingPackage == null) {
+-                Log.e(TAG, "Package not found for originating uid " + callingUid);
+-                setResult(Activity.RESULT_FIRST_USER);
+-                finish();
+-                return;
+-            } else {
+-                AppOpsManager appOpsManager = (AppOpsManager) getSystemService(
+-                        Context.APP_OPS_SERVICE);
+-                if (appOpsManager.noteOpNoThrow(
+-                        AppOpsManager.OPSTR_REQUEST_DELETE_PACKAGES, callingUid, callingPackage)
+-                        != MODE_ALLOWED) {
+-                    Log.e(TAG, "Install from uid " + callingUid + " disallowed by AppOps");
++            // Trust root (uid 0), system (uid 1000), and shell (uid 2000) callers.
++            // Chrome OS sends uninstall intents via ArcAppService (uid 1000) — the user
++            // already confirmed on the Chrome side, so we skip permission checks and dialog.
++            isTrustedCaller = (callingUid == 0 || callingUid == 1000 || callingUid == 2000);
++
++            if (!isTrustedCaller) {
++                String callingPackage = getPackageNameForUid(callingUid);
++                if (callingPackage == null) {
++                    Log.e(TAG, "Package not found for originating uid " + callingUid);
+                     setResult(Activity.RESULT_FIRST_USER);
+                     finish();
+                     return;
++                } else {
++                    AppOpsManager appOpsManager = (AppOpsManager) getSystemService(
++                            Context.APP_OPS_SERVICE);
++                    if (appOpsManager.noteOpNoThrow(
++                            AppOpsManager.OPSTR_REQUEST_DELETE_PACKAGES, callingUid,
++                            callingPackage) != MODE_ALLOWED) {
++                        Log.e(TAG, "Install from uid " + callingUid + " disallowed by AppOps");
++                        setResult(Activity.RESULT_FIRST_USER);
++                        finish();
++                        return;
++                    }
+                 }
+-            }
+ 
+-            if (getMaxTargetSdkVersionForUid(this, callingUid)
+-                    >= Build.VERSION_CODES.P && AppGlobals.getPackageManager().checkUidPermission(
+-                    Manifest.permission.REQUEST_DELETE_PACKAGES, callingUid)
+-                    != PackageManager.PERMISSION_GRANTED
+-                    && AppGlobals.getPackageManager().checkUidPermission(
+-                            Manifest.permission.DELETE_PACKAGES, callingUid)
+-                            != PackageManager.PERMISSION_GRANTED) {
+-                Log.e(TAG, "Uid " + callingUid + " does not have "
+-                        + Manifest.permission.REQUEST_DELETE_PACKAGES + " or "
+-                        + Manifest.permission.DELETE_PACKAGES);
+-
+-                setResult(Activity.RESULT_FIRST_USER);
+-                finish();
+-                return;
++                if (getMaxTargetSdkVersionForUid(this, callingUid)
++                        >= Build.VERSION_CODES.P
++                        && AppGlobals.getPackageManager().checkUidPermission(
++                        Manifest.permission.REQUEST_DELETE_PACKAGES, callingUid)
++                        != PackageManager.PERMISSION_GRANTED
++                        && AppGlobals.getPackageManager().checkUidPermission(
++                                Manifest.permission.DELETE_PACKAGES, callingUid)
++                                != PackageManager.PERMISSION_GRANTED) {
++                    Log.e(TAG, "Uid " + callingUid + " does not have "
++                            + Manifest.permission.REQUEST_DELETE_PACKAGES + " or "
++                            + Manifest.permission.DELETE_PACKAGES);
++
++                    setResult(Activity.RESULT_FIRST_USER);
++                    finish();
++                    return;
++                }
+             }
+         } catch (RemoteException ex) {
+             // Cannot reach Package/ActivityManager. Aborting uninstall.
+@@ -210,7 +219,14 @@ public class UninstallerActivity extends Activity {
+             }
+         }
+ 
+-        showConfirmationDialog();
++        if (isTrustedCaller) {
++            // Chrome OS already confirmed — proceed directly without showing dialog
++            Log.i(TAG, "Trusted caller, proceeding with uninstall of " + mPackageName);
++            startUninstallProgress(false);
++            finish();
++        } else {
++            showConfirmationDialog();
++        }
+     }
+ 
+     public DialogInfo getDialogInfo() {
+-- 
+2.43.0
+

@@ -1,0 +1,10 @@
+#TODO(dgreid) do we need it.
+/dev/block/mmcblk0p3    0600   system     system
+
+# ueventd.rc by default uses 16M, which is too large for ChromeOS
+# devices, which only have 212992 bytes capped by rmem_max. If ueventd
+# cannot obtain 16M, it uses SO_RCVBUFFORCE instead, which causes a
+# crash on ChromeOS devices since ueventd does not have CAP_NET_ADMIN
+# capability. This lowers the socket buffer size so ueventd doesn't call
+# on SO_RCVBUFFORCE.
+uevent_socket_rcvbuf_size 212992

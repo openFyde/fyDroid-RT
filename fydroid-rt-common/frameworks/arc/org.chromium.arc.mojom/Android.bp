@@ -1,0 +1,15 @@
+java_library {
+    name: "org.chromium.arc.mojom",
+    installable: true,
+    // Non-SDK <uses-library> provided to apps that list it in the manifest
+    // (e.g. DocumentsUI); needed for Soong's dexpreopt uses-library check.
+    provides_uses_lib: "org.chromium.arc.mojom",
+    srcs: ["java/**/*.java"],
+    platform_apis: true,
+    libs: [
+        "framework",
+    ],
+    static_libs: [
+        "android.mojo",
+    ],
+}

@@ -1,0 +1,82 @@
+From cd7146fa580c97447fcd12078f3e3a6c84183d71 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 30 Mar 2026 18:04:08 +0800
+Subject: [PATCH 03/75] Add setTaskWindowsVisible for fydroid-rt desk
+ management
+
+Add custom binder transaction (code 156) to ActivityTaskManagerService
+to show/hide Android task windows when Chrome OS virtual desks are
+switched. Iterates all windows in the task and calls showLw/hideLw.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I7b8defd39808ebdecb862781af40179c9e65d24d
+---
+ .../server/wm/ActivityTaskManagerService.java | 45 +++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+index f6e92a642900..1d776061e52a 100644
+--- a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
++++ b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+@@ -832,6 +832,25 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+         }
+     };
+ 
++    // Handle custom transaction codes that are not in the AIDL-generated Stub.
++    // Transaction 156 = setTaskWindowsVisible, used by fydroid-rt desk management
++    // to hide/show Android task windows when Chrome OS desks are switched.
++    private static final int TRANSACTION_setTaskWindowsVisible = 156;
++
++    @Override
++    public boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply,
++            int flags) throws android.os.RemoteException {
++        if (code == TRANSACTION_setTaskWindowsVisible) {
++            data.enforceInterface("android.app.IActivityTaskManager");
++            int taskId = data.readInt();
++            boolean visible = data.readInt() != 0;
++            setTaskWindowsVisible(taskId, visible);
++            reply.writeNoException();
++            return true;
++        }
++        return super.onTransact(code, data, reply, flags);
++    }
++
+     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+     public ActivityTaskManagerService(Context context) {
+         mContext = context;
+@@ -2863,6 +2882,32 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+         }
+     }
+ 
++    public void setTaskWindowsVisible(int taskId, boolean visible) {
++        mAmInternal.enforceCallingPermission(MANAGE_ACTIVITY_STACKS,
++                "setTaskWindowsVisible()");
++        long ident = Binder.clearCallingIdentity();
++        try {
++            synchronized (mGlobalLock) {
++                final Task task = mRootWindowContainer.anyTaskForId(taskId,
++                        MATCH_TASK_IN_STACKS_ONLY);
++                if (task == null) {
++                    Slog.w(TAG, "setTaskWindowsVisible: taskId=" + taskId + " not found");
++                    return;
++                }
++                task.forAllWindows(w -> {
++                    if (visible) {
++                        w.showLw(false /* doAnimation */, false /* requestAnim */);
++                    } else {
++                        w.hideLw(false /* doAnimation */, false /* requestAnim */);
++                    }
++                }, true /* traverseTopToBottom */);
++                mWindowManager.mWindowPlacerLocked.performSurfacePlacement();
++            }
++        } finally {
++            Binder.restoreCallingIdentity(ident);
++        }
++    }
++
+     @Override
+     public void releaseSomeActivities(IApplicationThread appInt) {
+         synchronized (mGlobalLock) {
+-- 
+2.43.0
+

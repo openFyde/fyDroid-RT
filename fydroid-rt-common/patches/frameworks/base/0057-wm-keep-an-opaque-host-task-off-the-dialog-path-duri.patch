@@ -1,0 +1,76 @@
+From ad97c8c90b9dd3169b0cf0cc9901af889684bf34 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 27 Aug 2026 11:52:14 +0800
+Subject: [PATCH 57/75] wm: keep an opaque-host task off the dialog path during
+ a launch handoff
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Change-Id: I5ba2b694059f359ae5fbb74e4700ffcfd5ee2c9a
+---
+ .../core/java/com/android/server/wm/Task.java | 38 ++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 6a263001c570..5c80243bd47f 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -3219,20 +3219,54 @@ class Task extends TaskFragment {
+     }
+ 
+     /**
+-     * Whether the task currently presents as a dialog (centered modal). Its
+-     * ROOT activity uses a floating theme, OR the task is translucent (no opaque
++     * Whether the task currently presents as a dialog (centered modal): its ROOT
++     * activity uses a floating theme, OR the task is translucent (no opaque
+      * activity) and its TOP activity is floating — see the long comment in
+      * {@link #setTaskMetadata}. Recomputed live so the classification tracks the
+      * top activity (the build-time stamp alone misses cases like PackageInstaller,
+      * whose floating PackageInstallerActivity follows a non-floating InstallStaging
+      * with a no-animation theme, so makeAnimationLeash never re-stamps).
++     *
++     * BOTH branches are gated on {@link #hasOpaqueHostActivity}: a real app that
++     * merely shows a dialog-themed activity on top (e.g. a runtime permission
++     * prompt) has an opaque host and belongs on the per-activity
++     * IS_FLOATING_ACTIVITY split path, NOT a whole-task modal. Gating only the
++     * translucent branch is not enough — during an in-app activity handoff (an
++     * opaque splash requesting a permission, then navigating on) the outgoing
++     * opaque activity is finishing and the incoming one is not in the task yet, so
++     * {@link #getRootActivity} transiently returns the floating dialog and the
++     * ROOT-floating branch mis-fires. Without the guard, SF latches the app into
++     * an oversized off-screen modal (the dialog's enter animation then inflates
++     * the whole-task footprint past the panel). {@link #isTranslucent} cannot be
++     * the guard: it discounts opaque activities that have not drawn yet
++     * ({@code isOpaqueActivity} skips {@code !visibleIgnoringKeyguard}), so it too
++     * reads translucent mid-launch.
+      */
+     private boolean isDialogTaskNow() {
++        if (hasOpaqueHostActivity()) {
++            return false;
++        }
+         return isDialogTask(getRootActivity())
+                 || (isTranslucent(null /* starting */)
+                         && isDialogTask(getTopNonFinishingActivity()));
+     }
+ 
++    /**
++     * True if the task has any activity whose theme is opaque (occludes the
++     * parent) — including a FINISHING one, and regardless of whether it has drawn
++     * yet. {@code occludesParent(true)} reads theme-opacity ({@code mOccludesParent},
++     * set at construction from the theme), which unlike {@link #isTranslucent}'s
++     * visibility check does not flicker during launch, and unlike the default
++     * {@code occludesParent()} still counts an outgoing opaque activity mid-handoff.
++     * So an app transitioning between opaque activities (a splash requesting a
++     * permission, then navigating on with the dialog still up) is recognised as an
++     * app across the whole handoff, while a genuine dialog task (PackageInstaller:
++     * all Dialog/Translucent themed) still has no opaque host.
++     */
++    private boolean hasOpaqueHostActivity() {
++        return getActivity(r -> r.occludesParent(true /* includingFinishing */)) != null;
++    }
++
+     /** Last IS_DIALOG value pushed to the task surface (-1 = not yet stamped). */
+     private int mLastDialogMetadata = -1;
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,120 @@
+From b27ece8734939eca02e578b256e7e106d0161b27 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 12 Mar 2026 12:46:47 +0800
+Subject: [PATCH 01/75] Add METADATA_IS_GAME to SurfaceControl and Task
+ metadata
+
+Add METADATA_IS_GAME=7 constant to SurfaceControl and set it in
+Task.setTaskMetadata() when the top activity's ApplicationInfo.category
+is CATEGORY_GAME. This propagates the game flag through layer metadata
+to SurfaceFlinger for game full-screen efficiency mode.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ief954aa3fa70f33ff3304a6fab4a4b65869525a9
+---
+ core/java/android/view/SurfaceControl.java    | 16 +++++++
+ .../core/java/com/android/server/wm/Task.java | 45 ++++++++++++++++++-
+ 2 files changed, 59 insertions(+), 2 deletions(-)
+
+diff --git a/core/java/android/view/SurfaceControl.java b/core/java/android/view/SurfaceControl.java
+index 92bdfdd4c558..7b9165cc54a5 100644
+--- a/core/java/android/view/SurfaceControl.java
++++ b/core/java/android/view/SurfaceControl.java
+@@ -776,6 +776,22 @@ public final class SurfaceControl implements Parcelable {
+      */
+     public static final int METADATA_GAME_MODE = 8;
+ 
++    /**
++     * Window session ID for matching restored app windows.
++     * fydroid-rt: renumbered above AOSP 13's keys (AOSP 11 used 6); must match
++     * METADATA_SESSION_ID in frameworks/native LayerMetadata.h.
++     * @hide
++     */
++    public static final int METADATA_SESSION_ID = 9;
++
++    /**
++     * Whether the app is a game (ApplicationInfo.CATEGORY_GAME).
++     * fydroid-rt: renumbered above AOSP 13's keys (AOSP 11 used 7); must match
++     * METADATA_IS_GAME in frameworks/native LayerMetadata.h.
++     * @hide
++     */
++    public static final int METADATA_IS_GAME = 10;
++
+     /**
+      * A wrapper around HardwareBuffer that contains extra information about how to
+      * interpret the screenshot HardwareBuffer.
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index f5c44d94160b..d9cf0fc969dd 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -47,6 +47,8 @@ import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
+ import static android.provider.Settings.Secure.USER_SETUP_COMPLETE;
+ import static android.view.Display.DEFAULT_DISPLAY;
+ import static android.view.Display.INVALID_DISPLAY;
++import static android.view.SurfaceControl.METADATA_IS_GAME;
++import static android.view.SurfaceControl.METADATA_SESSION_ID;
+ import static android.view.SurfaceControl.METADATA_TASK_ID;
+ import static android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+ import static android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+@@ -3028,9 +3030,48 @@ class Task extends TaskFragment {
+         return task != null && !task.isEmbedded();
+     }
+ 
++    /**
++     * Extract window_session_id from the task's base intent identifier.
++     * Chrome OS stores it as "window_session_id=NNNNNN" in Intent.mIdentifier
++     * for restored app windows. Returns 0 if not found.
++     */
++    private int getWindowSessionId() {
++        if (intent == null) return 0;
++        final String id = intent.getIdentifier();
++        if (id == null) return 0;
++        final String prefix = "window_session_id=";
++        int idx = id.indexOf(prefix);
++        if (idx < 0) return 0;
++        int start = idx + prefix.length();
++        int end = start;
++        while (end < id.length() && Character.isDigit(id.charAt(end))) end++;
++        if (end == start) return 0;
++        try {
++            return Integer.parseInt(id.substring(start, end));
++        } catch (NumberFormatException e) {
++            return 0;
++        }
++    }
++
++    private SurfaceControl.Builder setTaskMetadata(SurfaceControl.Builder b) {
++        b.setMetadata(METADATA_TASK_ID, mTaskId);
++        int sessionId = getWindowSessionId();
++        if (sessionId > 0) {
++            b.setMetadata(METADATA_SESSION_ID, sessionId);
++        }
++        ActivityRecord topActivity = getTopNonFinishingActivity();
++        if (topActivity != null && topActivity.info != null
++                && topActivity.info.applicationInfo != null
++                && topActivity.info.applicationInfo.category
++                        == ApplicationInfo.CATEGORY_GAME) {
++            b.setMetadata(METADATA_IS_GAME, 1);
++        }
++        return b;
++    }
++
+     @Override
+     public SurfaceControl.Builder makeAnimationLeash() {
+-        return super.makeAnimationLeash().setMetadata(METADATA_TASK_ID, mTaskId);
++        return setTaskMetadata(super.makeAnimationLeash());
+     }
+ 
+     boolean shouldAnimate() {
+@@ -3053,7 +3094,7 @@ class Task extends TaskFragment {
+ 
+     @Override
+     void setInitialSurfaceControlProperties(SurfaceControl.Builder b) {
+-        b.setEffectLayer().setMetadata(METADATA_TASK_ID, mTaskId);
++        setTaskMetadata(b.setEffectLayer());
+         super.setInitialSurfaceControlProperties(b);
+     }
+ 
+-- 
+2.43.0
+

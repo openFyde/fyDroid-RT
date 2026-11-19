@@ -1,0 +1,13 @@
+// Diagnostic only — not in PRODUCT_PACKAGES, install by hand with pm install.
+// Drives MediaDrm against the Widevine UUID so the fydroid CDM bridge can be
+// verified without an app, an account, or protected content. See
+// device/fydeos/docs/widevine-cdm-bridge-plan.md.
+android_app {
+    name: "WidevineProbe",
+    srcs: ["src/**/*.java"],
+    manifest: "AndroidManifest.xml",
+    sdk_version: "current",
+    optimize: {
+        enabled: false,
+    },
+}

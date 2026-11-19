@@ -1,0 +1,49 @@
+// Open-source replacement for prebuilt libarcbridgeservice.so.
+//
+// Provides MojoThread, MojoProcessSupport (singleton), ArcService (abstract base),
+// ArcBridgeSupport (HIDL bootstrap client), and Mojo Java system native methods
+// (CoreImpl, BaseRunLoop, WatcherImpl) needed by Java Mojo bindings.
+
+cc_library_shared {
+    name: "libarcbridgeservice",
+    defaults: ["fydroid_perf_defaults"],
+
+    srcs: [
+        "MojoThread.cpp",
+        "MojoProcessSupport.cpp",
+        "ArcBridgeSupport.cpp",
+        "ArcBridgeSupportJni.cpp",
+        "Future.cpp",
+        // Mojo Java system native methods — the proprietary libarcbridgeservice
+        // bundled these so Java Mojo bindings (CoreImpl etc.) work without a
+        // separate libmojo_system_java.so.
+        ":libmojo_java_system_srcs",
+    ],
+
+    local_include_dirs: ["include"],
+    export_include_dirs: ["include"],
+
+    shared_libs: [
+        "libbase",
+        "libchrome",
+        "libhidlbase",
+        "liblog",
+        "libmojo",
+        "libutils",
+        "libarcbridge",
+        "vendor.google_arc.arcbridge@1.0",
+    ],
+
+    generated_headers: [
+        "libmojo_jni_headers",
+        "libmojo_jni_registration_headers",
+    ],
+
+    // Export libhidlbase headers for consumers that include ArcBridgeSupport.h
+    // (it inherits from hidl_death_recipient).
+    export_shared_lib_headers: ["libhidlbase"],
+
+    cflags: [
+        "-Wno-unused-parameter",
+    ],
+}

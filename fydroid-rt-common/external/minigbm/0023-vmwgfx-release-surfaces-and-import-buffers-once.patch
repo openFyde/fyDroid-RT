@@ -1,0 +1,318 @@
+vmwgfx: release surfaces and their backing buffers; look an import's buffer up once
+
+Port of the host backend's fix. Every surface
+this backend created or imported leaked, with the GEM handle of its backing
+buffer, until the process exited: bo_destroy was GEM_CLOSE on a surface
+(TTM base-object) handle, which fails with -EINVAL. Surface references are
+counted per drm_file (one per PRIME_FD_TO_HANDLE plane, one per
+GB_SURFACE_REF) and paid back per bo in bo_release. Imports look the backing
+buffer up once; maps and CPU sync reuse it instead of taking a new reference
+and GEM handle on every call. Plain GEM buffers are closed per handle and map
+through MAP_DUMB.
+
+--- a/vmwgfx.c
++++ b/vmwgfx.c
+@@ -8,6 +8,7 @@
+ 
+ #include <errno.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include <sys/mman.h>
+ #include <vmwgfx_drm.h>
+@@ -77,29 +78,41 @@
+   return false;
+ }
+ 
+-static void store_map_handle(struct bo_metadata *meta, uint64_t map_handle) {
+-  meta->blob_id = (uint32_t) map_handle;
+-  meta->map_info = (uint32_t) (map_handle >> 32);
+-  meta->memory_idx = 0xFF;
+-}
++/*
++ * The kernel numbers TTM base objects -- every surface -- from
++ * VMWGFX_NUM_MOB + 1 and GEM objects -- plain buffers -- below that
++ * (ttm_object.c, idr_init_base), and vmw_prime_handle_to_fd() tells the two
++ * apart by exactly this test.
++ */
++#define VMWGFX_NUM_MOB (256 + 20000 + 32768 + 8)
+ 
+-static bool exist_map_handle(struct bo_metadata *meta) {
+-  return meta->memory_idx == 0xFF;
++static bool is_surface_handle(uint32_t handle)
++{
++	return handle > VMWGFX_NUM_MOB;
+ }
+ 
+-static uint64_t get_map_handle(struct bo_metadata *meta) {
+-  uint64_t map_handle = meta->map_info;
+-  /*
+-   * Recombine the halves stashed by store_map_handle(). This was '&', which
+-   * is 0 for every possible input: the shifted high half has no low bits and
+-   * blob_id is a uint32_t with no high bits. Every CPU map therefore mmap'd
+-   * offset 0 instead of buffer_map_handle, so everything the CPU wrote - i.e.
+-   * every frame out of a software video decoder - landed outside the SVGA
+-   * surface. The GPU then sampled an untouched surface and composited the
+-   * video as black, while the decoder, SurfaceFlinger and Chrome all reported
+-   * perfectly healthy frames.
+-   */
+-  return (map_handle << 32) | meta->blob_id;
++/*
++ * What one bo owes the kernel. A surface reference is counted per drm_file,
++ * not per handle: each PRIME_FD_TO_HANDLE of a surface (one per plane) and each
++ * DRM_VMW_GB_SURFACE_REF adds one, and only DRM_VMW_UNREF_SURFACE drops one.
++ * GEM_CLOSE fails with -EINVAL on a surface handle, which is how every surface
++ * this backend created or imported used to leak, along with the GEM handle of
++ * its backing buffer. minigbm calls bo_destroy once per handle but bo_release
++ * once per bo, so all of this is paid back per bo in vmwgfx_bo_release().
++ * Ported from the host backend.
++ */
++struct vmwgfx_bo {
++	uint32_t surface_refs;	/* DRM_VMW_UNREF_SURFACE calls owed on bo->handle */
++	uint32_t buffer_handle;	/* GEM handle of the backing buffer, or 0 */
++	uint64_t map_handle;	/* mmap offset of the backing buffer, or 0 */
++};
++
++static void unref_surface(struct driver *drv, uint32_t handle)
++{
++	struct drm_vmw_surface_arg arg = { .sid = (int32_t)handle };
++
++	if (drmCommandWrite(drv->fd, DRM_VMW_UNREF_SURFACE, &arg, sizeof(arg)))
++		drv_loge("DRM_VMW_UNREF_SURFACE failed (handle=%u)\n", handle);
+ }
+ 
+ static uint32_t drm_format_to_svga_format(uint32_t format)
+@@ -211,6 +224,7 @@
+ 	union drm_vmw_gb_surface_create_arg create_arg;
+ 	struct drm_vmw_gb_surface_create_rep *rep = &create_arg.rep;
+ 	struct drm_vmw_gb_surface_create_req *req = &create_arg.req;
++	struct vmwgfx_bo *priv;
+ 
+ 	if (!drv_has_modifier(modifiers, count, DRM_FORMAT_MOD_LINEAR)) {
+      drv_loge("no usable modifier found\n");
+@@ -319,7 +333,19 @@
+    */
+   drv_bo_from_format(bo, stride, 1, height, format);
+   bo->handle.u32 = rep->handle;
+-  store_map_handle(&bo->meta, rep->buffer_map_handle);
++
++  priv = calloc(1, sizeof(*priv));
++  if (!priv) {
++	  unref_surface(bo->drv, rep->handle);
++	  drv_gem_close(bo->drv, rep->buffer_handle);
++	  return -ENOMEM;
++  }
++  /* The creation reference, and the backing buffer that
++   * drm_vmw_surface_flag_create_buffer made for it. */
++  priv->surface_refs = 1;
++  priv->buffer_handle = rep->buffer_handle;
++  priv->map_handle = rep->buffer_map_handle;
++  bo->priv = priv;
+   return 0;
+ }
+ 
+@@ -330,30 +356,91 @@
+   return vmwgfx_bo_create_with_modifiers(bo, width, height, format, modifiers, ARRAY_SIZE(modifiers));
+ }
+ 
++static int vmwgfx_bo_import(struct bo *bo, struct drv_import_fd_data *data)
++{
++	union drm_vmw_gb_surface_reference_arg s_arg;
++	struct vmwgfx_bo *priv;
++	uint32_t imported = 0;
++	int ret;
++
++	for (size_t plane = 0; plane < bo->meta.num_planes; plane++) {
++		struct drm_prime_handle prime = { .fd = data->fds[plane] };
++
++		if (drmIoctl(bo->drv->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime)) {
++			drv_loge("DRM_IOCTL_PRIME_FD_TO_HANDLE failed (fd=%d)\n", data->fds[plane]);
++			ret = -errno;
++			goto fail;
++		}
++		/* Every plane of a vmwgfx bo is the same object. */
++		if (imported && prime.handle != bo->handle.u32) {
++			if (is_surface_handle(prime.handle))
++				unref_surface(bo->drv, prime.handle);
++			else
++				drv_gem_close(bo->drv, prime.handle);
++			ret = -EINVAL;
++			goto fail;
++		}
++		bo->handle.u32 = prime.handle;
++		imported++;
++	}
++	bo->meta.tiling = data->tiling;
++
++	if (!is_surface_handle(bo->handle.u32))
++		return 0;	/* plain GEM: closed in bo_destroy, mapped via MAP_DUMB */
++
++	priv = calloc(1, sizeof(*priv));
++	if (!priv) {
++		ret = -ENOMEM;
++		goto fail;
++	}
++	priv->surface_refs = imported;
++	bo->priv = priv;
++
++	/* Look the backing buffer up once, for maps and CPU sync. */
++	memset(&s_arg, 0, sizeof(s_arg));
++	s_arg.req.sid = bo->handle.u32;
++	s_arg.req.handle_type = DRM_VMW_HANDLE_LEGACY;
++	if (drmCommandWriteRead(bo->drv->fd, DRM_VMW_GB_SURFACE_REF, &s_arg, sizeof(s_arg))) {
++		drv_loge("DRM_VMW_GB_SURFACE_REF failed (handle=%u); bo cannot be mapped\n",
++			 bo->handle.u32);
++		return 0;
++	}
++	priv->surface_refs++;
++	priv->buffer_handle = s_arg.rep.crep.buffer_handle;
++	priv->map_handle = s_arg.rep.crep.buffer_map_handle;
++	return 0;
++
++fail:
++	if (imported && is_surface_handle(bo->handle.u32)) {
++		for (uint32_t i = 0; i < imported; i++)
++			unref_surface(bo->drv, bo->handle.u32);
++	} else if (imported) {
++		drv_gem_close(bo->drv, bo->handle.u32);
++	}
++	return ret;
++}
++
+ static void *vmwgfx_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
+ {
+-   union drm_vmw_gb_surface_reference_arg s_arg;
+-   struct drm_vmw_surface_arg *req = &s_arg.req;
+-   struct drm_vmw_gb_surface_ref_rep *rep = &s_arg.rep;
+-   int ret;
++   struct vmwgfx_bo *priv = bo->priv;
++   uint64_t offset;
+    void *addr;
+    vma->length = bo->meta.total_size;
+-   if (exist_map_handle(&bo->meta)) {
+-     addr =  mmap(0, vma->length, drv_get_prot(map_flags), MAP_SHARED, bo->drv->fd,
+-                get_map_handle(&bo->meta));
++   if (priv && priv->map_handle) {
++     offset = priv->map_handle;
++   } else if (!is_surface_handle(bo->handle.u32)) {
++     struct drm_mode_map_dumb map_dumb = { .handle = bo->handle.u32 };
++
++     if (drmIoctl(bo->drv->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_dumb)) {
++       drv_loge("DRM_IOCTL_MODE_MAP_DUMB failed (handle=%u)\n", bo->handle.u32);
++       return MAP_FAILED;
++     }
++     offset = map_dumb.offset;
+    } else {
+-   req->sid = bo->handle.u32;
+-   req->handle_type = DRM_VMW_HANDLE_LEGACY;
+-   ret = drmCommandWriteRead(bo->drv->fd, DRM_VMW_GB_SURFACE_REF,
+-                 &s_arg, sizeof(s_arg));
+-   if (ret) {
+-     drv_loge("Error get gb surface reference, ret:%d\n", ret);
++     drv_loge("no mmap offset for surface handle %u\n", bo->handle.u32);
+      return MAP_FAILED;
+    }
+-   addr =  mmap(0, vma->length, drv_get_prot(map_flags), MAP_SHARED, bo->drv->fd,
+-                rep->crep.buffer_map_handle);
+-   store_map_handle(&bo->meta, rep->crep.buffer_map_handle);
+-   }
++   addr = mmap(0, vma->length, drv_get_prot(map_flags), MAP_SHARED, bo->drv->fd, offset);
+    if (addr == MAP_FAILED) {
+      drv_loge("mmap failed: handle:%u, map_flags:0x%x, %s\n", bo->handle.u32, map_flags,
+               strerror(errno));
+@@ -376,29 +463,21 @@
+  * GPU-rendered surface returns stale data.
+  *
+  * DRM_VMW_SYNCCPU operates on the *buffer* handle backing the surface, not the
+- * surface id, so resolve it with DRM_VMW_GB_SURFACE_REF first.
++ * surface id: the one the bo looked up at create or import time.
+  */
+ static int vmwgfx_sync_cpu(struct bo *bo, struct mapping *mapping, bool grab)
+ {
+-	union drm_vmw_gb_surface_reference_arg s_arg;
+-	struct drm_vmw_surface_arg *ref_req = &s_arg.req;
+-	struct drm_vmw_gb_surface_ref_rep *ref_rep = &s_arg.rep;
++	struct vmwgfx_bo *priv = bo->priv;
+ 	struct drm_vmw_synccpu_arg arg;
+ 	uint32_t map_flags = mapping->vma->map_flags;
+ 	int ret;
+ 
+-	memset(&s_arg, 0, sizeof(s_arg));
+-	ref_req->sid = bo->handle.u32;
+-	ref_req->handle_type = DRM_VMW_HANDLE_LEGACY;
+-	ret = drmCommandWriteRead(bo->drv->fd, DRM_VMW_GB_SURFACE_REF, &s_arg, sizeof(s_arg));
+-	if (ret) {
+-		drv_loge("synccpu: GB_SURFACE_REF failed for sid %u: %d\n", bo->handle.u32, ret);
+-		return ret;
+-	}
++	if (!priv || !priv->buffer_handle)
++		return 0;	/* plain GEM buffer, or no backing buffer to sync */
+ 
+ 	memset(&arg, 0, sizeof(arg));
+ 	arg.op = grab ? drm_vmw_synccpu_grab : drm_vmw_synccpu_release;
+-	arg.handle = ref_rep->crep.buffer_handle;
++	arg.handle = priv->buffer_handle;
+ 	/* Mirror the mapping's access mode; default to read if unset. */
+ 	arg.flags = 0;
+ 	if (map_flags & BO_MAP_READ)
+@@ -528,32 +607,47 @@
+ {
+ 	int ret = vmwgfx_sync_cpu(bo, mapping, false);
+ 
+-	if (mapping->vma->map_flags & BO_MAP_WRITE)
++	if ((mapping->vma->map_flags & BO_MAP_WRITE) && is_surface_handle(bo->handle.u32))
+ 		vmwgfx_surface_transfer(bo, SVGA_3D_CMD_UPDATE_GB_SURFACE);
+ 	return ret;
+ }
+ 
++static int vmwgfx_bo_release(struct bo *bo)
++{
++	struct vmwgfx_bo *priv = bo->priv;
++
++	if (!priv)
++		return 0;
++	for (uint32_t i = 0; i < priv->surface_refs; i++)
++		unref_surface(bo->drv, bo->handle.u32);
++	if (priv->buffer_handle)
++		drv_gem_close(bo->drv, priv->buffer_handle);
++	free(priv);
++	bo->priv = NULL;
++	return 0;
++}
++
+ /*
+- * Release a bo by closing its GEM handle. This works for both locally
+- * created GB surfaces (DRM_VMW_GB_SURFACE_CREATE registers the handle via
+- * drm_gem_handle_create — see vmwgfx_surface.c:1751) and PRIME-imported
+- * buffers (drv_prime_bo_import uses DRM_IOCTL_PRIME_FD_TO_HANDLE which
+- * yields a GEM handle). DRM_VMW_UNREF_DMABUF — which the original code
+- * called for every bo — fails with -EINVAL on surface IDs and on
+- * PRIME-imported handles, leaving kernel-side bo references leaked and
+- * triggering BufferQueueProducer "slot is not owned by the producer
+- * (state = FREE)" errors when MediaCodec releases decoded frames into
+- * SurfaceFlinger.
++ * Called once per handle. A surface is paid back per bo in
++ * vmwgfx_bo_release(); GEM_CLOSE would fail on it with -EINVAL. Only a plain
++ * GEM buffer is closed here.
+  */
++static int vmwgfx_bo_destroy(struct bo *bo)
++{
++	if (is_surface_handle(bo->handle.u32))
++		return 0;
++	return drv_gem_bo_destroy(bo);
++}
+ 
+ const struct backend backend_vmwgfx = {
+ 	.name = "vmwgfx",
+ 	.init = vmwgfx_init,
+ 	.bo_create = vmwgfx_bo_create,
+ 	.bo_create_with_modifiers = vmwgfx_bo_create_with_modifiers,
+-	.bo_import = drv_prime_bo_import,
++	.bo_import = vmwgfx_bo_import,
+ 	.bo_export = drv_prime_bo_export,
+-	.bo_destroy = drv_gem_bo_destroy,
++	.bo_release = vmwgfx_bo_release,
++	.bo_destroy = vmwgfx_bo_destroy,
+ 	.bo_map = vmwgfx_bo_map,
+ 	.bo_unmap = drv_bo_munmap,
+ 	.bo_invalidate = vmwgfx_bo_invalidate,

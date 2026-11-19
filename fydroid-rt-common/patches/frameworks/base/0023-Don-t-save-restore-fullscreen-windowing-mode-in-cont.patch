@@ -1,0 +1,79 @@
+From 75bf33aceb605dbe4ab302787a663b1abfeadb3a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 24 Apr 2026 15:24:24 +0800
+Subject: [PATCH 23/75] Don't save/restore fullscreen windowing mode in
+ container
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In ARC++ container, Chrome manages window placement. When tablet mode
+saves FULLSCREEN windowing mode to LaunchParamsPersister, switching
+back to clamshell mode causes tasks to inherit the saved FULLSCREEN
+mode even though the display is now freeform — resulting in apps
+rendering at full display size inside a normal-sized Chrome window.
+
+Fix both sides:
+- LaunchParamsPersister: don't persist FULLSCREEN in container
+  (write UNDEFINED instead)
+- TaskLaunchParamsModifier: don't inherit saved FULLSCREEN on a
+  freeform display in container
+
+Bug: none
+Test: manual — switch tablet/clamshell, verify Settings launches
+      at correct window size in both modes
+Change-Id: I1573043222dadf878c29b0192a621a99c621c50b
+---
+ .../com/android/server/wm/LaunchParamsPersister.java | 12 ++++++++++--
+ .../android/server/wm/TaskLaunchParamsModifier.java  | 12 ++++++++++--
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/LaunchParamsPersister.java b/services/core/java/com/android/server/wm/LaunchParamsPersister.java
+index be3ceb8ff8cd..b0f3fa28af15 100644
+--- a/services/core/java/com/android/server/wm/LaunchParamsPersister.java
++++ b/services/core/java/com/android/server/wm/LaunchParamsPersister.java
+@@ -263,8 +263,16 @@ class LaunchParamsPersister {
+         boolean changed = !Objects.equals(params.mDisplayUniqueId, info.uniqueId);
+         params.mDisplayUniqueId = info.uniqueId;
+ 
+-        changed |= params.mWindowingMode != task.getWindowingMode();
+-        params.mWindowingMode = task.getWindowingMode();
++        // In ARC++ container, Chrome manages window placement. Don't persist
++        // fullscreen windowing mode — it prevents tasks from launching as freeform
++        // when the display is in tablet/freeform mode.
++        int wm = task.getWindowingMode();
++        if (android.os.Build.IS_CONTAINER
++                && wm == android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN) {
++            wm = android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
++        }
++        changed |= params.mWindowingMode != wm;
++        params.mWindowingMode = wm;
+ 
+         if (task.mLastNonFullscreenBounds != null) {
+             changed |= !Objects.equals(params.mBounds, task.mLastNonFullscreenBounds);
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index ac733c39924c..dcd830da1b8b 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -253,8 +253,16 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             // mode we should only launch a task in fullscreen mode.
+             if (currentParams.hasWindowingMode()
+                     && suggestedDisplayArea.inFreeformWindowingMode()) {
+-                launchMode = currentParams.mWindowingMode;
+-                fullyResolvedCurrentParam = launchMode != WINDOWING_MODE_FREEFORM;
++                // In ARC++ container, Chrome manages window placement. Don't
++                // inherit a saved fullscreen windowing mode on a freeform display
++                // — let the task launch as freeform so Chrome can size it.
++                if (currentParams.mWindowingMode != WINDOWING_MODE_FULLSCREEN
++                        || !android.os.Build.IS_CONTAINER) {
++                    launchMode = currentParams.mWindowingMode;
++                    fullyResolvedCurrentParam = launchMode != WINDOWING_MODE_FREEFORM;
++                } else if (DEBUG) {
++                    appendLog("skip-saved-fullscreen-in-container");
++                }
+                 if (DEBUG) {
+                     appendLog("inherit-" + WindowConfiguration.windowingModeToString(launchMode));
+                 }
+-- 
+2.43.0
+

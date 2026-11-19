@@ -1,0 +1,62 @@
+From fe32e6eccde116d1f239faecd547775fc46cc5e4 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 17 Apr 2026 19:33:21 +0800
+Subject: [PATCH 03/40] SurfaceFlinger: use HWC2 DPI for display density in
+ getDisplayInfo
+
+When FYDROID_WAYLAND_COMPOSER is defined, read the display density from
+the HWC2 active config's getDpiX() instead of from ro.sf.lcd_density.
+
+WaylandDisplay::dpiX()/dpiY() compute the correct overrideDpi as
+(lcd_density + scaleFactor*160)/2 (e.g. 280 on Fydetab Duo with
+lcd_density=240 and DSF=2.0). This makes the framework see the correct
+density from the very first getDisplayInfo call at display creation
+time, matching ARC++ behavior.
+
+Without this patch, the framework always uses ro.sf.lcd_density (240)
+which requires a late processDisplayDensityChange call to correct it.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: If5d07e2a5ee3ff9d8bd4f48ac007a2dd35d22619
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 81f8711542..b5dfeef534 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -954,6 +954,22 @@ status_t SurfaceFlinger::getStaticDisplayInfo(const sp<IBinder>& displayToken,
+         return INVALID_OPERATION;
+     }
+ 
++#if FYDROID_WAYLAND_COMPOSER
++    // Use HWC2 DPI from the active display config (WaylandDisplay computes
++    // the correct overrideDpi from lcd_density and device scale factor).
++    {
++        const auto displayId = display->getId();
++        float hwcDpi = 0.0f;
++        if (displayId) {
++            const auto& configs = getHwComposer().getConfigs(*displayId);
++            if (!configs.empty()) {
++                hwcDpi = configs[0]->getDpiX();
++            }
++        }
++        info->density = (hwcDpi > 0.0f ? hwcDpi : mInternalDisplayDensity)
++                / ACONFIGURATION_DENSITY_MEDIUM;
++    }
++#else
+     if (mEmulatedDisplayDensity) {
+         info->density = mEmulatedDisplayDensity;
+     } else {
+@@ -962,6 +978,7 @@ status_t SurfaceFlinger::getStaticDisplayInfo(const sp<IBinder>& displayToken,
+                 : FALLBACK_DENSITY;
+     }
+     info->density /= ACONFIGURATION_DENSITY_MEDIUM;
++#endif
+ 
+     info->secure = display->isSecure();
+     info->deviceProductInfo = display->getDeviceProductInfo();
+-- 
+2.43.0
+

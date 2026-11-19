@@ -1,0 +1,33 @@
+# ART heap budget for the "8G" Dalvik memory profile.
+#
+# Lives in system/etc/init/hw/ and not in an auto-scanned init directory:
+# init's ParseConfigDir walks every regular file in /vendor/etc/init and
+# /system/etc/init, so a tier file placed there is parsed whatever the host's
+# actual profile is, and all four merge -- last `on init` in sorted order wins.
+# Observed exactly that: a 4G board came up with the 8G budget. Subdirectories
+# are skipped, which is why AOSP keeps its own imported-only init.rc variants
+# (init.${ro.zygote}.rc) in hw/ too.
+#
+# Selected at parse time by init.cheets.rc:
+#     import /vendor/etc/init/init.dalvik_heap.${ro.boot.arc_dalvik_memory_profile}.rc
+#
+# Chrome sizes the host and ships the tier into the container: MemTotal >= 3.5 /
+# 7.5 / 15.5 GB picks 4G / 8G / 16G (arc_session_impl.cc:54-56), login_manager
+# turns it into DALVIK_MEMORY_PROFILE (arc_manager.cc:318) and arc-setup into
+# androidboot.arc_dalvik_memory_profile (arc_setup.cc:520). Until this file
+# existed nothing in AOSP read it and every board got one hardcoded profile.
+#
+# Source: AOSP phone-xhdpi-6144-dalvik-heap.mk, verbatim.
+# First tier that raises the background growth cap (192m -> 256m).
+#
+# These are mutable dalvik.vm.* properties, set in "on init" — long before
+# zygote-start, which is where ART first reads them. The fydroid_rt_common.mk
+# values remain the default for a board that gets no profile at all.
+
+on init
+    setprop dalvik.vm.heapstartsize 16m
+    setprop dalvik.vm.heapgrowthlimit 256m
+    setprop dalvik.vm.heapsize 512m
+    setprop dalvik.vm.heaptargetutilization 0.5
+    setprop dalvik.vm.heapminfree 8m
+    setprop dalvik.vm.heapmaxfree 32m

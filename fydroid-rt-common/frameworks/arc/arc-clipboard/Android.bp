@@ -1,0 +1,10 @@
+java_library {
+    name: "arc-clipboard",
+    installable: true,
+    srcs: ["java/**/*.java"],
+    platform_apis: true,
+    libs: [
+        "framework",
+        "services.core",
+    ],
+}

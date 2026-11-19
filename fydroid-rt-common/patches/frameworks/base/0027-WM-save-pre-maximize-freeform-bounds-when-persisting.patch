@@ -1,0 +1,78 @@
+From 7ecbd62df6ff42ac23693031e5e68096b2022052 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 20 May 2026 11:03:46 +0800
+Subject: [PATCH 27/75] WM: save pre-maximize freeform bounds when persisting
+ maximized task
+
+In container mode the persister saves task.getBounds() (the live bounds)
+so a relaunched resizable activity starts at its current size. But when
+the user maximizes a window (bounds become display-sized) and then
+closes it, saving the live bounds means the task reopens maximized
+instead of at the user's preferred freeform size.
+
+mLastNonFullscreenBounds stays frozen at the pre-maximize freeform value
+(Task.onConfigurationChanged's strict-less-than guard skips display-sized
+bounds). Detect the maximized case by comparing the live bounds against
+it: when both axes of the live bounds are strictly larger, the window is
+maximized, so persist mLastNonFullscreenBounds instead. Reopen then
+restores the user's freeform size.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Change-Id: I5e97dd8406693463aa7551b6f2654b9f644f41d7
+---
+ .../server/wm/LaunchParamsPersister.java      | 37 +++++++++++++------
+ 1 file changed, 26 insertions(+), 11 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/LaunchParamsPersister.java b/services/core/java/com/android/server/wm/LaunchParamsPersister.java
+index 77343d33633c..771a36aac08b 100644
+--- a/services/core/java/com/android/server/wm/LaunchParamsPersister.java
++++ b/services/core/java/com/android/server/wm/LaunchParamsPersister.java
+@@ -275,19 +275,34 @@ class LaunchParamsPersister {
+         params.mWindowingMode = wm;
+ 
+         // fydroid-rt: persist the task's *current* bounds rather than the
+-        // pre-fullscreen freeform snapshot. AOSP's stock behavior keeps
++        // pre-fullscreen freeform snapshot.  AOSP's stock behavior keeps
+         // mLastNonFullscreenBounds frozen at the last freeform value when
+         // the user maximizes (the strict-less-than guard in
+-        // Task.onConfigurationChanged skips display-sized bounds), so a
+-        // close-and-reopen of a maximized window would launch back at the
+-        // pre-maximize size. More importantly, when AOSP relaunches a
+-        // resizable activity on a snap→maximize resize, the relaunched
+-        // instance reads back from this persister, picks up the stale
+-        // snap-half bounds (e.g. 872×1440 on a 2560×1600 display) and the
+-        // Settings buffer ends up stretched inside Chrome's maximized
+-        // frame. Use task.getBounds() so the relaunched task starts at
+-        // whatever size the user actually has the window at right now.
+-        final Rect liveTaskBounds = task.getBounds();
++        // Task.onConfigurationChanged skips display-sized bounds).  When
++        // AOSP relaunches a resizable activity on a snap→maximize resize,
++        // the relaunched instance reads back from this persister, picks
++        // up the stale snap-half bounds (e.g. 872×1440 on a 2560×1600
++        // display) and the activity buffer ends up stretched inside
++        // Chrome's maximized frame.  Use task.getBounds() so the
++        // relaunched task starts at whatever size the user actually has
++        // the window at right now.
++        //
++        // Exception: when the user closes a maximized window, we want
++        // the reopen to restore at the user's preferred freeform size,
++        // not at the display-sized maximize rect.  Detect that by
++        // comparing against mLastNonFullscreenBounds: if both axes of
++        // the live bounds are strictly larger, the user has maximized
++        // (live bounds are display-sized while LNFB stayed at the
++        // pre-maximize freeform value) — save LNFB instead.
++        Rect liveTaskBounds = task.getBounds();
++        if (android.os.Build.IS_CONTAINER
++                && liveTaskBounds != null && !liveTaskBounds.isEmpty()
++                && task.mLastNonFullscreenBounds != null
++                && !task.mLastNonFullscreenBounds.isEmpty()
++                && liveTaskBounds.width() > task.mLastNonFullscreenBounds.width()
++                && liveTaskBounds.height() > task.mLastNonFullscreenBounds.height()) {
++            liveTaskBounds = task.mLastNonFullscreenBounds;
++        }
+         if (android.os.Build.IS_CONTAINER && liveTaskBounds != null
+                 && !liveTaskBounds.isEmpty()) {
+             changed |= !Objects.equals(params.mBounds, liveTaskBounds);
+-- 
+2.43.0
+

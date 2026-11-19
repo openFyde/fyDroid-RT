@@ -1,0 +1,189 @@
+From 6e96ea4326de4cab6cc888c823f99e274179854c Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 27 Jul 2026 15:28:54 +0800
+Subject: [PATCH 48/75] wm: deliver IS_GAME task metadata to the compositor
+
+METADATA_IS_GAME was stamped but never usable, for two reasons:
+
+  - setTaskMetadata() runs when the task SurfaceControl is built, which
+    happens before any activity is attached. getTopNonFinishingActivity()
+    returns null there, so nothing was ever classified as a game. This is
+    the same trap IS_DIALOG documents, and it gets the same live re-stamp
+    in prepareSurfaces().
+
+  - A sideloaded game declares no android:appCategory, so PackageManager
+    reports CATEGORY_UNDEFINED. The user-facing "Open with game control
+    panel" toggle didn't help: ArcAppService.resolveAppCategory() only
+    rewrites the category in the app list reported to Chrome, never in
+    system_server's PackageManager. Task now also consults the
+    fydroid_game_packages secure setting.
+
+The package set is cached and primed from WindowManagerService.systemReady():
+reading Settings from the surface-build path would put a ContentProvider
+call under the WM lock, and at boot it would just cache an empty set with
+no later change event to correct it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Icac5008342d4fd689ffd5ad0bc04174e701c4ec6
+---
+ .../core/java/com/android/server/wm/Task.java | 85 +++++++++++++++++--
+ .../server/wm/WindowManagerService.java       |  4 +
+ 2 files changed, 84 insertions(+), 5 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index af3e40b2a274..bbcb7d81acbc 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -147,6 +147,7 @@ import android.app.PictureInPictureParams;
+ import android.app.TaskInfo;
+ import android.app.WindowConfiguration;
+ import android.content.ComponentName;
++import android.content.ContentResolver;
+ import android.content.Intent;
+ import android.content.pm.ActivityInfo;
+ import android.content.pm.ActivityInfo.ScreenOrientation;
+@@ -154,6 +155,7 @@ import android.content.pm.ApplicationInfo;
+ import android.content.pm.IPackageManager;
+ import android.content.pm.PackageManager;
+ import android.content.res.Configuration;
++import android.database.ContentObserver;
+ import android.graphics.Insets;
+ import android.graphics.Matrix;
+ import android.graphics.Point;
+@@ -216,7 +218,10 @@ import java.io.PrintWriter;
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.RetentionPolicy;
+ import java.util.ArrayList;
++import java.util.Collections;
++import java.util.HashSet;
+ import java.util.Objects;
++import java.util.Set;
+ import java.util.function.Consumer;
+ import java.util.function.Predicate;
+ 
+@@ -3106,18 +3111,77 @@ class Task extends TaskFragment {
+                 com.android.internal.R.styleable.Window_windowIsFloating, false);
+     }
+ 
++    // Packages the user flagged as games via Settings' "Open with game control
++    // panel" (ArcAppService.GAME_PKGS_SECURE_KEY). A sideloaded game declares no
++    // android:appCategory, so PackageManager reports CATEGORY_UNDEFINED and
++    // METADATA_IS_GAME would never be stamped — leaving Chrome without the
++    // full-screen game treatment. Cached, since setTaskMetadata() runs for every
++    // task surface; a ContentObserver refreshes it when the toggle changes.
++    private static final String FYDROID_GAME_PKGS_KEY = "fydroid_game_packages";
++    private static volatile Set<String> sUserGamePackages;
++
++    private boolean isUserFlaggedGame(String packageName) {
++        final Set<String> pkgs = sUserGamePackages;
++        return pkgs != null && pkgs.contains(packageName);
++    }
++
++    /**
++     * Primes the game-package cache and keeps it fresh. Called from
++     * {@link WindowManagerService#systemReady} off the global lock — reading
++     * Settings from the surface-build path would mean a ContentProvider call
++     * under the WM lock, and at boot it would just cache an empty set (the
++     * provider isn't up yet) with no later change event to correct it.
++     */
++    static void loadUserGamePackages(ContentResolver cr) {
++        cr.registerContentObserver(Settings.Secure.getUriFor(FYDROID_GAME_PKGS_KEY),
++                false, new ContentObserver(null) {
++                    @Override
++                    public void onChange(boolean selfChange) {
++                        sUserGamePackages = parseGamePackages(Settings.Secure.getString(
++                                cr, FYDROID_GAME_PKGS_KEY));
++                    }
++                });
++        sUserGamePackages = parseGamePackages(
++                Settings.Secure.getString(cr, FYDROID_GAME_PKGS_KEY));
++    }
++
++    private static Set<String> parseGamePackages(String csv) {
++        if (csv == null || csv.isEmpty()) return Collections.emptySet();
++        final Set<String> set = new HashSet<>();
++        for (String p : csv.split(":")) {
++            if (!p.isEmpty()) set.add(p);
++        }
++        return set;
++    }
++
++    /**
++     * Whether the task currently presents as a game. True when the top activity's
++     * app declares {@code android:appCategory="game"}, or the user flagged the
++     * package via Settings' "Open with game control panel".
++     *
++     * Recomputed live for the same reason as {@link #isDialogTaskNow}: the task's
++     * SurfaceControl is built before any activity is attached, so the build-time
++     * stamp alone sees no top activity and never classifies anything as a game.
++     */
++    private boolean isGameTaskNow() {
++        final ActivityRecord topActivity = getTopNonFinishingActivity();
++        if (topActivity == null || topActivity.info == null
++                || topActivity.info.applicationInfo == null) {
++            return false;
++        }
++        return topActivity.info.applicationInfo.category == ApplicationInfo.CATEGORY_GAME
++                || isUserFlaggedGame(topActivity.info.applicationInfo.packageName);
++    }
++
+     private SurfaceControl.Builder setTaskMetadata(SurfaceControl.Builder b) {
+         b.setMetadata(METADATA_TASK_ID, mTaskId);
+         int sessionId = getWindowSessionId();
+         if (sessionId > 0) {
+             b.setMetadata(METADATA_SESSION_ID, sessionId);
+         }
+-        ActivityRecord topActivity = getTopNonFinishingActivity();
+-        if (topActivity != null && topActivity.info != null
+-                && topActivity.info.applicationInfo != null
+-                && topActivity.info.applicationInfo.category
+-                        == ApplicationInfo.CATEGORY_GAME) {
++        if (isGameTaskNow()) {
+             b.setMetadata(METADATA_IS_GAME, 1);
++            mLastGameMetadata = 1;
+         }
+         // A task is a dialog task when its ROOT activity uses a floating theme —
+         // i.e. the whole task is a standalone dialog (permission prompts) —
+@@ -3161,6 +3225,9 @@ class Task extends TaskFragment {
+     /** Last IS_DIALOG value pushed to the task surface (-1 = not yet stamped). */
+     private int mLastDialogMetadata = -1;
+ 
++    /** Last IS_GAME value pushed to the task surface (-1 = not yet stamped). */
++    private int mLastGameMetadata = -1;
++
+     @Override
+     public SurfaceControl.Builder makeAnimationLeash() {
+         return setTaskMetadata(super.makeAnimationLeash());
+@@ -3478,6 +3545,14 @@ class Task extends TaskFragment {
+                 mLastDialogMetadata = dialog;
+                 t.setMetadata(mSurfaceControl, METADATA_IS_DIALOG, dialog);
+             }
++            // Same story for IS_GAME: the build-time stamp runs before the task
++            // has a top activity, so without this the compositor never learns a
++            // task is a game and full-screen game treatment stays off.
++            final int game = isGameTaskNow() ? 1 : 0;
++            if (game != mLastGameMetadata) {
++                mLastGameMetadata = game;
++                t.setMetadata(mSurfaceControl, METADATA_IS_GAME, game);
++            }
+         }
+         // Only show the overlay if the task has other visible children
+         if (mOverlayHost != null) {
+diff --git a/services/core/java/com/android/server/wm/WindowManagerService.java b/services/core/java/com/android/server/wm/WindowManagerService.java
+index 2c1418e6517a..c7f8d34d725d 100644
+--- a/services/core/java/com/android/server/wm/WindowManagerService.java
++++ b/services/core/java/com/android/server/wm/WindowManagerService.java
+@@ -5215,6 +5215,10 @@ public class WindowManagerService extends IWindowManager.Stub
+         mHasWideColorGamutSupport = queryWideColorGamutSupport();
+         mHasHdrSupport = queryHdrSupport();
+         UiThread.getHandler().post(mSettingsObserver::loadSettings);
++        // Prime the "user flagged this package as a game" cache Task consults
++        // when stamping IS_GAME on task surfaces.
++        UiThread.getHandler().post(
++                () -> Task.loadUserGamePackages(mContext.getContentResolver()));
+         IVrManager vrManager = IVrManager.Stub.asInterface(
+                 ServiceManager.getService(Context.VR_SERVICE));
+         if (vrManager != null) {
+-- 
+2.43.0
+

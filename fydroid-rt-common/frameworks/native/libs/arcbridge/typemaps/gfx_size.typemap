@@ -1,0 +1,23 @@
+# Typemap for arc.mojom.Size -> gfx::Size native type.
+#
+# This ensures VideoDecoderConfig constructor uses gfx::Size const&
+# instead of mojo::InlinedStructPtr<arc::mojom::Size>, matching the
+# ABI the mojo video-codec clients expect.
+#
+# gfx::Size here is libchrome's real ui/gfx/geometry/size.h type, not a local
+# stand-in. It used to be a fydroid-local struct in arc/gfx_size.h, but once
+# services/media_session/public/mojom/media_session.mojom started importing
+# ui/gfx/geometry/mojo/geometry.mojom, both definitions landed in the same
+# translation unit and clashed ("redefinition of 'Size'"). The layouts are
+# identical — two int32s, no vtable — so the mojo ABI is unchanged.
+
+mojom = "arc/gfx.mojom"
+public_headers = [
+  "ui/gfx/geometry/size.h",
+]
+traits_headers = [
+  "arc/gfx_size_mojom_traits.h",
+]
+type_mappings = [
+  "arc.mojom.Size=gfx::Size",
+]

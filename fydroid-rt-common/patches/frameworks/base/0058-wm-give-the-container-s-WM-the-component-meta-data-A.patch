@@ -1,0 +1,51 @@
+From 5dd4c2181ae1acb7577d5b678a3f58b616b8f982 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 3 Sep 2026 13:55:28 +0800
+Subject: [PATCH 58/75] wm: give the container's WM the component meta-data ARC
+ window hints live in
+
+STOCK_PM_FLAGS is GET_SHARED_LIBRARY_FILES only, so ActivityInfo.metaData
+arrives null and every WM-side reader of a "WindowManagerPreference:*" key
+silently sees nothing -- including ArcWindowManagerService.isBackButtonSuppressed,
+which has been reading a null bundle. Chrome OS puts the window-management hints
+an app declares for ARC there, so they cannot be honoured at all without this.
+
+Container-only: metaData is a Bundle copied into every resolved ActivityInfo,
+which is why AOSP leaves it out of the stock flags.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I5abfe22be1c2cd380c6ac213da4c6c8f624312fb
+---
+ .../server/wm/ActivityTaskSupervisor.java        | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java b/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java
+index 9b9337e24f53..8ce5f65f3160 100644
+--- a/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java
++++ b/services/core/java/com/android/server/wm/ActivityTaskSupervisor.java
+@@ -726,6 +726,22 @@ public class ActivityTaskSupervisor implements RecentTasks.Callbacks {
+             Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "resolveIntent");
+             int modifiedFlags = flags
+                     | PackageManager.MATCH_DEFAULT_ONLY | ActivityManagerService.STOCK_PM_FLAGS;
++            // fydroid-rt: ARC needs the component meta-data in WM.
++            //
++            // STOCK_PM_FLAGS is GET_SHARED_LIBRARY_FILES only, so ActivityInfo.metaData
++            // arrives null and every WM-side reader of a "WindowManagerPreference:*" key
++            // silently sees nothing. Chrome OS puts the window-management hints an app
++            // declares for ARC there -- FreeformWindowSize / FreeformWindowOrientation,
++            // read by TaskLaunchParamsModifier -- so without this they cannot be honoured
++            // at all, and an app that asks for an 80% landscape window is launched at the
++            // AOSP phone-portrait default instead.
++            //
++            // Container-only: metaData is a Bundle copied into every resolved ActivityInfo,
++            // which is why AOSP leaves it out of the stock flags. The container runs a
++            // bounded set of apps and only ARC reads these keys.
++            if (android.os.Build.IS_CONTAINER) {
++                modifiedFlags |= PackageManager.GET_META_DATA;
++            }
+             if (intent.isWebIntent()
+                         || (intent.getFlags() & Intent.FLAG_ACTIVITY_MATCH_EXTERNAL) != 0) {
+                 modifiedFlags |= PackageManager.MATCH_INSTANT;
+-- 
+2.43.0
+

@@ -1,0 +1,141 @@
+From 520b727d7d3da907dd7fb28c93da6c1cec752803 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 12:44:09 +0800
+Subject: [PATCH 5/6] fydroid: decode output -> framework GRALLOC/BUFFERQUEUE
+ lazy pools (0012)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Chrome's Mojo VDA (e.g. Intel) dynamically requests more picture buffers than
+an initial count. The V4L2 plugin-store pools cap recycling to the fixed set
+from C2VdaPooledBlockPool::requestNewBufferSet (fetchGraphicBlock returns
+C2_TIMED_OUT once the VDA exceeds it), so the decoder starves. Switch the decode
+output allocators to the framework GRALLOC (byte-buffer) and BUFFERQUEUE
+(surface) pools, which allocate lazily via fetchGraphicBlock and grow on demand.
+Backing allocator is still cros_gralloc/minigbm on this device (the V4L2 plugin
+store has no vendor allocator shipped and falls back to C2AllocatorGralloc).
+
+VideoFramePool, for the framework pools:
+- getBufferIdFromGraphicBlock: identify buffers by dma-buf inode via
+  getDmabufId(handle->data[0]) — the same scheme C2VdaBqBlockPool::Impl uses, but
+  pool-agnostic, so no cast to a C2Vda* pool (the framework C2BufferQueueBlockPool
+  is not one; 13 made C2VdaBqBlockPool::getBufferIdFromGraphicBlock a member).
+- requestNewBufferSet: no-op (lazy pools have no pre-allocated set) -- the fix.
+- setNotifyBlockAvailableCb: false (framework BQ has none; retry/backoff).
+- Create: request CPU_READ for GRALLOC (byte-buffer mode).
+
+Local commit only. Resolves the previously-deferred 0012; addresses the VDA
+buffer-count starvation. Runtime-validate on device.
+
+Change-Id: I25ac333b01595727945e86a0c2fb94e42915d66a
+---
+ components/V4L2DecodeInterface.cpp | 11 ++++++--
+ components/VideoFramePool.cpp      | 40 +++++++++++++++++++++---------
+ 2 files changed, 37 insertions(+), 14 deletions(-)
+
+diff --git a/components/V4L2DecodeInterface.cpp b/components/V4L2DecodeInterface.cpp
+index cf1219f..6bc63dd 100644
+--- a/components/V4L2DecodeInterface.cpp
++++ b/components/V4L2DecodeInterface.cpp
+@@ -268,9 +268,16 @@ V4L2DecodeInterface::V4L2DecodeInterface(const std::string& name,
+     const C2Allocator::id_t inputAllocators[] = {secureMode ? V4L2AllocatorId::SECURE_LINEAR
+                                                             : C2AllocatorStore::DEFAULT_LINEAR};
+ 
+-    const C2Allocator::id_t outputAllocators[] = {V4L2AllocatorId::V4L2_BUFFERPOOL};
++    // fydroid: use the framework's GRALLOC/BUFFERQUEUE allocators instead of the
++    // V4L2 plugin-store pools. The plugin pools (C2VdaPooledBlockPool /
++    // C2VdaBqBlockPool) pre-allocate a fixed buffer set sized for a V4L2 device,
++    // but Chrome's Mojo VDA (e.g. Intel) dynamically requests more picture
++    // buffers; the framework pools allocate lazily via fetchGraphicBlock and grow
++    // on demand. Backing allocator is still cros_gralloc/minigbm on this device.
++    // See device/fydeos/docs/c2-codec2-mojo-port-plan.md.
++    const C2Allocator::id_t outputAllocators[] = {C2PlatformAllocatorStore::GRALLOC};
+     const C2Allocator::id_t surfaceAllocator =
+-            secureMode ? V4L2AllocatorId::SECURE_GRAPHIC : V4L2AllocatorId::V4L2_BUFFERQUEUE;
++            secureMode ? V4L2AllocatorId::SECURE_GRAPHIC : C2PlatformAllocatorStore::BUFFERQUEUE;
+     const C2BlockPool::local_id_t outputBlockPools[] = {C2BlockPool::BASIC_GRAPHIC};
+ 
+     addParameter(
+diff --git a/components/VideoFramePool.cpp b/components/VideoFramePool.cpp
+index 665ff73..a25d57c 100644
+--- a/components/VideoFramePool.cpp
++++ b/components/VideoFramePool.cpp
+@@ -19,6 +19,7 @@
+ #include <v4l2_codec2/common/VideoTypes.h>
+ #include <v4l2_codec2/plugin_store/C2VdaBqBlockPool.h>
+ #include <v4l2_codec2/plugin_store/C2VdaPooledBlockPool.h>
++#include <v4l2_codec2/plugin_store/DmabufHelpers.h>
+ #include <v4l2_codec2/plugin_store/V4L2AllocatorId.h>
+ 
+ using android::hardware::graphics::common::V1_0::BufferUsage;
+@@ -32,9 +33,17 @@ std::optional<uint32_t> VideoFramePool::getBufferIdFromGraphicBlock(C2BlockPool&
+ 
+     if (blockPool.getAllocatorId() == android::V4L2AllocatorId::V4L2_BUFFERPOOL) {
+         return C2VdaPooledBlockPool::getBufferIdFromGraphicBlock(block);
+-    } else if (blockPool.getAllocatorId() == C2PlatformAllocatorStore::BUFFERQUEUE) {
+-        C2VdaBqBlockPool* bqPool = static_cast<C2VdaBqBlockPool*>(&blockPool);
+-        return bqPool->getBufferIdFromGraphicBlock(block);
++    }
++    // fydroid: framework GRALLOC/BUFFERQUEUE lazy pools (the Mojo decode path).
++    // Identify each physical buffer by its dma-buf inode — the same scheme
++    // C2VdaBqBlockPool::Impl uses internally (getDmabufId(handle->data[0])), but
++    // pool-agnostic so we never cast to a C2Vda* pool (the framework
++    // C2BufferQueueBlockPool is not one).
++    if (blockPool.getAllocatorId() == C2PlatformAllocatorStore::GRALLOC ||
++        blockPool.getAllocatorId() == C2PlatformAllocatorStore::BUFFERQUEUE) {
++        const C2Handle* handle = block.handle();
++        if (handle == nullptr || handle->numFds <= 0) return std::nullopt;
++        return getDmabufId(handle->data[0]);
+     }
+ 
+     ALOGE("%s(): unknown allocator ID: %u", __func__, blockPool.getAllocatorId());
+@@ -50,9 +59,14 @@ c2_status_t VideoFramePool::requestNewBufferSet(C2BlockPool& blockPool, int32_t
+     if (blockPool.getAllocatorId() == android::V4L2AllocatorId::V4L2_BUFFERPOOL) {
+         C2VdaPooledBlockPool* bpPool = static_cast<C2VdaPooledBlockPool*>(&blockPool);
+         return bpPool->requestNewBufferSet(bufferCount);
+-    } else if (blockPool.getAllocatorId() == C2PlatformAllocatorStore::BUFFERQUEUE) {
+-        C2VdaBqBlockPool* bqPool = static_cast<C2VdaBqBlockPool*>(&blockPool);
+-        return bqPool->requestNewBufferSet(bufferCount, size.width, size.height, format, usage);
++    }
++    // fydroid: the framework GRALLOC/BUFFERQUEUE pools (the Mojo decode path)
++    // allocate lazily via fetchGraphicBlock — there is no fixed pre-allocated set
++    // to request. This is precisely what lets Chrome's VDA ask for more picture
++    // buffers than an initial count without the pool starving. No-op.
++    if (blockPool.getAllocatorId() == C2PlatformAllocatorStore::GRALLOC ||
++        blockPool.getAllocatorId() == C2PlatformAllocatorStore::BUFFERQUEUE) {
++        return C2_OK;
+     }
+ 
+     ALOGE("%s(): unknown allocator ID: %u", __func__, blockPool.getAllocatorId());
+@@ -63,10 +77,10 @@ c2_status_t VideoFramePool::requestNewBufferSet(C2BlockPool& blockPool, int32_t
+ bool VideoFramePool::setNotifyBlockAvailableCb(C2BlockPool& blockPool, ::base::OnceClosure cb) {
+     ALOGV("%s() blockPool.getAllocatorId() = %u", __func__, blockPool.getAllocatorId());
+ 
+-    if (blockPool.getAllocatorId() == C2PlatformAllocatorStore::BUFFERQUEUE) {
+-        C2VdaBqBlockPool* bqPool = static_cast<C2VdaBqBlockPool*>(&blockPool);
+-        return bqPool->setNotifyBlockAvailableCb(std::move(cb));
+-    }
++    // fydroid: the Mojo decode path uses the framework C2BufferQueueBlockPool,
++    // which has no block-available callback; fall back to the caller's
++    // retry/backoff path. (The stock C2VdaBqBlockPool supported it, but is no
++    // longer used now that the interface declares the framework allocators.)
+     return false;
+ }
+ 
+@@ -80,8 +94,10 @@ std::unique_ptr<VideoFramePool> VideoFramePool::Create(
+     uint64_t usage = static_cast<uint64_t>(BufferUsage::VIDEO_DECODER);
+     if (isSecure) {
+         usage |= C2MemoryUsage::READ_PROTECTED;
+-    } else if (blockPool->getAllocatorId() == android::V4L2AllocatorId::V4L2_BUFFERPOOL) {
+-        // CPU access to buffers is only required in byte buffer mode.
++    } else if (blockPool->getAllocatorId() == android::V4L2AllocatorId::V4L2_BUFFERPOOL ||
++               blockPool->getAllocatorId() == C2PlatformAllocatorStore::GRALLOC) {
++        // CPU access to buffers is only required in byte buffer mode (GRALLOC is
++        // the fydroid Mojo byte-buffer output pool).
+         usage |= C2MemoryUsage::CPU_READ;
+     }
+     const C2MemoryUsage memoryUsage(usage);
+-- 
+2.43.0
+

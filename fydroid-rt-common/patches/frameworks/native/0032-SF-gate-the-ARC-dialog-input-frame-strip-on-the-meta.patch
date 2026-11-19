@@ -1,0 +1,72 @@
+From 12cd1b1f492186f4aad05e07d8237209982eafb7 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 3 Aug 2026 16:29:17 +0800
+Subject: [PATCH 32/40] SF: gate the ARC dialog input-frame strip on the
+ metadata VALUE
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+fillInputFrameInfo strips the translation from layerToScreen so a
+floating-activity modal or whole-task dialog gets an input frame at the
+screen origin, matching the modal window's buffer origin. It was gated on
+metadata.has(METADATA_IS_DIALOG), which tests PRESENCE — but WM stamps
+IS_DIALOG on every task layer, carrying 0 for an ordinary app, and
+children inherit the key. So the strip fired for every non-trusted layer
+of every task.
+
+That stayed hidden because a task's own activity layer sits at the VD
+origin (base 0042 puts the task origin at 0,0), where the strip is a
+no-op. A task SUB-window is not at the origin. YouTube's
+quality/playback-speed PopupWindow drew at pos=(1314,95) while its input
+frame was moved to (0,0): the panel rendered perfectly and was completely
+untappable. Any offset sub-window — overflow menu, dropdown, spinner — was
+affected the same way.
+
+Test the value instead. Real dialogs and floating activities carry 1 and
+still strip.
+
+Verified on device, both directions:
+  - popup input frame [1109,0][1600,494] (origin) -> [1014,1314][1505,1808]
+    (its real position, physical coords on the ROT_90 panel), and the panel
+    is clickable again;
+  - the time-picker AlertDialog's floating modal still strips, input frame
+    [821,0][1600,576], and CANCEL still dismisses it.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I6c94aa52ba24eb5bed66b47330e5ebb7dd4d0da2
+---
+ services/surfaceflinger/Layer.cpp | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 9946e525a8..6f20923f70 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -2487,9 +2487,20 @@ void Layer::fillInputFrameInfo(WindowInfo& info, const ui::Transform& screenToDi
+     // !isTrustedOverlay() to strip only the dialog card (the activity content),
+     // never the task caption/decor trusted overlays — stripping those would move
+     // their touchable regions over the card.
+-    if (mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)
+-            || (mDrawingState.metadata.has(METADATA_IS_DIALOG)
+-                    && !isTrustedOverlay())) {
++    //
++    // Test the VALUE, not mere presence: WM stamps IS_DIALOG on every task layer,
++    // carrying 0 for an ordinary app, and children inherit the key. Keying on
++    // has() therefore stripped the translation off every non-trusted layer of
++    // every task. That went unnoticed because a task's own activity layer sits at
++    // the VD origin, where the strip is a no-op — but a task SUB-window does not.
++    // A PopupWindow (YouTube's quality/playback-speed panel, pos=(1314,95)) had
++    // its input frame moved to (0,0) while it kept drawing at its real offset, so
++    // it rendered correctly and was completely untappable.
++    const bool isFloatingActivityLayer =
++            mDrawingState.metadata.getInt32(METADATA_IS_FLOATING_ACTIVITY, 0) != 0;
++    const bool isDialogTaskLayer =
++            mDrawingState.metadata.getInt32(METADATA_IS_DIALOG, 0) != 0;
++    if (isFloatingActivityLayer || (isDialogTaskLayer && !isTrustedOverlay())) {
+         const Rect screenRect{layerToScreen.transform(croppedInsetBoundsInLayer)};
+         ui::Transform originShift;
+         originShift.set(static_cast<float>(-screenRect.left),
+-- 
+2.43.0
+

@@ -1,0 +1,206 @@
+Description: v3d: export the buffers Chrome displays from the CMA dma-heap
+ 0017 stopped every ARC window buffer from landing in CMA, which is what
+ exhausted the pool on a 4K display. Relieving CMA was necessary but
+ not sufficient: the window still came up completely blank, on a 1080p panel as
+ well as a 4K one.
+ .
+ Chrome builds the SharedImage backing for an ARC dma-buf on the *card0* gbm
+ device. On BCM2711 card0 is vc4 -- the display block -- while the GPU is a
+ separate driver (card1/renderD128 = v3d). vc4 has no IOMMU, so its
+ prime_import_sg_table only accepts a physically contiguous sg_table, and an
+ ordinary v3d BO is shmem-backed. strace of the GPU process, importing the same
+ buffer into both:
+ .
+   ioctl(17, DRM_IOCTL_PRIME_FD_TO_HANDLE, ...) = 0                 renderD128, v3d
+   ioctl(34, DRM_IOCTL_PRIME_FD_TO_HANDLE, ...) = -1 EINVAL         card0, vc4
+ .
+ The EINVAL becomes "nullptr returned from gbm_bo_import", then
+ "CreateSharedImage: could not create backing", and the window has no content at
+ all. Note the minigbm half of that chain is only in /var/log/ui/ui.LATEST, not
+ /var/log/chrome/chrome. On a normal board card0 *is* the GPU, so this never
+ appears; rpi5 is immune for the same reason 0017 excludes it, BCM2712 puts
+ the display behind an IOMMU.
+ .
+ Being contiguous is not enough on its own. With 0014 the buffer is already
+ CMA-backed -- CmaFree drops 22.7 MB per launch -- and vc4 still refuses it,
+ because gralloc exports the *v3d GEM object* wrapping those pages rather than
+ the heap dma-buf: /sys/kernel/debug/dma_buf/bufinfo shows exp_name "drm" with
+ v3d_render fences and never "linux,cma". v3d_bo_export already hands out the
+ heap fd, but only for a BO that took the heap path, and after 0017 a window
+ buffer no longer does.
+ .
+ So mark the buffers that actually leave the container instead of widening the
+ contiguous set again. SurfaceFlinger's TaskRenderSurface -- the only allocator
+ of buffers fydroid hands to Chrome -- sets a vendor usage bit that arrives here
+ as BO_USE_ARC_COMPOSER_EXPORT, and v3d treats it as a hard requirement: it must
+ come from the CMA heap, so v3d_bo_export gives Chrome the heap fd, which vc4 can
+ import. Everything else keeps 0017's placement, so the pool pays only for what
+ is displayed.
+ .
+ The flag must NOT take part in combination matching. drv_get_combination()
+ requires a combination's mask to be a superset of the requested flags, and
+ TaskRenderSurface sets this bit on every board -- advertising it only in v3d's
+ table would make the lookup miss on amdgpu, virtgpu_virgl, rockchip, realtek and
+ vmwgfx, and gralloc would reject every ARC window buffer as UNSUPPORTED. Nor can
+ it be gated per board: fydroid-rt_arm64 compiles rockchip+v3d+vc4+realtek into
+ one image and picks at runtime. It is therefore declared a placement hint and
+ stripped at the top of drv_get_combination, the same shape as the existing
+ BO_USE_TEST_ALLOC strip; drv_bo_create still passes the full flags to
+ backend->bo_create, so v3d sees it and every other backend never does.
+ .
+ The bit is 1ULL<<55, inside BufferUsage::VENDOR_MASK_HI, deliberately not
+ GRALLOC_USAGE_PRIVATE_0: bit 28 is already BUFFER_USAGE_FRONT_RENDERING_PRIVATE
+ in cros_gralloc_helpers.h and is handled earlier in cros_gralloc_convert_usage,
+ which silently converts it to BO_USE_FRONT_RENDERING instead.
+ .
+ Pairs with the TaskRenderSurface change in
+ fydroid-rt-common/frameworks/native/services/surfaceflinger. The two must ship
+ together: a new SurfaceFlinger against an old gralloc hits "Unhandled gralloc
+ usage", which returns BO_USE_NONE and fails every ARC buffer allocation.
+ .
+ Verified on rpi4-openfyde, v3d, 1080p and 3840x2160: F-Droid renders,
+ gbm_bo_import failures 1044 -> 0, PRIME_FD_TO_HANDLE failures 1046 -> 0, and
+ dma-bufs now export as "linux,cma" where there were none. At 4K fullscreen the
+ pool allocates 3840x2304 buffers with 0 cma_alloc and 0 GraphicBufferAllocator
+ failures -- the original 4K failure signature -- holding 105.8 MiB of heap dma-bufs,
+ and cold-boot CmaFree is 282648 kB, in line with the 286004 kB 0017 measured.
+ Composed-frame throttling fell from 50-58% to 4-17% now that Chrome can import
+ and release. No regression on fydroid_rt_apple (vmwgfx) or
+ fydroid_rt_arm64 (rockchip/panthor): both render with 0 allocation
+ failures, 0 "Unhandled gralloc usage" and 0 "No combo found". Builds clean for
+ armv8, arm64, apple and amd64.
+diff --git a/drv.h b/drv.h
+index 38ee79f..a112ad9 100644
+--- a/drv.h
++++ b/drv.h
+@@ -43,6 +43,23 @@ extern "C" {
+ #define BO_USE_GPU_DATA_BUFFER		(1ull << 18)
+ #define BO_USE_SENSOR_DIRECT_DATA	(1ull << 19)
+ 
++/*
++ * fydroid-private: this buffer is exported as a dma-buf and imported by the
++ * Chrome OS compositor. On a Pi that import lands on vc4 (card0), which has no
++ * IOMMU, so the buffer has to be CMA-backed *and* handed over as the CMA
++ * dma-heap fd -- see V3D_CONTIGUOUS_REQUIRED in v3d.c.
++ */
++#define BO_USE_ARC_COMPOSER_EXPORT	(1ull << 62)
++
++/*
++ * Placement hints: they tell a backend WHERE to put a buffer, not what layouts
++ * it can produce, so they must not take part in combination matching.
++ * drv_get_combination() requires a combination's mask to be a superset of the
++ * requested flags, and no backend advertises these -- leaving one in the match
++ * would fail every allocation carrying it, on every backend that does not know
++ * it, as UNSUPPORTED.
++ */
++#define BO_USE_PLACEMENT_HINT_MASK	(BO_USE_ARC_COMPOSER_EXPORT)
+ #define BO_USE_ARC_SCREEN_CAP_PROBED	(1ull << 63)
+ 
+ /* Quirks for allocating a buffer. */
+diff --git a/drv.c b/drv.c
+index fff26df..9ca9cfb 100644
+--- a/drv.c
++++ b/drv.c
+@@ -223,6 +223,9 @@ struct combination *drv_get_combination(struct driver *drv, uint32_t format, uin
+ {
+ 	struct combination *curr, *best;
+ 
++	/* Placement hints are not format capabilities -- see drv.h. */
++	use_flags &= ~BO_USE_PLACEMENT_HINT_MASK;
++
+ 	if (format == DRM_FORMAT_NONE || use_flags == BO_USE_NONE)
+ 		return 0;
+ 
+diff --git a/cros_gralloc/cros_gralloc_helpers.cc b/cros_gralloc/cros_gralloc_helpers.cc
+index 2b3decf..6d78c66 100644
+--- a/cros_gralloc/cros_gralloc_helpers.cc
++++ b/cros_gralloc/cros_gralloc_helpers.cc
+@@ -18,6 +18,19 @@
+ /* Define to match AIDL BufferUsage::GPU_DATA_BUFFER. */
+ #define BUFFER_USAGE_GPU_DATA_BUFFER (1 << 24)
+ 
++/*
++ * fydroid-private: set by TaskRenderSurface on the per-task composition buffers,
++ * the only buffers fydroid exports to Chrome. Must be consumed here -- an
++ * unhandled usage bit fails the whole conversion.
++ *
++ * Lives in BufferUsage::VENDOR_MASK_HI (bits 48-63), NOT in the low vendor
++ * nibble: GRALLOC_USAGE_PRIVATE_0 (bit 28) is already spoken for by
++ * BUFFER_USAGE_FRONT_RENDERING_PRIVATE in cros_gralloc_helpers.h, and since it
++ * is handled earlier in cros_gralloc_convert_usage it silently swallows the bit
++ * and yields BO_USE_FRONT_RENDERING instead.
++ */
++#define BUFFER_USAGE_ARC_COMPOSER_EXPORT (1ULL << 55)
++
+ /* Define to match AIDL PixelFormat::R_8. */
+ #define HAL_PIXEL_FORMAT_R8 0x38
+ 
+@@ -148,6 +161,8 @@ uint64_t cros_gralloc_convert_usage(uint64_t usage)
+ 	handle_usage(&usage, BUFFER_USAGE_FRONT_RENDERING, &use_flags, BO_USE_FRONT_RENDERING);
+ 	handle_usage(&usage, BUFFER_USAGE_FRONT_RENDERING_PRIVATE, &use_flags,
+ 		     BO_USE_FRONT_RENDERING);
++	handle_usage(&usage, BUFFER_USAGE_ARC_COMPOSER_EXPORT, &use_flags,
++		     BO_USE_ARC_COMPOSER_EXPORT);
+ 
+ 	if (usage) {
+ 		ALOGE("Unhandled gralloc usage: %llx", (unsigned long long)usage);
+diff --git a/v3d.c b/v3d.c
+index 980c125..115975d 100644
+--- a/v3d.c
++++ b/v3d.c
+@@ -55,7 +55,7 @@
+  */
+ #define V3D_CONTIGUOUS_REQUIRED                                                                    \
+ 	(BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER | BO_USE_CAMERA_READ |                   \
+-	 BO_USE_CAMERA_WRITE | BO_USE_SENSOR_DIRECT_DATA)
++	 BO_USE_CAMERA_WRITE | BO_USE_SENSOR_DIRECT_DATA | BO_USE_ARC_COMPOSER_EXPORT)
+ 
+ /*
+  * The display/cursor half: buffers a KMS plane would scan out. These are a SOFT
+@@ -78,8 +78,13 @@
+  * a single image carries backends that do drive real scanout hardware and do
+  * depend on BO_USE_SCANOUT. The decision has to stay backend-local, here.
+  *
+- * To restore the old behaviour (e.g. if Chrome turns out to want ARC buffers on
+- * a hardware overlay after all), give this the non-Android definition.
++ * Chrome does still need the buffers it actually displays to be CMA-backed --
++ * it imports them on vc4 (card0), which has no IOMMU on BCM2711 and refuses a
++ * pageable v3d BO with EINVAL. That is handled precisely rather than by putting
++ * SCANOUT back here: SurfaceFlinger marks its per-task composition buffers with
++ * BO_USE_ARC_COMPOSER_EXPORT, which is in V3D_CONTIGUOUS_REQUIRED above. Those
++ * are the only buffers that leave the container, so the pool pays for them and
++ * nothing else.
+  */
+ #ifdef __ANDROID__
+ #define V3D_CONTIGUOUS_SOFT 0
+@@ -98,7 +103,8 @@
+  */
+ #define V3D_LINEAR_USE                                                                             \
+ 	(BO_USE_NON_GPU_HW | BO_USE_CURSOR | BO_USE_SW_MASK | BO_USE_LINEAR |                       \
+-	 BO_USE_GPU_DATA_BUFFER | BO_USE_RENDERSCRIPT | BO_USE_PROTECTED)
++	 BO_USE_GPU_DATA_BUFFER | BO_USE_RENDERSCRIPT | BO_USE_PROTECTED |                          \
++	 BO_USE_ARC_COMPOSER_EXPORT)
+ 
+ enum v3d_tiling_mode {
+         /* Untiled resources.  Not valid as texture inputs. */
+@@ -380,6 +386,20 @@ static int v3d_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_
+    * ARC_CALLOC makes v3d borrow the BO from vc4's CMA allocator; without it the
+    * BO is ordinary pageable memory behind the v3d MMU.
+    */
++  /*
++   * A BO_USE_ARC_COMPOSER_EXPORT buffer that does not come from the heap is not
++   * merely slower, it is useless: the vc4 borrow below is contiguous but is
++   * exported as a v3d GEM handle, and Chrome imports these on vc4 (card0),
++   * which refuses a re-exported v3d object with EINVAL. The allocation then
++   * succeeds and the window renders nothing, with no error anywhere -- exactly
++   * the failure this flag exists to prevent. Say so.
++   */
++  if (use_flags & BO_USE_ARC_COMPOSER_EXPORT)
++    drv_loge("v3d: composer-export buffer %ux%u has no CMA dma-heap to come from "
++             "(heap_fd=%d); Chrome will not be able to import it and the window "
++             "will be blank\n",
++             width, height, dpriv ? dpriv->heap_fd : -1);
++
+   bo_create.size = bo->meta.total_size;
+   bo_create.flags = contiguous ? ARC_CALLOC : 0;
+   if (contiguous || linear) {

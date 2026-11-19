@@ -1,0 +1,41 @@
+From 347451aaed490ffad997b3048e889a1b93f74bf5 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 17:35:36 +0800
+Subject: [PATCH 15/75] fydroid-rt: add Build.IS_CONTAINER for ARC container
+ detection
+
+Build.IS_CONTAINER existed in the ARC-derived AOSP-11 base but not in stock
+AOSP 13. It's used by the container-specific WM/size-compat patches (0016, 0017,
+0020, 0025, 0027, 0028, 0030, 0033). Define it from ro.boot.container (set by
+arc-setup from the androidboot.container=1 cmdline). @hide, so no api.txt change.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I04b496040c77a5f7d32d5d7021ead31ed4be751d
+---
+ core/java/android/os/Build.java | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/core/java/android/os/Build.java b/core/java/android/os/Build.java
+index 0b956f8bf9e0..dd68ad2ddea3 100755
+--- a/core/java/android/os/Build.java
++++ b/core/java/android/os/Build.java
+@@ -118,6 +118,16 @@ public class Build {
+     /** The name of the hardware (from the kernel command line or /proc). */
+     public static final String HARDWARE = getString("ro.hardware");
+ 
++    /**
++     * fydroid-rt: {@code true} when Android is running inside the ARC++ container
++     * (kernel cmdline {@code androidboot.container=1} -> {@code ro.boot.container=1}).
++     * Used by container-specific WindowManager / size-compat handling. Not present
++     * in stock AOSP; added for the fydroid-rt container runtime.
++     * @hide
++     */
++    public static final boolean IS_CONTAINER =
++            SystemProperties.getInt("ro.boot.container", 0) == 1;
++
+     /**
+      * The SKU of the hardware (from the kernel command line).
+      *
+-- 
+2.43.0
+

@@ -1,0 +1,40 @@
+From ee8b00430dc8cd8a9cdc9ac443858dabbc0802e4 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 9 Jun 2026 11:15:07 +0800
+Subject: [PATCH 2/5] ueventd: cap uevent_socket_rcvbuf_size at 512K for the
+ ARC container
+
+16M exceeds the FydeOS host's net.core.rmem_max (512K), so SO_RCVBUF is clamped
+and ueventd falls back to SO_RCVBUFFORCE. That requires CAP_NET_ADMIN in the
+INITIAL user namespace; the container only holds it in its own userns, so the
+call returns EPERM and ueventd aborts with "Could not open uevent socket"
+(critical-process reboot loop). Keep the request <= rmem_max so the force path is
+never taken. A container sees few uevents (the host owns device management).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ia3469ea0fc8c20b48808763178627ffbbe7c7c9e
+---
+ rootdir/ueventd.rc | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/rootdir/ueventd.rc b/rootdir/ueventd.rc
+index 4ec59afe99..a923167a02 100644
+--- a/rootdir/ueventd.rc
++++ b/rootdir/ueventd.rc
+@@ -2,7 +2,12 @@ import /vendor/etc/ueventd.rc
+ import /odm/etc/ueventd.rc
+ 
+ firmware_directories /etc/firmware/ /odm/firmware/ /vendor/firmware/ /firmware/image/
+-uevent_socket_rcvbuf_size 16M
++# fydroid-rt: 16M exceeds the host net.core.rmem_max (512K), so SO_RCVBUF gets
++# clamped and ueventd falls back to SO_RCVBUFFORCE — which needs CAP_NET_ADMIN in
++# the INIT userns (the container only has it in its own userns) and aborts with
++# "Could not open uevent socket". Keep the request <= rmem_max so the force path
++# is never taken. A container sees few uevents (the host owns devices).
++uevent_socket_rcvbuf_size 512K
+ 
+ subsystem graphics
+     devname uevent_devpath
+-- 
+2.43.0
+

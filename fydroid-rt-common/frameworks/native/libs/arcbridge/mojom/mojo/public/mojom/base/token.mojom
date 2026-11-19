@@ -1,0 +1,7 @@
+// Stub for mojo_base.mojom.Token — not in AOSP11 libmojo.
+module mojo_base.mojom;
+
+struct Token {
+  uint64 high;
+  uint64 low;
+};

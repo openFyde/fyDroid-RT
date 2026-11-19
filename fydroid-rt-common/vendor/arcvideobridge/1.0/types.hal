@@ -1,0 +1,6 @@
+package vendor.google_arc.arcvideobridge@1.0;
+
+struct MojoBootstrapResult {
+    handle channelHandle;
+    string pipeName;
+};

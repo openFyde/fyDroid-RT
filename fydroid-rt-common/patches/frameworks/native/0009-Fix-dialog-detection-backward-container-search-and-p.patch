@@ -1,0 +1,94 @@
+From 8f7604bac5d4739f8c8f7d80b66d9083a348bcf3 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Sat, 28 Mar 2026 19:01:23 +0800
+Subject: [PATCH 09/40] Fix dialog detection: backward container search and
+ per-frame IsDialogTask metadata
+
+- Output.cpp: Method 2 now searches backwards through all layers to find
+  the SOLID_COLOR container instead of only checking layers[i-1], which
+  missed non-adjacent containers.
+- OutputLayer.cpp: Send IsDialogTask metadata every frame (not just during
+  geometry updates) so virtual display path always has current dialog state.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I753b53f5d3fecddc1d5f301c27b140a6ae0473ea
+---
+ .../CompositionEngine/src/Output.cpp          | 23 +++++++++-------
+ .../CompositionEngine/src/OutputLayer.cpp     | 26 +++++++++----------
+ 2 files changed, 27 insertions(+), 22 deletions(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index e51bc316ab..e6154c2882 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -949,15 +949,20 @@ void Output::detectAndAdjustDialogTasks() {
+         const Rect dimFrame = layers[i]->getState().displayFrame;
+         if (dimFrame.isEmpty()) continue;
+ 
+-        // Container = SOLID_COLOR layer below with same frame
+-        if (i == 0) continue;
+-        auto* containerLayer = layers[i - 1];
+-        // Skip if already handled by Method 1
+-        if (containerLayer->getState().skipClientComposition) continue;
+-        const auto* containerFEState = containerLayer->getLayerFE().getCompositionState();
+-        if (!containerFEState) continue;
+-        if (containerFEState->compositionType != Composition::SOLID_COLOR) continue;
+-        if (containerLayer->getState().displayFrame != dimFrame) continue;
++        // Container = SOLID_COLOR layer below with same frame (search backwards)
++        compositionengine::OutputLayer* containerLayer = nullptr;
++        for (int j = static_cast<int>(i) - 1; j >= 0; --j) {
++            auto* candidate = layers[static_cast<size_t>(j)];
++            if (candidate->getState().skipClientComposition) continue;
++            const auto* candidateFE = candidate->getLayerFE().getCompositionState();
++            if (!candidateFE) continue;
++            if (candidateFE->compositionType == Composition::SOLID_COLOR &&
++                candidate->getState().displayFrame == dimFrame) {
++                containerLayer = candidate;
++                break;
++            }
++        }
++        if (!containerLayer) continue;
+ 
+         // Content = layers above dim with smaller contained frame
+         Rect contentFrame;
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index 9d2f114883..75dbd2b383 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -395,20 +395,20 @@ void OutputLayer::writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t
+         writeOutputDependentGeometryStateToHWC(hwcLayer.get(), requestedCompositionType, z);
+         writeOutputIndependentGeometryStateToHWC(hwcLayer.get(), *outputIndependentState,
+                                                  skipLayer);
++    }
+ 
+-        // fydroid-rt (dialog cluster): send IsDialogTask metadata when dialog
+-        // detection marks a container, so WaylandHwc2Composer routes the task to a
+-        // frameless modal window.
+-        {
+-            int32_t isDialog = state.isDialogContainer ? 1 : 0;
+-            std::vector<uint8_t> val(sizeof(int32_t));
+-            memcpy(val.data(), &isDialog, sizeof(int32_t));
+-            auto error = hwcLayer->setLayerGenericMetadata(
+-                    "org.chromium.arc.V1_0.IsDialogTask", false, val);
+-            if (error != hal::Error::NONE) {
+-                ALOGV("[%s] Failed to set IsDialogTask metadata",
+-                      getLayerFE().getDebugName());
+-            }
++    // fydroid-rt (dialog cluster 0009): send IsDialogTask metadata every frame (not
++    // only on geometry updates) so the per-task virtual display always sees current
++    // dialog state; WaylandHwc2Composer routes flagged containers to a modal window.
++    {
++        int32_t isDialog = state.isDialogContainer ? 1 : 0;
++        std::vector<uint8_t> val(sizeof(int32_t));
++        memcpy(val.data(), &isDialog, sizeof(int32_t));
++        auto error = hwcLayer->setLayerGenericMetadata(
++                "org.chromium.arc.V1_0.IsDialogTask", false, val);
++        if (error != hal::Error::NONE) {
++            ALOGV("[%s] Failed to set IsDialogTask metadata",
++                  getLayerFE().getDebugName());
+         }
+     }
+ 
+-- 
+2.43.0
+

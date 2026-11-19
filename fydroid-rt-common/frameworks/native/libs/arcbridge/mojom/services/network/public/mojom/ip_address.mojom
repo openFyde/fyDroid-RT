@@ -1,0 +1,6 @@
+// Stub for network.mojom.IPAddress — used by arc/net.mojom.
+module network.mojom;
+
+struct IPAddress {
+  array<uint8> address_bytes;
+};

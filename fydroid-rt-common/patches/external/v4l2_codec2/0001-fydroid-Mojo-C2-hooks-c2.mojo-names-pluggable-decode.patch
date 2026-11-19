@@ -1,0 +1,152 @@
+From bc57fc4fdab5768c828befe88085ef5cc46215b9 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 18:37:26 +0800
+Subject: [PATCH 1/6] fydroid: Mojo C2 hooks - c2.mojo* names + pluggable
+ decoder factory
+
+Minimal upstream hooks (hybrid policy) so fydroid's Mojo C2 path can reuse the
+decode component while the Mojo backends/store live in libfydroid_c2_mojo:
+
+- common/V4L2ComponentCommon.cpp: rename component name VALUES from c2.v4l2.*
+  to c2.mojo.* (encoders) / c2.mojo-legacy.* (decoders) to match fydroid's
+  media_codecs_c2.xml. All name->codec mapping compares the k* symbols, never
+  literals, so this one file re-labels the whole reused decode path. VP8/VP9
+  encoder symbols kept (renamed) so the unused upstream V4L2 store/encode path
+  still compiles.
+- V4L2DecodeComponent: add a pluggable DecoderFactoryCB (SetDecoderFactory),
+  defaulting to V4L2Decoder::Create. libfydroid_c2_mojo overrides it with
+  MojoDecoder::Create so the reused component talks Mojo IPC instead of
+  /dev/video*, with zero Mojo/arc deps leaking into libv4l2_codec2_components.
+
+Local commit only (not pushed); regenerated into device/fydeos patch files
+later. See device/fydeos/docs/c2-codec2-mojo-port-plan.md.
+
+Change-Id: Idabf4b545018a78b060eec0dd039d75f46135f5f
+---
+ common/V4L2ComponentCommon.cpp                | 27 ++++++++++-------
+ components/V4L2DecodeComponent.cpp            | 29 +++++++++++++------
+ .../components/V4L2DecodeComponent.h          | 15 ++++++++++
+ 3 files changed, 52 insertions(+), 19 deletions(-)
+
+diff --git a/common/V4L2ComponentCommon.cpp b/common/V4L2ComponentCommon.cpp
+index 518b489..de74c86 100644
+--- a/common/V4L2ComponentCommon.cpp
++++ b/common/V4L2ComponentCommon.cpp
+@@ -11,16 +11,23 @@
+ 
+ namespace android {
+ 
+-const std::string V4L2ComponentName::kH264Encoder = "c2.v4l2.avc.encoder";
+-const std::string V4L2ComponentName::kVP8Encoder = "c2.v4l2.vp8.encoder";
+-const std::string V4L2ComponentName::kVP9Encoder = "c2.v4l2.vp9.encoder";
+-
+-const std::string V4L2ComponentName::kH264Decoder = "c2.v4l2.avc.decoder";
+-const std::string V4L2ComponentName::kVP8Decoder = "c2.v4l2.vp8.decoder";
+-const std::string V4L2ComponentName::kVP9Decoder = "c2.v4l2.vp9.decoder";
+-const std::string V4L2ComponentName::kH264SecureDecoder = "c2.v4l2.avc.decoder.secure";
+-const std::string V4L2ComponentName::kVP8SecureDecoder = "c2.v4l2.vp8.decoder.secure";
+-const std::string V4L2ComponentName::kVP9SecureDecoder = "c2.v4l2.vp9.decoder.secure";
++// fydroid: these components are backed by Mojo IPC to Chrome (not V4L2 device
++// nodes). The names must match fydroid's media_codecs_c2.xml. Encoders are
++// c2.mojo.*; decoders are c2.mojo-legacy.*. Only the H.264 encoder is wired to
++// Mojo; the VP8/VP9 encoder symbols are kept (renamed) so the upstream V4L2
++// store/encode interface in libv4l2_codec2_components still compiles — that
++// path is unused by fydroid's Mojo C2 service. See
++// device/fydeos/docs/c2-codec2-mojo-port-plan.md.
++const std::string V4L2ComponentName::kH264Encoder = "c2.mojo.avc.encoder";
++const std::string V4L2ComponentName::kVP8Encoder = "c2.mojo.vp8.encoder";
++const std::string V4L2ComponentName::kVP9Encoder = "c2.mojo.vp9.encoder";
++
++const std::string V4L2ComponentName::kH264Decoder = "c2.mojo-legacy.avc.decoder";
++const std::string V4L2ComponentName::kVP8Decoder = "c2.mojo-legacy.vp8.decoder";
++const std::string V4L2ComponentName::kVP9Decoder = "c2.mojo-legacy.vp9.decoder";
++const std::string V4L2ComponentName::kH264SecureDecoder = "c2.mojo-legacy.avc.decoder.secure";
++const std::string V4L2ComponentName::kVP8SecureDecoder = "c2.mojo-legacy.vp8.decoder.secure";
++const std::string V4L2ComponentName::kVP9SecureDecoder = "c2.mojo-legacy.vp9.decoder.secure";
+ 
+ // static
+ bool V4L2ComponentName::isValid(const char* name) {
+diff --git a/components/V4L2DecodeComponent.cpp b/components/V4L2DecodeComponent.cpp
+index 456f3c4..0b0915b 100644
+--- a/components/V4L2DecodeComponent.cpp
++++ b/components/V4L2DecodeComponent.cpp
+@@ -141,6 +141,17 @@ bool isNoShowFrameWork(const C2Work& work, const C2WorkOrdinalStruct& currOrdina
+ // static
+ std::atomic<int32_t> V4L2DecodeComponent::sConcurrentInstances = 0;
+ 
++// static
++// fydroid: default to the in-tree V4L2 backend; overridden by
++// libfydroid_c2_mojo's MojoComponentStore to inject MojoDecoder.
++V4L2DecodeComponent::DecoderFactoryCB V4L2DecodeComponent::sDecoderFactory =
++        &V4L2Decoder::Create;
++
++// static
++void V4L2DecodeComponent::SetDecoderFactory(DecoderFactoryCB factory) {
++    sDecoderFactory = factory ? factory : &V4L2Decoder::Create;
++}
++
+ // static
+ std::shared_ptr<C2Component> V4L2DecodeComponent::create(
+         const std::string& name, c2_node_id_t id, const std::shared_ptr<C2ReflectorHelper>& helper,
+@@ -232,16 +243,16 @@ void V4L2DecodeComponent::startTask(c2_status_t* status, ::base::WaitableEvent*
+ 
+     // ::base::Unretained(this) is safe here because |mDecoder| is always destroyed before
+     // |mDecoderThread| is stopped, so |*this| is always valid during |mDecoder|'s lifetime.
+-    mDecoder = V4L2Decoder::Create(*codec, inputBufferSize, minNumOutputBuffers,
+-                                   ::base::BindRepeating(&V4L2DecodeComponent::getVideoFramePool,
+-                                                         ::base::Unretained(this)),
+-                                   ::base::BindRepeating(&V4L2DecodeComponent::onOutputFrameReady,
+-                                                         ::base::Unretained(this)),
+-                                   ::base::BindRepeating(&V4L2DecodeComponent::reportError,
+-                                                         ::base::Unretained(this), C2_CORRUPTED),
+-                                   mDecoderTaskRunner);
++    mDecoder = sDecoderFactory(*codec, inputBufferSize, minNumOutputBuffers,
++                               ::base::BindRepeating(&V4L2DecodeComponent::getVideoFramePool,
++                                                     ::base::Unretained(this)),
++                               ::base::BindRepeating(&V4L2DecodeComponent::onOutputFrameReady,
++                                                     ::base::Unretained(this)),
++                               ::base::BindRepeating(&V4L2DecodeComponent::reportError,
++                                                     ::base::Unretained(this), C2_CORRUPTED),
++                               mDecoderTaskRunner);
+     if (!mDecoder) {
+-        ALOGE("Failed to create V4L2Decoder for %s", VideoCodecToString(*codec));
++        ALOGE("Failed to create decoder for %s", VideoCodecToString(*codec));
+         return;
+     }
+ 
+diff --git a/components/include/v4l2_codec2/components/V4L2DecodeComponent.h b/components/include/v4l2_codec2/components/V4L2DecodeComponent.h
+index 962f7d6..7304c43 100644
+--- a/components/include/v4l2_codec2/components/V4L2DecodeComponent.h
++++ b/components/include/v4l2_codec2/components/V4L2DecodeComponent.h
+@@ -34,6 +34,18 @@ public:
+                         const std::shared_ptr<V4L2DecodeInterface>& intfImpl);
+     ~V4L2DecodeComponent() override;
+ 
++    // fydroid: pluggable VideoDecoder backend. Defaults to V4L2Decoder::Create;
++    // libfydroid_c2_mojo overrides it with MojoDecoder::Create at service init so
++    // this reused decode component talks Mojo IPC to Chrome instead of /dev/video*.
++    // Must be set before any component is created. See
++    // device/fydeos/docs/c2-codec2-mojo-port-plan.md.
++    using DecoderFactoryCB = std::unique_ptr<VideoDecoder> (*)(
++            const VideoCodec& codec, const size_t inputBufferSize,
++            const size_t minNumOutputBuffers, VideoDecoder::GetPoolCB getPoolCb,
++            VideoDecoder::OutputCB outputCb, VideoDecoder::ErrorCB errorCb,
++            scoped_refptr<::base::SequencedTaskRunner> taskRunner);
++    static void SetDecoderFactory(DecoderFactoryCB factory);
++
+     // Implementation of C2Component.
+     c2_status_t start() override;
+     c2_status_t stop() override;
+@@ -94,6 +106,9 @@ private:
+ 
+     static std::atomic<int32_t> sConcurrentInstances;
+ 
++    // fydroid: the active VideoDecoder backend factory (see SetDecoderFactory).
++    static DecoderFactoryCB sDecoderFactory;
++
+     // The pointer of component interface implementation.
+     std::shared_ptr<V4L2DecodeInterface> mIntfImpl;
+     // The pointer of component interface.
+-- 
+2.43.0
+

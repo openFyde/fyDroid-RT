@@ -1,0 +1,71 @@
+# ARC++ property contexts (fydroid-rt)
+
+# Legacy properties, not under vendor.*
+arc.              u:object_r:chromeos_prop:s0
+ro.arc.           u:object_r:chromeos_prop:s0
+arc.net.          u:object_r:exported_system_prop:s0
+
+# vendor namespace properties (vendor-owned type — split from chromeos_prop for
+# AOSP-13 enforce_sysprop_owner; vendor.* names must carry a vendor owner)
+vendor.arc.                 u:object_r:chromeos_vendor_prop:s0
+ro.vendor.arc.              u:object_r:chromeos_vendor_prop:s0
+vendor.arc.net.             u:object_r:exported_system_prop:s0
+
+# Set by arc_applauncher_app
+ro.vendor.arc.boot_completed   u:object_r:exported_system_prop:s0
+
+# Set by system_server (ArcMemoryService)
+arc.drop_caches       u:object_r:arc_drop_caches_prop:s0
+arc.drop_caches_done  u:object_r:arc_drop_caches_prop:s0
+
+# Set by system_server (ArcVpnMonitor) when an in-container Android VPN
+# connects; fydroid-vpn-net.rc brings up arc0 in response.
+arc.vpn.active  u:object_r:arc_vpn_active_prop:s0
+
+# Set by arccachesetup_install (system_server context) and
+# get by arccachesetup_restorecontext (installd context).
+ro.arc.cachesset  u:object_r:exported_system_prop:s0
+
+# Set by init and get by shell.
+ro.vendor.arc.on_boot  u:object_r:chromeos_boot_prop:s0
+
+# Set by arcabimigrationservice (system_server).
+arc.abi.migrationstatus u:object_r:arc_abi_migrationstatus_prop:s0 exact enum postmigration
+
+ctl.start$arc-dumpstatez u:object_r:ctl_dumpstate_prop:s0
+ctl.stop$arc-dumpstatez  u:object_r:ctl_dumpstate_prop:s0
+
+# Restrict access to starting/stopping arc-dumpstatez2
+ctl.start$arc-dumpstatez2 u:object_r:ctl_dumpstate_prop:s0
+ctl.stop$arc-dumpstatez2  u:object_r:ctl_dumpstate_prop:s0
+
+ro.boot.copy_packages_cache    u:object_r:arc_cache_prop:s0
+ro.boot.skip_gms_core_cache    u:object_r:arc_cache_prop:s0
+ro.boot.skip_tts_cache         u:object_r:arc_cache_prop:s0
+
+ro.boot.arc_demo_mode                      u:object_r:arc_demo_prop:s0
+ro.boot.disable_boot_completed             u:object_r:disable_boot_completed_prop:s0
+ro.boot.enable_adb_sideloading             u:object_r:enable_adb_sideloading_prop:s0
+ro.boot.enable_arc_nearby_share            u:object_r:enable_arc_nearby_share_prop:s0
+ro.boot.enable_consumer_auto_update_toggle u:object_r:enable_consumer_auto_update_toggle_prop:s0
+ro.boot.iioservice_present                 u:object_r:iioservice_present_prop:s0
+ro.boot.locale                             u:object_r:locale_prop:s0
+ro.boot.preferred_languages                u:object_r:preferred_languages_prop:s0
+ro.boot.supervision.transition             u:object_r:supervision_transition_prop:s0
+ro.boot.zram_size                          u:object_r:zram_size_prop:s0
+
+# Allow system apps to change the value.
+persist.input.velocitytracker.strategy u:object_r:exported_system_prop:s0
+
+vendor.arc.boot_type u:object_r:vendor_arc_boot_type_prop:s0
+
+ro.vendor.cts_interaction_helper_packages u:object_r:vendor_interaction_helper_prop:s0
+
+# fydroid-rt (AOSP-13): ro.cpuvulkan.version is now defined by the platform
+# property_contexts (system/sepolicy/private), so the fydroid duplicate here
+# triggers host_init_verifier "Duplicate exact match" — removed.
+
+# ChromeOS specific Widevine CDM properties
+ro.vendor.cdm.device u:object_r:vendor_widevine_cdm_prop:s0 exact string
+ro.vendor.cdm.manufacturer u:object_r:vendor_widevine_cdm_prop:s0 exact string
+ro.vendor.cdm.model u:object_r:vendor_widevine_cdm_prop:s0 exact string

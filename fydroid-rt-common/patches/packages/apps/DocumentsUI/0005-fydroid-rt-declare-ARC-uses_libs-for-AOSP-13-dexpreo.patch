@@ -1,0 +1,51 @@
+From 83b85834befb72d72bdbca2c87532f06d13fc16d Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 18:51:34 +0800
+Subject: [PATCH 5/6] fydroid-rt: declare ARC uses_libs for AOSP-13 dexpreopt
+
+The ARC DocumentsUI classes load org.chromium.arc.mojom / .bridge /
+android.mojo / org.chromium.arc at runtime via <uses-library> tags in the
+manifest (provided on the FydeOS image by permissions/org.chromium.arc*.xml).
+On AOSP 13 Soong's dexpreopt enforces coherence between the manifest
+<uses-library> set and the build-system uses_libs, which AOSP 11 did not.
+
+Declare the four libraries in uses_libs so the build-system view matches the
+manifest (keeping AOT dexpreopt). Each provider declares the matching
+provides_uses_lib in its own Android.bp (device/fydeos frameworks/arc); the
+installed android.mojo jar is the android.mojo.installable wrapper (stem
+android.mojo), so it is referenced here by module name.
+
+m DocumentsUI (fydroid_rt_arm64) EXIT 0.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I50445e3ff361f1d820b27d5311a4b4738c9cd3c3
+---
+ Android.bp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/Android.bp b/Android.bp
+index 94d55957e..f53e41f62 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -185,6 +185,18 @@ android_app {
+ 
+     required: ["privapp_whitelist_com.android.documentsui"],
+ 
++    // The ARC DocumentsUI classes load these mojom/bridge libraries at runtime
++    // via <uses-library> tags in the manifest (provided on the FydeOS image by
++    // permissions/org.chromium.arc*.xml). Declare them here so Soong's 13
++    // dexpreopt uses-library coherence check matches the manifest; each library
++    // module declares the matching provides_uses_lib.
++    uses_libs: [
++        "org.chromium.arc.mojom",
++        "org.chromium.arc.bridge",
++        "android.mojo.installable",
++        "org.chromium.arc",
++    ],
++
+     target_sdk_version: "30",
+     min_sdk_version: "29",
+     lint: { strict_updatability_linting: true }
+-- 
+2.43.0
+

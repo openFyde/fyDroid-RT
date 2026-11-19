@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Richtlinienmanager</string>
+    <string name="channel_name">Richtlinienmanager</string>
+    <string name="channel_description">Richtlinienverwaltung des Android-Subsystems</string>
+    <string name="install_title">Apps Ihrer Organisation werden installiert</string>
+    <string name="install_finished">wurde per Richtlinie installiert</string>
+    <string name="blocked_by_policy">wurde von Ihrem Administrator blockiert</string>
+    <string name="managed_info">Das Android-Subsystem wird vom Administrator verwaltet</string>
+</resources>

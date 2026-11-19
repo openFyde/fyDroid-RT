@@ -1,0 +1,35 @@
+vmwgfx: take read-only CPU locks with allow_cs so an unpaired read lock cannot wedge command submission
+
+On kernel 6.12 every DRM_VMW_SYNCCPU grab without allow_cs raises the bo's cpu_writers,
+and while it is non-zero every execbuf referencing the bo fails with -EBUSY, which Mesa
+svga retries forever. Grabs are not tracked per drm_file, so AOSP screencap (locks its
+buffer, exits) wedged SurfaceFlinger on device. Read locks now pass allow_cs: the grab still
+waits for idle, the release is a no-op. Write locks are unchanged.
+
+--- a/vmwgfx.c
++++ b/vmwgfx.c
+@@ -486,6 +486,24 @@
+ 		arg.flags |= drm_vmw_synccpu_write;
+ 	if (!arg.flags)
+ 		arg.flags = drm_vmw_synccpu_read;
++	/*
++	 * A read-only lock only needs the GPU to be done with the buffer; it does
++	 * not need to stop later command submissions from touching it. Say so with
++	 * allow_cs. Without it the kernel counts the grab in vbo->cpu_writers, and
++	 * while that is non-zero every execbuf that references the buffer fails
++	 * validation with -EBUSY (vmw_validation_bo_validate_single), which Mesa
++	 * svga retries forever. The 6.12 driver does not track grabs per drm_file,
++	 * so a reader that never unlocks -- AOSP screencap locks its buffer and
++	 * exits -- leaves the count raised for the buffer's whole lifetime.
++	 * SurfaceFlinger still holds the capture buffer, so its next composition
++	 * wedged in the -EBUSY loop, then the system_server watchdog fired and
++	 * apps ANRed (measured on device). With allow_cs the grab still waits for
++	 * the buffer to go idle (dma_resv_wait_timeout) and the release is a
++	 * no-op, so an unpaired read lock cannot poison the buffer. Write locks
++	 * keep the counting grab: the UPDATE in bo_flush must not race the GPU.
++	 */
++	if (!(arg.flags & drm_vmw_synccpu_write))
++		arg.flags |= drm_vmw_synccpu_allow_cs;
+ 
+ 	ret = drmCommandWrite(bo->drv->fd, DRM_VMW_SYNCCPU, &arg, sizeof(arg));
+ 	if (ret)

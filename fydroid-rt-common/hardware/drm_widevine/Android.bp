@@ -1,0 +1,50 @@
+// fydroid Widevine DRM HAL.
+//
+// Implements android.hardware.drm AIDL V1 for the Widevine UUID by forwarding
+// every session/key/decrypt operation to Chrome's library CDM over the ARC mojo
+// bridge (arc/cdm.mojom). L3/software only — there is no secure buffer path.
+//
+// Shaped after frameworks/av/drm/mediadrm/plugins/clearkey/aidl, which is the
+// same HAL version and already runs on these boards.
+
+cc_binary {
+    name: "android.hardware.drm-service.widevine",
+    defaults: ["fydroid_perf_defaults"],
+    vendor: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "CdmBridge.cpp",
+        "CryptoPlugin.cpp",
+        "DrmFactory.cpp",
+        "DrmPlugin.cpp",
+        "Service.cpp",
+    ],
+
+    shared_libs: [
+        "android.hardware.drm-V1-ndk",
+        "libarcbridge",
+        "libarcbridgeservice",
+        "libbase",
+        "libbinder_ndk",
+        "libchrome",
+        "libhidlbase",
+        "liblog",
+        "libmojo",
+        "libutils",
+        "vendor.google_arc.arcbridge@1.0",
+    ],
+
+    static_libs: [
+        "android.hardware.common-V2-ndk",
+    ],
+
+    init_rc: ["android.hardware.drm-service.widevine.rc"],
+    vintf_fragments: ["android.hardware.drm-service.widevine.xml"],
+
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+    ],
+}

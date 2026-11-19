@@ -1,0 +1,11 @@
+android_app {
+    name: "FydroidPolicyManager",
+    srcs: ["src/**/*.java"],
+    resource_dirs: ["res"],
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+    // ArcPolicy matching / precedence / parsing, shared with arc-services'
+    // install-time gate so the two cannot disagree.
+    static_libs: ["fydroid-app-install-policy"],
+}

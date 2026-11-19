@@ -1,0 +1,1966 @@
+From f02d91dd290d882800d1bc186bad2c757f27f201 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 14 Apr 2026 16:06:40 +0800
+Subject: [PATCH 1/5] Add ARC Settings classes for fydroid-rt
+
+Add 28 org.chromium.settings.* classes implementing ARC-specific
+Settings customizations:
+
+- FeatureFactoryImpl: overrides SearchFeatureProvider and
+  SuggestionFeatureProvider with ARC-aware implementations
+- ArcDevelopmentSettingsDashboardFragment: replaces stock dev options
+  with ARC WM feature toggles (14 controllers for system properties
+  like force_fullscreen, smooth_scroll, wayland logging, etc.)
+- ArcAccessibilitySettings: removes unsupported accessibility entries
+- SettingsBlackHoleActivity: redirects CrOS-handled settings intents
+  to Chrome OS via ArcIntentHelper
+- HiddenPreferenceController: hides individual preferences by key
+
+Also adds required string resources, string arrays for list
+preferences, manifest entries for the new activities, and updates
+config_featureFactory to point to the ARC implementation.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ia30244b53a4fd704e1b997a06b4dfc1c42d45028
+---
+ AndroidManifest.xml                           |  56 ++++++++
+ res/values/arrays.xml                         |  41 ++++++
+ res/values/config.xml                         |   2 +-
+ res/values/strings.xml                        |  21 +++
+ .../settings/HiddenPreferenceController.java  |  30 ++++
+ .../settings/SettingsBlackHoleActivity.java   |  67 +++++++++
+ .../ArcAccessibilityActivity.java             |  20 +++
+ .../ArcAccessibilitySettings.java             |  94 ++++++++++++
+ .../SuggestionFeatureProviderArcImpl.java     |  21 +++
+ .../ArcAdbPreferenceController.java           |  64 +++++++++
+ ...aptionDescriptionPreferenceController.java |  43 ++++++
+ .../ArcDarkThemePreferenceController.java     |  77 ++++++++++
+ .../development/ArcDevelopmentConstants.java  |  79 ++++++++++
+ .../ArcDevelopmentSettingsActivity.java       |  21 +++
+ ...cDevelopmentSettingsDashboardFragment.java | 136 ++++++++++++++++++
+ ...rcForceFullscreenPreferenceController.java |  48 +++++++
+ ...cLaunchWindowSizePreferenceController.java |  45 ++++++
+ .../ArcMouseCompatPreferenceController.java   |  47 ++++++
+ ...tificationScalingPreferenceController.java |  47 ++++++
+ .../ArcPinchGesturePreferenceController.java  |  47 ++++++
+ ...ubberBandResizingPreferenceController.java |  48 +++++++
+ .../ArcSmoothScrollPreferenceController.java  |  47 ++++++
+ ...tyTrackerStrategyPreferenceController.java |  45 ++++++
+ ...WaylandClientLogsPreferenceController.java |  48 +++++++
+ ...WaylandTimingLogsPreferenceController.java |  48 +++++++
+ ...WirelessDebuggingPreferenceController.java |  84 +++++++++++
+ .../ArcWmFeatureForceUnResizeController.java  |  48 +++++++
+ .../ArcWmFeatureListPreferenceController.java | 103 +++++++++++++
+ .../ArcWmFeaturePreferenceController.java     |  55 +++++++
+ ...rcWmFeatureSwitchPreferenceController.java |  69 +++++++++
+ .../settings/overlay/FeatureFactoryImpl.java  |  43 ++++++
+ .../search/SearchFeatureProviderArcImpl.java  |  24 ++++
+ 32 files changed, 1667 insertions(+), 1 deletion(-)
+ create mode 100644 src/org/chromium/settings/HiddenPreferenceController.java
+ create mode 100644 src/org/chromium/settings/SettingsBlackHoleActivity.java
+ create mode 100644 src/org/chromium/settings/accessibility/ArcAccessibilityActivity.java
+ create mode 100644 src/org/chromium/settings/accessibility/ArcAccessibilitySettings.java
+ create mode 100644 src/org/chromium/settings/dashboard/suggestions/SuggestionFeatureProviderArcImpl.java
+ create mode 100644 src/org/chromium/settings/development/ArcAdbPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcCaptionDescriptionPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcDevelopmentConstants.java
+ create mode 100644 src/org/chromium/settings/development/ArcDevelopmentSettingsActivity.java
+ create mode 100644 src/org/chromium/settings/development/ArcDevelopmentSettingsDashboardFragment.java
+ create mode 100644 src/org/chromium/settings/development/ArcForceFullscreenPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcLaunchWindowSizePreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcMouseCompatPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcNotificationScalingPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcPinchGesturePreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcRubberBandResizingPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcSmoothScrollPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcVelocityTrackerStrategyPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWaylandClientLogsPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWaylandTimingLogsPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWmFeatureForceUnResizeController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWmFeatureListPreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWmFeaturePreferenceController.java
+ create mode 100644 src/org/chromium/settings/development/ArcWmFeatureSwitchPreferenceController.java
+ create mode 100644 src/org/chromium/settings/overlay/FeatureFactoryImpl.java
+ create mode 100644 src/org/chromium/settings/search/SearchFeatureProviderArcImpl.java
+
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index a4d899d5dc9..d112d180c7f 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -4545,6 +4545,62 @@
+             </intent-filter>
+         </activity>
+ 
++        <!-- ARC Development Settings -->
++        <activity
++            android:name="org.chromium.settings.development.ArcDevelopmentSettingsActivity"
++            android:exported="true"
++            android:label="@string/development_settings_title"
++            android:theme="@style/Theme.Settings.NoActionBar">
++            <intent-filter android:priority="1">
++                <action android:name="android.settings.APPLICATION_DEVELOPMENT_SETTINGS" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++        </activity>
++
++        <!-- ARC Accessibility Settings -->
++        <activity
++            android:name="org.chromium.settings.accessibility.ArcAccessibilityActivity"
++            android:exported="true"
++            android:label="@string/accessibility_settings"
++            android:theme="@style/Theme.Settings.NoActionBar">
++            <intent-filter android:priority="1">
++                <action android:name="android.settings.ACCESSIBILITY_SETTINGS" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++        </activity>
++
++        <!-- ARC Settings Black Hole — redirects CrOS-handled settings to Chrome -->
++        <activity
++            android:name="org.chromium.settings.SettingsBlackHoleActivity"
++            android:exported="true"
++            android:theme="@android:style/Theme.NoDisplay">
++            <intent-filter android:priority="1">
++                <action android:name="android.settings.BLUETOOTH_SETTINGS" />
++                <action android:name="android.settings.WIFI_SETTINGS" />
++                <action android:name="android.settings.WIRELESS_SETTINGS" />
++                <action android:name="android.settings.SOUND_SETTINGS" />
++                <action android:name="android.settings.DISPLAY_SETTINGS" />
++                <action android:name="android.settings.INPUT_METHOD_SETTINGS" />
++                <action android:name="android.settings.INPUT_METHOD_SUBTYPE_SETTINGS" />
++                <action android:name="android.settings.NFC_SETTINGS" />
++                <action android:name="android.settings.NFC_PAYMENT_SETTINGS" />
++                <action android:name="android.settings.NFCSHARING_SETTINGS" />
++                <action android:name="android.settings.LOCALE_SETTINGS" />
++                <action android:name="android.settings.DATE_SETTINGS" />
++                <action android:name="android.settings.CAST_SETTINGS" />
++                <action android:name="android.settings.DREAM_SETTINGS" />
++                <action android:name="android.settings.HOME_SETTINGS" />
++                <action android:name="android.settings.BATTERY_SAVER_SETTINGS" />
++                <action android:name="android.settings.VOICE_CONTROL_BATTERY_SAVER_MODE" />
++                <action android:name="android.settings.VOICE_INPUT_SETTINGS" />
++                <action android:name="android.settings.WIFI_IP_SETTINGS" />
++                <action android:name="android.settings.NETWORK_OPERATOR_SETTINGS" />
++                <action android:name="android.settings.QUICK_LAUNCH_SETTINGS" />
++                <action android:name="android.settings.SHOW_REGULATORY_INFO" />
++                <category android:name="android.intent.category.DEFAULT" />
++            </intent-filter>
++        </activity>
++
+         <!-- This is the longest AndroidManifest.xml ever. -->
+     </application>
+ </manifest>
+diff --git a/res/values/arrays.xml b/res/values/arrays.xml
+index 9bc29560c9a..0099ff7627d 100644
+--- a/res/values/arrays.xml
++++ b/res/values/arrays.xml
+@@ -1659,4 +1659,45 @@
+     <integer-array name="network_mode_3g_deprecated_carrier_id" translatable="false">
+     </integer-array>
+ 
++    <!-- ARC launch window size options -->
++    <string-array name="launch_window_size_names" translatable="false">
++        <item>Default</item>
++        <item>Phone</item>
++        <item>Tablet</item>
++        <item>Maximized</item>
++    </string-array>
++    <string-array name="launch_window_size_values" translatable="false">
++        <item>0</item>
++        <item>1</item>
++        <item>2</item>
++        <item>3</item>
++    </string-array>
++
++    <!-- ARC velocity tracker strategy options -->
++    <string-array name="velocity_tracker_strategy_names" translatable="false">
++        <item>Default</item>
++        <item>Impulse</item>
++        <item>LSQ1</item>
++        <item>LSQ2</item>
++        <item>LSQ3</item>
++        <item>WLSQ2_Delta</item>
++        <item>WLSQ2_Central</item>
++        <item>WLSQ2_Recent</item>
++        <item>INT1</item>
++        <item>INT2</item>
++        <item>Legacy</item>
++    </string-array>
++    <string-array name="velocity_tracker_strategy_values" translatable="false">
++        <item>default</item>
++        <item>impulse</item>
++        <item>lsq1</item>
++        <item>lsq2</item>
++        <item>lsq3</item>
++        <item>wlsq2-delta</item>
++        <item>wlsq2-central</item>
++        <item>wlsq2-recent</item>
++        <item>int1</item>
++        <item>int2</item>
++        <item>legacy</item>
++    </string-array>
+ </resources>
+diff --git a/res/values/config.xml b/res/values/config.xml
+index 7444b576e9e..20a4866608e 100755
+--- a/res/values/config.xml
++++ b/res/values/config.xml
+@@ -42,7 +42,7 @@
+     <bool name="config_show_camera_laser_sensor">false</bool>
+ 
+     <!-- Fully-qualified class name for the implementation of the FeatureFactory to be instantiated. -->
+-    <string name="config_featureFactory" translatable="false">com.android.settings.overlay.FeatureFactoryImpl</string>
++    <string name="config_featureFactory" translatable="false">org.chromium.settings.overlay.FeatureFactoryImpl</string>
+ 
+     <!-- Package name and fully-qualified class name for the wallpaper picker activity. -->
+     <string name="config_wallpaper_picker_package" translatable="false">com.android.settings</string>
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index 38167b5d891..6204c9662b4 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -14551,4 +14551,25 @@
+     <!-- [CHAR LIMIT=NONE] Hint for QR code process failure -->
+     <string name="bt_le_audio_qr_code_is_not_valid_format">QR code isn\u0027t a valid format</string>
+ 
++    <!-- ARC development settings strings -->
++    <string name="add_caption_description_title">Caption description</string>
++    <string name="dark_ui_title">Dark theme</string>
++    <string name="force_fullscreen_title">Force fullscreen</string>
++    <string name="mouse_touchscreen_compat_title">Mouse touchscreen compatibility</string>
++    <string name="mouse_touchscreen_compat_summary">Enable mouse-to-touchscreen compatibility mode</string>
++    <string name="smooth_scroll_title">Smooth scroll</string>
++    <string name="smooth_scroll_summary">Enable smooth scrolling</string>
++    <string name="pinch_gesture_title">Pinch gesture</string>
++    <string name="pinch_gesture_summary">Enable horizontal pinch gesture</string>
++    <string name="rubber_band_title">Rubber band resizing</string>
++    <string name="force_unresizable_title">Force unresizable</string>
++    <string name="force_unresizable_summary">Force unresizable app handling</string>
++    <string name="enable_wayland_client_logs_title">Wayland client logs</string>
++    <string name="enable_wayland_client_logs_summary">Enable Wayland client debug logging</string>
++    <string name="enable_wayland_timing_logs_title">Wayland timing logs</string>
++    <string name="enable_wayland_timing_logs_summary">Enable Wayland timing debug logging</string>
++    <string name="notification_scaling_title">Notification scaling</string>
++    <string name="velocity_tracker_strategy_title">Velocity tracker strategy</string>
++    <string name="launch_window_size_title">Launch window size</string>
++    <string name="enable_adb_summary_unavailable">USB debugging not available (device not in dev mode)</string>
+ </resources>
+diff --git a/src/org/chromium/settings/HiddenPreferenceController.java b/src/org/chromium/settings/HiddenPreferenceController.java
+new file mode 100644
+index 00000000000..e81d84d7e26
+--- /dev/null
++++ b/src/org/chromium/settings/HiddenPreferenceController.java
+@@ -0,0 +1,30 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings;
++
++import android.content.Context;
++
++import com.android.settings.core.BasePreferenceController;
++
++/**
++ * Preference controller that hides a preference by returning CONDITIONALLY_UNAVAILABLE.
++ */
++public class HiddenPreferenceController extends BasePreferenceController {
++
++    public HiddenPreferenceController(Context context, String key) {
++        super(context, key);
++    }
++
++    @Override
++    public int getAvailabilityStatus() {
++        return CONDITIONALLY_UNAVAILABLE;
++    }
++}
+diff --git a/src/org/chromium/settings/SettingsBlackHoleActivity.java b/src/org/chromium/settings/SettingsBlackHoleActivity.java
+new file mode 100644
+index 00000000000..b8483201fe1
+--- /dev/null
++++ b/src/org/chromium/settings/SettingsBlackHoleActivity.java
+@@ -0,0 +1,67 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings;
++
++import android.app.Activity;
++import android.content.ComponentName;
++import android.content.Intent;
++import android.os.Bundle;
++import android.util.Log;
++
++/**
++ * Intercepts Settings intents that should be handled by Chrome OS and redirects
++ * them to the ARC intent helper, which forwards them to the Chrome OS settings.
++ */
++public final class SettingsBlackHoleActivity extends Activity {
++    private static final String TAG = "SettingsBlackHole";
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++        Intent intent = getIntent();
++        if (intent != null) {
++            switch (intent.getAction()) {
++                case "android.settings.BATTERY_SAVER_SETTINGS":
++                case "android.settings.BLUETOOTH_SETTINGS":
++                case "android.settings.CAST_SETTINGS":
++                case "android.settings.DATE_SETTINGS":
++                case "android.settings.DISPLAY_SETTINGS":
++                case "android.settings.DREAM_SETTINGS":
++                case "android.settings.HOME_SETTINGS":
++                case "android.settings.INPUT_METHOD_SETTINGS":
++                case "android.settings.INPUT_METHOD_SUBTYPE_SETTINGS":
++                case "android.settings.LOCALE_SETTINGS":
++                case "android.settings.NETWORK_OPERATOR_SETTINGS":
++                case "android.settings.NFCSHARING_SETTINGS":
++                case "android.settings.NFC_PAYMENT_SETTINGS":
++                case "android.settings.NFC_SETTINGS":
++                case "android.settings.QUICK_LAUNCH_SETTINGS":
++                case "android.settings.SHOW_REGULATORY_INFO":
++                case "android.settings.SOUND_SETTINGS":
++                case "android.settings.VOICE_CONTROL_BATTERY_SAVER_MODE":
++                case "android.settings.VOICE_INPUT_SETTINGS":
++                case "android.settings.WIFI_IP_SETTINGS":
++                case "android.settings.WIFI_SETTINGS":
++                case "android.settings.WIRELESS_SETTINGS":
++                    intent.setComponent(new ComponentName(
++                            "org.chromium.arc.intent_helper",
++                            "org.chromium.arc.intent_helper.ArcIntentHelperActivity"));
++                    startActivity(intent);
++                    setResult(RESULT_OK);
++                    break;
++                default:
++                    Log.e(TAG, "Intent " + intent + " not being handled.");
++                    break;
++            }
++            finish();
++        }
++    }
++}
+diff --git a/src/org/chromium/settings/accessibility/ArcAccessibilityActivity.java b/src/org/chromium/settings/accessibility/ArcAccessibilityActivity.java
+new file mode 100644
+index 00000000000..59354aaa1a6
+--- /dev/null
++++ b/src/org/chromium/settings/accessibility/ArcAccessibilityActivity.java
+@@ -0,0 +1,20 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.accessibility;
++
++import com.android.settings.SettingsActivity;
++
++public class ArcAccessibilityActivity extends SettingsActivity {
++    @Override
++    protected boolean isValidFragment(String fragmentName) {
++        return "org.chromium.settings.accessibility.ArcAccessibilitySettings".equals(fragmentName);
++    }
++}
+diff --git a/src/org/chromium/settings/accessibility/ArcAccessibilitySettings.java b/src/org/chromium/settings/accessibility/ArcAccessibilitySettings.java
+new file mode 100644
+index 00000000000..0cfdef35c65
+--- /dev/null
++++ b/src/org/chromium/settings/accessibility/ArcAccessibilitySettings.java
+@@ -0,0 +1,94 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.accessibility;
++
++import android.content.ComponentName;
++
++import androidx.preference.Preference;
++import androidx.preference.PreferenceCategory;
++import androidx.preference.PreferenceGroup;
++
++import com.android.settings.accessibility.AccessibilitySettings;
++
++/**
++ * ARC accessibility settings — removes unsupported accessibility services and
++ * system preferences that don't apply in the Chrome OS container.
++ */
++public class ArcAccessibilitySettings extends AccessibilitySettings {
++
++    static final ComponentName SWITCH_ACCESS_COMPONENT = new ComponentName(
++            "com.google.android.marvin.talkback",
++            "com.android.switchaccess.SwitchAccessService");
++    static final ComponentName SELECT_TO_SPEAK_COMPONENT = new ComponentName(
++            "com.google.android.marvin.talkback",
++            "com.google.android.accessibility.selecttospeak.SelectToSpeakService");
++    static final ComponentName ACCESSIBILITY_MENU_COMPONENT = new ComponentName(
++            "com.google.android.marvin.talkback",
++            "com.google.android.accessibility.accessibilitymenu.AccessibilityMenuService");
++    static final ComponentName ARC_ACCESSIBILITY_HELPER_COMPONENT = new ComponentName(
++            "org.chromium.arc.accessibilityhelper",
++            "org.chromium.arc.accessibilityhelper.ArcAccessibilityHelperService");
++
++    @Override
++    public void updateServicePreferences() {
++        super.updateServicePreferences();
++        removeSomeServicePrefences();
++    }
++
++    @Override
++    public void updateSystemPreferences() {
++        super.updateSystemPreferences();
++        removeSomeSystemPreferences();
++    }
++
++    void removeSomeServicePrefences() {
++        PreferenceCategory category =
++                (PreferenceCategory) findPreference("user_installed_services_category");
++        if (category != null) {
++            Preference switchAccess = findPreference(SWITCH_ACCESS_COMPONENT.flattenToString());
++            Preference selectToSpeak = findPreference(SELECT_TO_SPEAK_COMPONENT.flattenToString());
++            Preference arcHelper =
++                    findPreference(ARC_ACCESSIBILITY_HELPER_COMPONENT.flattenToString());
++            Preference accessibilityMenu =
++                    findPreference(ACCESSIBILITY_MENU_COMPONENT.flattenToString());
++            if (switchAccess != null) category.removePreference(switchAccess);
++            if (selectToSpeak != null) category.removePreference(selectToSpeak);
++            if (arcHelper != null) category.removePreference(arcHelper);
++            if (accessibilityMenu != null) category.removePreference(accessibilityMenu);
++            if (category.getPreferenceCount() == 0) {
++                getPreferenceScreen().removePreference(category);
++            }
++        }
++    }
++
++    void removeSomeSystemPreferences() {
++        setPreferenceVisible("accessibility_shortcut_preference", false);
++        setPreferenceVisible("toggle_large_pointer_icon", false);
++        setPreferenceVisible("toggle_disable_animations", false);
++        setPreferenceVisible("magnification_preference_screen", false);
++        setPreferenceVisible("accessibility_settings_screen_zoom", false);
++        setPreferenceVisible("toggle_lock_screen_rotation_preference", false);
++        setPreferenceVisible("autoclick_preference", false);
++        setPreferenceVisible("toggle_inversion_preference", false);
++        setPreferenceVisible("daltonizer_preference", false);
++        setPreferenceVisible("vibration_preference_screen", false);
++        setPreferenceVisible("dark_ui_mode_accessibility", false);
++
++        PreferenceGroup audioCategory =
++                (PreferenceGroup) findPreference("audio_and_captions_category");
++        if (audioCategory != null) audioCategory.setVisible(false);
++    }
++
++    private void setPreferenceVisible(String key, boolean visible) {
++        Preference pref = findPreference(key);
++        if (pref != null) pref.setVisible(visible);
++    }
++}
+diff --git a/src/org/chromium/settings/dashboard/suggestions/SuggestionFeatureProviderArcImpl.java b/src/org/chromium/settings/dashboard/suggestions/SuggestionFeatureProviderArcImpl.java
+new file mode 100644
+index 00000000000..dec94606a34
+--- /dev/null
++++ b/src/org/chromium/settings/dashboard/suggestions/SuggestionFeatureProviderArcImpl.java
+@@ -0,0 +1,21 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.dashboard.suggestions;
++
++import android.content.Context;
++
++import com.android.settings.dashboard.suggestions.SuggestionFeatureProviderImpl;
++
++public class SuggestionFeatureProviderArcImpl extends SuggestionFeatureProviderImpl {
++    public SuggestionFeatureProviderArcImpl(Context context) {
++        super(context);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcAdbPreferenceController.java b/src/org/chromium/settings/development/ArcAdbPreferenceController.java
+new file mode 100644
+index 00000000000..5074c99d9b9
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcAdbPreferenceController.java
+@@ -0,0 +1,64 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++import android.os.SystemProperties;
++
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++
++import com.android.settings.R;
++import com.android.settings.development.AdbPreferenceController;
++import com.android.settings.development.DevelopmentSettingsDashboardFragment;
++import com.android.settingslib.development.AbstractEnableAdbPreferenceController;
++
++/**
++ * ADB preference controller that checks Chrome OS dev mode before enabling.
++ */
++public class ArcAdbPreferenceController extends AdbPreferenceController {
++
++    public ArcAdbPreferenceController(Context context,
++            DevelopmentSettingsDashboardFragment fragment) {
++        super(context, fragment);
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        if (!isAdbAllowed()) {
++            mPreference.setSummary(R.string.enable_adb_summary_unavailable);
++        }
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        if (isAdbAllowed()) {
++            super.updateState(preference);
++        } else {
++            mPreference.setEnabled(false);
++        }
++    }
++
++    @Override
++    protected void onDeveloperOptionsSwitchEnabled() {
++        if (isAdbAllowed()) {
++            super.onDeveloperOptionsSwitchEnabled();
++        } else {
++            mPreference.setEnabled(false);
++        }
++    }
++
++    boolean isAdbAllowed() {
++        return SystemProperties.getInt("ro.boot.dev_mode", 0) == 1
++                || SystemProperties.getInt("ro.boot.enable_adb_sideloading", 0) == 1;
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcCaptionDescriptionPreferenceController.java b/src/org/chromium/settings/development/ArcCaptionDescriptionPreferenceController.java
+new file mode 100644
+index 00000000000..f93c31ce043
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcCaptionDescriptionPreferenceController.java
+@@ -0,0 +1,43 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcCaptionDescriptionPreferenceController
++        extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcCaptionDescriptionPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "add_caption_description";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.ui.caption_text";
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return null;
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.add_caption_description_title);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java b/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
+new file mode 100644
+index 00000000000..489894c09c5
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.app.UiModeManager;
++import android.content.Context;
++
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++import androidx.preference.SwitchPreference;
++
++import com.android.settings.R;
++
++public class ArcDarkThemePreferenceController extends ArcWmFeatureSwitchPreferenceController {
++
++    private SwitchPreference mSwitchPreference;
++    private UiModeManager mUiModeManager;
++
++    public ArcDarkThemePreferenceController(Context context) {
++        super(context);
++        mUiModeManager = (UiModeManager) context.getSystemService(UiModeManager.class);
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "ARC_DARK_THEME";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return null;
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return null;
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.dark_ui_title);
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        mSwitchPreference = (SwitchPreference) mPreference;
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        mSwitchPreference.setChecked(mUiModeManager.getNightMode() == UiModeManager.MODE_NIGHT_YES);
++    }
++
++    @Override
++    public boolean onPreferenceChange(Preference preference, Object newValue) {
++        super.onPreferenceChange(preference, newValue);
++        mUiModeManager.setNightMode(
++                ((Boolean) newValue) ? UiModeManager.MODE_NIGHT_YES : UiModeManager.MODE_NIGHT_NO);
++        return true;
++    }
++
++    @Override
++    public void onDeveloperOptionsSwitchDisabled() {
++        super.onDeveloperOptionsSwitchDisabled();
++        mUiModeManager.setNightMode(UiModeManager.MODE_NIGHT_NO);
++        mSwitchPreference.setChecked(false);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcDevelopmentConstants.java b/src/org/chromium/settings/development/ArcDevelopmentConstants.java
+new file mode 100644
+index 00000000000..aa9a444dea7
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcDevelopmentConstants.java
+@@ -0,0 +1,79 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import java.util.Arrays;
++import java.util.LinkedHashSet;
++import java.util.Set;
++
++/**
++ * Constants defining which stock Android development preferences and categories
++ * to remove in the ARC development settings.
++ */
++final class ArcDevelopmentConstants {
++    static final Set<String> PREFERENCES_TO_REMOVE = new LinkedHashSet<>(Arrays.asList(
++            "enable_adb",
++            "allow_on_external",
++            "bluetooth_disable_absolute_volume",
++            "bluetooth_max_connected_audio_devices",
++            "bluetooth_select_a2dp_bits_per_sample",
++            "bluetooth_select_a2dp_channel_mode",
++            "bluetooth_select_a2dp_codec",
++            "bluetooth_select_a2dp_ldac_playback_quality",
++            "bluetooth_select_a2dp_sample_rate",
++            "bluetooth_select_avrcp_version",
++            "bluetooth_show_devices_without_names",
++            "bt_hci_snoop_log",
++            "bugreport_in_power",
++            "debug_hw_overdraw",
++            "debug_hw_renderer",
++            "density",
++            "demo_mode",
++            "disable_overlays",
++            "display_cutout_emulation",
++            "oem_unlock_enable",
++            "force_hw_ui",
++            "force_msaa",
++            "inactive_apps",
++            "keep_screen_on",
++            "local_backup_password",
++            "memory",
++            "mobile_data_always_on",
++            "mock_location_app",
++            "ota_disable_automatic_update",
++            "picture_color_mode",
++            "pointer_location",
++            "quick_settings_tiles",
++            "show_hw_layers_updates",
++            "show_hw_screen_updates",
++            "show_non_rect_clip",
++            "show_screen_updates",
++            "show_touches",
++            "simulate_color_space",
++            "strict_mode",
++            "tethering_hardware_offload",
++            "track_frame_time",
++            "transition_animation_scale",
++            "usb_audio",
++            "wifi_display_certification",
++            "wifi_verbose_logging"
++    ));
++
++    static final Set<String> CATEGORIES_TO_REMOVE = new LinkedHashSet<>(Arrays.asList(
++            "debug_hw_drawing_category",
++            "debug_input_category",
++            "media_category",
++            "debug_monitoring_category",
++            "debug_networking_category"
++    ));
++
++    private ArcDevelopmentConstants() {}
++}
+diff --git a/src/org/chromium/settings/development/ArcDevelopmentSettingsActivity.java b/src/org/chromium/settings/development/ArcDevelopmentSettingsActivity.java
+new file mode 100644
+index 00000000000..6dd1d0d44c8
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcDevelopmentSettingsActivity.java
+@@ -0,0 +1,21 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import com.android.settings.SettingsActivity;
++
++public class ArcDevelopmentSettingsActivity extends SettingsActivity {
++    @Override
++    protected boolean isValidFragment(String fragmentName) {
++        return "org.chromium.settings.development.ArcDevelopmentSettingsDashboardFragment"
++                .equals(fragmentName);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcDevelopmentSettingsDashboardFragment.java b/src/org/chromium/settings/development/ArcDevelopmentSettingsDashboardFragment.java
+new file mode 100644
+index 00000000000..33ef7117f39
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcDevelopmentSettingsDashboardFragment.java
+@@ -0,0 +1,136 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import androidx.preference.ListPreference;
++import androidx.preference.Preference;
++import androidx.preference.PreferenceCategory;
++import androidx.preference.SwitchPreference;
++
++import com.android.settings.R;
++import com.android.settings.development.DevelopmentSettingsDashboardFragment;
++import com.android.settingslib.core.AbstractPreferenceController;
++
++import org.chromium.settings.HiddenPreferenceController;
++
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * ARC development settings dashboard — removes stock Android development
++ * preferences and adds ARC-specific WM feature toggles.
++ */
++public class ArcDevelopmentSettingsDashboardFragment extends DevelopmentSettingsDashboardFragment {
++
++    private final List<ArcWmFeaturePreferenceController> mWmFeatureControllers = new ArrayList<>();
++
++    @Override
++    public void addPreferencesFromResource(int preferencesResId) {
++        super.addPreferencesFromResource(preferencesResId);
++        for (ArcWmFeaturePreferenceController controller : mWmFeatureControllers) {
++            addWmPreference(controller);
++        }
++    }
++
++    @Override
++    protected List<AbstractPreferenceController> createPreferenceControllers(Context context) {
++        List<AbstractPreferenceController> controllers = super.createPreferenceControllers(context);
++        removeControllers(controllers);
++        addArcControllers(controllers, context);
++        return controllers;
++    }
++
++    @Override
++    public void onEnableAdbDialogConfirmed() {
++        ((ArcAdbPreferenceController) use(ArcAdbPreferenceController.class))
++                .onAdbDialogConfirmed();
++    }
++
++    @Override
++    public void onEnableAdbDialogDismissed() {
++        ((ArcAdbPreferenceController) use(ArcAdbPreferenceController.class))
++                .onAdbDialogDismissed();
++    }
++
++    @Override
++    public <T extends AbstractPreferenceController> T use(Class<T> clazz) {
++        return super.use(clazz);
++    }
++
++    private void removeControllers(List<AbstractPreferenceController> controllers) {
++        List<AbstractPreferenceController> toRemove = new ArrayList<>();
++        for (AbstractPreferenceController controller : controllers) {
++            if (ArcDevelopmentConstants.PREFERENCES_TO_REMOVE.contains(
++                    controller.getPreferenceKey())) {
++                toRemove.add(controller);
++            }
++        }
++        controllers.removeAll(toRemove);
++    }
++
++    void addArcControllers(List<AbstractPreferenceController> controllers, Context context) {
++        // Add HiddenPreferenceControllers for removed preferences (except ADB which is replaced)
++        for (String key : ArcDevelopmentConstants.PREFERENCES_TO_REMOVE) {
++            if (!"enable_adb".equals(key)) {
++                controllers.add(new HiddenPreferenceController(context, key));
++            }
++        }
++        for (String key : ArcDevelopmentConstants.CATEGORIES_TO_REMOVE) {
++            controllers.add(new HiddenPreferenceController(context, key));
++        }
++
++        // Add ARC-specific ADB controller
++        controllers.add(new ArcAdbPreferenceController(context, this));
++        controllers.add(new ArcWirelessDebuggingPreferenceController(context,
++                getSettingsLifecycle()));
++
++        // Add WM feature controllers
++        mWmFeatureControllers.add(new ArcCaptionDescriptionPreferenceController(context));
++        mWmFeatureControllers.add(new ArcWaylandClientLogsPreferenceController(context));
++        mWmFeatureControllers.add(new ArcWaylandTimingLogsPreferenceController(context));
++        mWmFeatureControllers.add(new ArcVelocityTrackerStrategyPreferenceController(context));
++        mWmFeatureControllers.add(new ArcLaunchWindowSizePreferenceController(context,
++                context.getResources().getString(R.string.launch_window_size_title),
++                context.getResources().getStringArray(R.array.launch_window_size_names),
++                context.getResources().getStringArray(R.array.launch_window_size_values)));
++        mWmFeatureControllers.add(new ArcNotificationScalingPreferenceController(context));
++        mWmFeatureControllers.add(new ArcDarkThemePreferenceController(context));
++        mWmFeatureControllers.add(new ArcRubberBandResizingPreferenceController(context));
++        mWmFeatureControllers.add(new ArcWmFeatureForceUnResizeController(context));
++        mWmFeatureControllers.add(new ArcForceFullscreenPreferenceController(context));
++        mWmFeatureControllers.add(new ArcMouseCompatPreferenceController(context));
++        mWmFeatureControllers.add(new ArcSmoothScrollPreferenceController(context));
++        mWmFeatureControllers.add(new ArcPinchGesturePreferenceController(context));
++        controllers.addAll(mWmFeatureControllers);
++    }
++
++    void addWmPreference(ArcWmFeaturePreferenceController controller) {
++        Preference pref;
++        if (controller instanceof ArcWmFeatureSwitchPreferenceController) {
++            pref = new SwitchPreference(getContext());
++        } else if (controller instanceof ArcWmFeatureListPreferenceController) {
++            pref = new ListPreference(getContext());
++        } else {
++            throw new UnsupportedOperationException(
++                    "Unexpected controller type " + controller.getClass().getSimpleName());
++        }
++        pref.setKey(controller.getPreferenceKey());
++        pref.setTitle(controller.getPreferenceTitle());
++        String summary = controller.getPreferenceSummary();
++        if (summary != null) {
++            pref.setSummary(summary);
++        }
++        ((PreferenceCategory) getPreferenceScreen().findPreference("debug_applications_category"))
++                .addPreference(pref);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcForceFullscreenPreferenceController.java b/src/org/chromium/settings/development/ArcForceFullscreenPreferenceController.java
+new file mode 100644
+index 00000000000..af627735abc
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcForceFullscreenPreferenceController.java
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcForceFullscreenPreferenceController
++        extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcForceFullscreenPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return true;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "arc_force_fullscreen";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.ui.force_fullscreen";
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return null;
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.force_fullscreen_title);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcLaunchWindowSizePreferenceController.java b/src/org/chromium/settings/development/ArcLaunchWindowSizePreferenceController.java
+new file mode 100644
+index 00000000000..a6f1df2361b
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcLaunchWindowSizePreferenceController.java
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++public final class ArcLaunchWindowSizePreferenceController
++        extends ArcWmFeatureListPreferenceController {
++
++    private final String mTitle;
++
++    ArcLaunchWindowSizePreferenceController(Context context, String title,
++            CharSequence[] names, CharSequence[] values) {
++        super(context, names, values);
++        mTitle = title;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "launch_window_size";
++    }
++
++    @Override
++    String getSystemPropertyKey() {
++        return "persist.sys.ui.launch_window_size";
++    }
++
++    @Override
++    String getPreferenceTitle() {
++        return mTitle;
++    }
++
++    @Override
++    String getDefaultSystemPropertyValue() {
++        return mEntryValues[0].toString();
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcMouseCompatPreferenceController.java b/src/org/chromium/settings/development/ArcMouseCompatPreferenceController.java
+new file mode 100644
+index 00000000000..1be97fb4769
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcMouseCompatPreferenceController.java
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcMouseCompatPreferenceController extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcMouseCompatPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return true;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "mouse_touchscreen_compat";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.input.mouse_touchscreen_compat";
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.mouse_touchscreen_compat_title);
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return mContext.getResources().getString(R.string.mouse_touchscreen_compat_summary);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcNotificationScalingPreferenceController.java b/src/org/chromium/settings/development/ArcNotificationScalingPreferenceController.java
+new file mode 100644
+index 00000000000..1b5cc9fbdf0
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcNotificationScalingPreferenceController.java
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public final class ArcNotificationScalingPreferenceController
++        extends ArcWmFeatureListPreferenceController {
++
++    private static final String[] NOTIFICATION_SCALE_FACTOR_VALUES = {
++            "0.90", "1.00", "1.10", "1.20", "1.25", "1.30", "1.33", "1.40", "1.50"
++    };
++
++    ArcNotificationScalingPreferenceController(Context context) {
++        super(context, NOTIFICATION_SCALE_FACTOR_VALUES, NOTIFICATION_SCALE_FACTOR_VALUES);
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "notification_scale_factor";
++    }
++
++    @Override
++    String getSystemPropertyKey() {
++        return "persist.sys.ui.notification_scale_factor";
++    }
++
++    @Override
++    String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.notification_scaling_title);
++    }
++
++    @Override
++    String getDefaultSystemPropertyValue() {
++        return mEntryValues[1].toString();  // "1.00"
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcPinchGesturePreferenceController.java b/src/org/chromium/settings/development/ArcPinchGesturePreferenceController.java
+new file mode 100644
+index 00000000000..3f214c8243b
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcPinchGesturePreferenceController.java
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcPinchGesturePreferenceController extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcPinchGesturePreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return false;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "pinch_gesture";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.input.horizontal_pinch_gesture";
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.pinch_gesture_title);
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return mContext.getResources().getString(R.string.pinch_gesture_summary);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcRubberBandResizingPreferenceController.java b/src/org/chromium/settings/development/ArcRubberBandResizingPreferenceController.java
+new file mode 100644
+index 00000000000..53052a726bc
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcRubberBandResizingPreferenceController.java
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcRubberBandResizingPreferenceController
++        extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcRubberBandResizingPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return false;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "arc_rubber_band";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.ui.rubber_band_resizing";
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return null;
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.rubber_band_title);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcSmoothScrollPreferenceController.java b/src/org/chromium/settings/development/ArcSmoothScrollPreferenceController.java
+new file mode 100644
+index 00000000000..c2ffda28c8c
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcSmoothScrollPreferenceController.java
+@@ -0,0 +1,47 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcSmoothScrollPreferenceController extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcSmoothScrollPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return true;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "smooth_scroll";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.input.smooth_scroll";
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.smooth_scroll_title);
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return mContext.getResources().getString(R.string.smooth_scroll_summary);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcVelocityTrackerStrategyPreferenceController.java b/src/org/chromium/settings/development/ArcVelocityTrackerStrategyPreferenceController.java
+new file mode 100644
+index 00000000000..daec72bc16d
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcVelocityTrackerStrategyPreferenceController.java
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public final class ArcVelocityTrackerStrategyPreferenceController
++        extends ArcWmFeatureListPreferenceController {
++
++    ArcVelocityTrackerStrategyPreferenceController(Context context) {
++        super(context,
++                context.getResources().getStringArray(R.array.velocity_tracker_strategy_names),
++                context.getResources().getStringArray(R.array.velocity_tracker_strategy_values));
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "velocitytracker_strategy";
++    }
++
++    @Override
++    String getSystemPropertyKey() {
++        return "persist.input.velocitytracker.strategy";
++    }
++
++    @Override
++    String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.velocity_tracker_strategy_title);
++    }
++
++    @Override
++    String getDefaultSystemPropertyValue() {
++        return mEntryValues[0].toString();
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWaylandClientLogsPreferenceController.java b/src/org/chromium/settings/development/ArcWaylandClientLogsPreferenceController.java
+new file mode 100644
+index 00000000000..129a61fdafc
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWaylandClientLogsPreferenceController.java
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcWaylandClientLogsPreferenceController
++        extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcWaylandClientLogsPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return false;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "enable_wayland_client_logs";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.enable_wayland_client_logs";
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.enable_wayland_client_logs_title);
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return mContext.getResources().getString(R.string.enable_wayland_client_logs_summary);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWaylandTimingLogsPreferenceController.java b/src/org/chromium/settings/development/ArcWaylandTimingLogsPreferenceController.java
+new file mode 100644
+index 00000000000..0bb53fe996f
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWaylandTimingLogsPreferenceController.java
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcWaylandTimingLogsPreferenceController
++        extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcWaylandTimingLogsPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return false;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "enable_wayland_timing_logs";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.enable_wayland_timing_logs";
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.enable_wayland_timing_logs_title);
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return mContext.getResources().getString(R.string.enable_wayland_timing_logs_summary);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java b/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
+new file mode 100644
+index 00000000000..969af3537a2
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
+@@ -0,0 +1,84 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++import android.debug.IAdbManager;
++import android.os.RemoteException;
++import android.os.ServiceManager;
++import android.os.SystemProperties;
++import android.util.Log;
++
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++
++import com.android.settings.R;
++import com.android.settings.development.WirelessDebuggingPreferenceController;
++import com.android.settings.widget.MasterSwitchPreference;
++import com.android.settingslib.core.lifecycle.Lifecycle;
++
++/**
++ * Wireless debugging controller that checks Chrome OS dev mode before enabling.
++ */
++public class ArcWirelessDebuggingPreferenceController
++        extends WirelessDebuggingPreferenceController {
++
++    private static final String TAG = "ArcWirelessDebuggingPreferenceController";
++    private final IAdbManager mAdbManager;
++
++    public ArcWirelessDebuggingPreferenceController(Context context, Lifecycle lifecycle) {
++        super(context, lifecycle);
++        mAdbManager = IAdbManager.Stub.asInterface(ServiceManager.getService("adb"));
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        if (!isAdbOverWifiAllowed()) {
++            mPreference.setSummary(R.string.enable_adb_summary_unavailable);
++        }
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        if (isAdbOverWifiAllowed()) {
++            super.updateState(preference);
++        } else {
++            mPreference.setEnabled(false);
++            ((MasterSwitchPreference) preference).setSwitchEnabled(false);
++        }
++    }
++
++    @Override
++    public boolean isAvailable() {
++        try {
++            return mAdbManager.isAdbWifiSupported();
++        } catch (RemoteException e) {
++            Log.e(TAG, "Unable to check if adb wifi is supported.", e);
++            return false;
++        }
++    }
++
++    @Override
++    protected void onDeveloperOptionsSwitchEnabled() {
++        if (isAdbOverWifiAllowed()) {
++            super.onDeveloperOptionsSwitchEnabled();
++        } else {
++            mPreference.setEnabled(false);
++            ((MasterSwitchPreference) mPreference).setSwitchEnabled(false);
++        }
++    }
++
++    boolean isAdbOverWifiAllowed() {
++        return SystemProperties.getInt("ro.boot.dev_mode", 0) == 1
++                || SystemProperties.getInt("ro.boot.enable_adb_sideloading", 0) == 1;
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWmFeatureForceUnResizeController.java b/src/org/chromium/settings/development/ArcWmFeatureForceUnResizeController.java
+new file mode 100644
+index 00000000000..970d162b800
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWmFeatureForceUnResizeController.java
+@@ -0,0 +1,48 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++
++import com.android.settings.R;
++
++public class ArcWmFeatureForceUnResizeController
++        extends ArcWmFeatureSwitchPreferenceController {
++
++    public ArcWmFeatureForceUnResizeController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean getDefaultSystemPropertyValue() {
++        return true;
++    }
++
++    @Override
++    public String getPreferenceKey() {
++        return "force_unresizable_key";
++    }
++
++    @Override
++    public String getSystemPropertyKey() {
++        return "persist.sys.ui.force_unresizable";
++    }
++
++    @Override
++    public String getPreferenceTitle() {
++        return mContext.getResources().getString(R.string.force_unresizable_title);
++    }
++
++    @Override
++    public String getPreferenceSummary() {
++        return mContext.getResources().getString(R.string.force_unresizable_summary);
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWmFeatureListPreferenceController.java b/src/org/chromium/settings/development/ArcWmFeatureListPreferenceController.java
+new file mode 100644
+index 00000000000..2d2d7c075cc
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWmFeatureListPreferenceController.java
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++import android.os.SystemProperties;
++import android.text.TextUtils;
++
++import androidx.preference.ListPreference;
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++
++/**
++ * Base class for list-based ARC WM feature preference controllers.
++ */
++public abstract class ArcWmFeatureListPreferenceController
++        extends ArcWmFeaturePreferenceController {
++
++    final CharSequence[] mEntryNames;
++    final CharSequence[] mEntryValues;
++    private ListPreference mListPreference;
++
++    abstract String getDefaultSystemPropertyValue();
++
++    ArcWmFeatureListPreferenceController(Context context, CharSequence[] names,
++            CharSequence[] values) {
++        super(context);
++        mEntryNames = names;
++        mEntryValues = values;
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        mListPreference = (ListPreference) mPreference;
++        mListPreference.setEntries(mEntryNames);
++        mListPreference.setEntryValues(mEntryValues);
++    }
++
++    @Override
++    String getPreferenceSummary() {
++        return getEntryNameFromValue(getSystemPropertyValueOrDefault());
++    }
++
++    @Override
++    String getSystemPropertyNewValue(Object newValue) {
++        return (String) newValue;
++    }
++
++    @Override
++    public boolean onPreferenceChange(Preference preference, Object newValue) {
++        boolean result = super.onPreferenceChange(preference, newValue);
++        mListPreference.setSummary(getPreferenceSummary());
++        return result;
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        mListPreference.setValue(getSystemPropertyValueOrDefault());
++        mListPreference.setSummary(getPreferenceSummary());
++    }
++
++    @Override
++    public void onDeveloperOptionsSwitchDisabled() {
++        super.onDeveloperOptionsSwitchDisabled();
++        resetToDefault();
++    }
++
++    private void resetToDefault() {
++        String key = getSystemPropertyKey();
++        if (TextUtils.isEmpty(key)) return;
++        String defaultValue = getDefaultSystemPropertyValue();
++        SystemProperties.set(key, defaultValue);
++        mListPreference.setValue(defaultValue);
++        mListPreference.setSummary(getEntryNameFromValue(defaultValue));
++    }
++
++    private String getSystemPropertyValueOrDefault() {
++        String key = getSystemPropertyKey();
++        String defaultValue = getDefaultSystemPropertyValue();
++        return TextUtils.isEmpty(key) ? defaultValue
++                : SystemProperties.get(key, defaultValue);
++    }
++
++    String getEntryNameFromValue(String value) {
++        int index = 0;
++        for (int i = 0; i < mEntryValues.length; i++) {
++            if (mEntryValues[i].equals(value)) {
++                index = i;
++                break;
++            }
++        }
++        return mEntryNames[index].toString();
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWmFeaturePreferenceController.java b/src/org/chromium/settings/development/ArcWmFeaturePreferenceController.java
+new file mode 100644
+index 00000000000..671a1f3e131
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWmFeaturePreferenceController.java
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++import android.os.SystemProperties;
++import android.text.TextUtils;
++
++import androidx.preference.Preference;
++
++import com.android.settings.core.PreferenceControllerMixin;
++import com.android.settingslib.development.DeveloperOptionsPreferenceController;
++import com.android.settingslib.development.SystemPropPoker;
++
++/**
++ * Base class for ARC window manager feature preference controllers.
++ * Subclasses implement either switch or list preference behavior.
++ */
++public abstract class ArcWmFeaturePreferenceController
++        extends DeveloperOptionsPreferenceController
++        implements Preference.OnPreferenceChangeListener, PreferenceControllerMixin {
++
++    abstract String getPreferenceTitle();
++    abstract String getSystemPropertyKey();
++    abstract String getPreferenceSummary();
++    abstract String getSystemPropertyNewValue(Object newValue);
++
++    ArcWmFeaturePreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public boolean onPreferenceChange(Preference preference, Object newValue) {
++        String key = getSystemPropertyKey();
++        if (TextUtils.isEmpty(key)) {
++            return false;
++        }
++        SystemProperties.set(key, getSystemPropertyNewValue(newValue));
++        SystemPropPoker.getInstance().poke();
++        return true;
++    }
++
++    @Override
++    public void onDeveloperOptionsSwitchEnabled() {
++        super.onDeveloperOptionsSwitchEnabled();
++    }
++}
+diff --git a/src/org/chromium/settings/development/ArcWmFeatureSwitchPreferenceController.java b/src/org/chromium/settings/development/ArcWmFeatureSwitchPreferenceController.java
+new file mode 100644
+index 00000000000..434cfc3de63
+--- /dev/null
++++ b/src/org/chromium/settings/development/ArcWmFeatureSwitchPreferenceController.java
+@@ -0,0 +1,69 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.development;
++
++import android.content.Context;
++import android.os.SystemProperties;
++import android.text.TextUtils;
++
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++import androidx.preference.SwitchPreference;
++
++/**
++ * Base class for switch-based ARC WM feature preference controllers.
++ */
++public abstract class ArcWmFeatureSwitchPreferenceController
++        extends ArcWmFeaturePreferenceController {
++
++    private SwitchPreference mSwitchPreference;
++
++    public boolean getDefaultSystemPropertyValue() {
++        return false;
++    }
++
++    ArcWmFeatureSwitchPreferenceController(Context context) {
++        super(context);
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        mSwitchPreference = (SwitchPreference) mPreference;
++    }
++
++    @Override
++    String getSystemPropertyNewValue(Object newValue) {
++        return ((Boolean) newValue) ? "1" : "0";
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        boolean value;
++        String key = getSystemPropertyKey();
++        if (TextUtils.isEmpty(key)) {
++            value = getDefaultSystemPropertyValue();
++        } else {
++            value = SystemProperties.getBoolean(key, getDefaultSystemPropertyValue());
++        }
++        mSwitchPreference.setChecked(value);
++    }
++
++    @Override
++    public void onDeveloperOptionsSwitchDisabled() {
++        super.onDeveloperOptionsSwitchDisabled();
++        String key = getSystemPropertyKey();
++        if (!TextUtils.isEmpty(key)) {
++            SystemProperties.set(key, getDefaultSystemPropertyValue() ? "1" : "0");
++        }
++        mSwitchPreference.setChecked(getDefaultSystemPropertyValue());
++    }
++}
+diff --git a/src/org/chromium/settings/overlay/FeatureFactoryImpl.java b/src/org/chromium/settings/overlay/FeatureFactoryImpl.java
+new file mode 100644
+index 00000000000..12c0f118ff9
+--- /dev/null
++++ b/src/org/chromium/settings/overlay/FeatureFactoryImpl.java
+@@ -0,0 +1,43 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.overlay;
++
++import android.content.Context;
++
++import androidx.annotation.Keep;
++
++import com.android.settings.dashboard.suggestions.SuggestionFeatureProvider;
++import com.android.settings.search.SearchFeatureProvider;
++
++import org.chromium.settings.dashboard.suggestions.SuggestionFeatureProviderArcImpl;
++import org.chromium.settings.search.SearchFeatureProviderArcImpl;
++
++@Keep
++public final class FeatureFactoryImpl extends com.android.settings.overlay.FeatureFactoryImpl {
++    private SearchFeatureProvider mSearchFeatureProvider;
++    private SuggestionFeatureProvider mSuggestionFeatureProvider;
++
++    @Override
++    public SearchFeatureProvider getSearchFeatureProvider() {
++        if (mSearchFeatureProvider == null) {
++            mSearchFeatureProvider = new SearchFeatureProviderArcImpl();
++        }
++        return mSearchFeatureProvider;
++    }
++
++    @Override
++    public SuggestionFeatureProvider getSuggestionFeatureProvider(Context context) {
++        if (mSuggestionFeatureProvider == null) {
++            mSuggestionFeatureProvider = new SuggestionFeatureProviderArcImpl(context);
++        }
++        return mSuggestionFeatureProvider;
++    }
++}
+diff --git a/src/org/chromium/settings/search/SearchFeatureProviderArcImpl.java b/src/org/chromium/settings/search/SearchFeatureProviderArcImpl.java
+new file mode 100644
+index 00000000000..fbe40a0d5b3
+--- /dev/null
++++ b/src/org/chromium/settings/search/SearchFeatureProviderArcImpl.java
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (C) 2024 The FydeOS Authors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++package org.chromium.settings.search;
++
++import com.android.settings.search.SearchFeatureProviderImpl;
++import com.android.settingslib.search.SearchIndexableResources;
++import com.android.settingslib.search.SearchIndexableResourcesArc;
++
++public class SearchFeatureProviderArcImpl extends SearchFeatureProviderImpl {
++    private SearchIndexableResources mSearchIndexableResources = new SearchIndexableResourcesArc();
++
++    @Override
++    public SearchIndexableResources getSearchIndexableResources() {
++        return mSearchIndexableResources;
++    }
++}
+-- 
+2.43.0
+

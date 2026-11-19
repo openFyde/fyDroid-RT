@@ -1,0 +1,77 @@
+--- a/src/egl/drivers/dri2/platform_android.c
++++ b/src/egl/drivers/dri2/platform_android.c
+@@ -72,6 +72,54 @@
+                              const int plane_pixel_stride[3])
+    __attribute__((weak));
+ 
++/*
++ * Plane pointers for a YUV buffer that AHardwareBuffer_lockPlanes() returned as
++ * a single plane. It does that for every format it does not know as YUV --
++ * notably IMPLEMENTATION_DEFINED, which is what camera preview buffers are --
++ * and hands back the start of the buffer. gralloc still reported the real
++ * layout (fourcc, per-plane offsets and strides), so derive the planes from it.
++ */
++static bool
++android_yuv_planes_from_buffer_info(const struct u_gralloc_buffer_basic_info *info,
++                                    const uint8_t *base, const void *pd[3],
++                                    int rs[3], int ps[3])
++{
++   if (info->num_planes < 2)
++      return false;
++   switch (info->drm_fourcc) {
++   case DRM_FORMAT_NV12:
++   case DRM_FORMAT_NV21: {
++      const uint8_t *uv = base + info->offsets[1];
++      const bool nv12 = info->drm_fourcc == DRM_FORMAT_NV12;
++      pd[0] = base + info->offsets[0];
++      rs[0] = info->strides[0];
++      ps[0] = 1;
++      pd[1] = nv12 ? uv : uv + 1;   /* U */
++      pd[2] = nv12 ? uv + 1 : uv;   /* V */
++      rs[1] = rs[2] = info->strides[1];
++      ps[1] = ps[2] = 2;
++      return true;
++   }
++   case DRM_FORMAT_YUV420:   /* I420: U then V */
++   case DRM_FORMAT_YVU420: { /* YV12: V then U */
++      if (info->num_planes < 3)
++         return false;
++      const bool i420 = info->drm_fourcc == DRM_FORMAT_YUV420;
++      pd[0] = base + info->offsets[0];
++      rs[0] = info->strides[0];
++      ps[0] = 1;
++      pd[1] = base + info->offsets[i420 ? 1 : 2];
++      rs[1] = info->strides[i420 ? 1 : 2];
++      pd[2] = base + info->offsets[i420 ? 2 : 1];
++      rs[2] = info->strides[i420 ? 2 : 1];
++      ps[1] = ps[2] = 1;
++      return true;
++   }
++   default:
++      return false;
++   }
++}
++
+ /* Inline wrap of a pipe_resource as a dri_image. libgallium_dri.so's
+  * symbol visibility is hidden + governed by dri.dyn, so helpers defined
+  * inside libdri aren't callable from libEGL_mesa.so — build the image
+@@ -186,10 +234,15 @@
+             const void *pd[3] = {0};
+             int rs[3] = {0};
+             int ps[3] = {0};
+-            for (uint32_t p = 0; p < planes.planeCount && p < 3; p++) {
+-               pd[p] = planes.planes[p].data;
+-               rs[p] = (int)planes.planes[p].rowStride;
+-               ps[p] = (int)planes.planes[p].pixelStride;
++            if (planes.planeCount >= 3) {
++               for (uint32_t p = 0; p < 3; p++) {
++                  pd[p] = planes.planes[p].data;
++                  rs[p] = (int)planes.planes[p].rowStride;
++                  ps[p] = (int)planes.planes[p].pixelStride;
++               }
++            } else {
++               android_yuv_planes_from_buffer_info(
++                  &buf_info, (const uint8_t *)planes.planes[0].data, pd, rs, ps);
+             }
+             struct pipe_resource *res = svga_yuv_import_from_planes(
+                pscreen, buf->width, buf->height, pd, rs, ps);

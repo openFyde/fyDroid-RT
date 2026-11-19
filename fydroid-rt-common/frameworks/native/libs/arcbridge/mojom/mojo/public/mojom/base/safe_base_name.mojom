@@ -1,0 +1,6 @@
+// Stub for mojo_base.mojom.SafeBaseName — not in AOSP11 libmojo.
+module mojo_base.mojom;
+
+struct SafeBaseName {
+  string path;
+};

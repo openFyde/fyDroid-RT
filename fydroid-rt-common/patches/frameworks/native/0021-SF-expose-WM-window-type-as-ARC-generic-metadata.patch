@@ -1,0 +1,41 @@
+From 8da9b2a0e60a209ec497d3c8bd1e1664b1ef53c8 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 12 Jun 2026 17:51:09 +0800
+Subject: [PATCH 21/40] SF: expose WM window type as ARC generic metadata
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add org.chromium.arc.V1_0.WindowType -> METADATA_WINDOW_TYPE to the generic
+layer-metadata key map so the window type WindowManager stamps on every
+SurfaceControl reaches the composer. On AOSP-13 HWC2::setLayerInfo (which used
+to carry window-type classification) was removed; the fydroid composer needs
+the type to classify standalone (no-TaskId) layers — TYPE_TOAST/IME/OVERLAY —
+and give them a zcr_toast_surface. CompositionEngineArc reads it from the
+layer composition-state metadata; WaylandHwc2Composer advertises the key.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I5bb12273127b7fbdc4c4e2bd850b2947d48fb932
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 619c4aeaeb..c6237c4be9 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -7162,6 +7162,11 @@ const std::unordered_map<std::string, uint32_t>& SurfaceFlinger::getGenericLayer
+             {"org.chromium.arc.V1_0.IsDialogTask", METADATA_IS_DIALOG},
+             {"org.chromium.arc.V1_0.IsHome", METADATA_IS_HOME},
+             {"org.chromium.arc.V1_0.NotificationKey", METADATA_NOTIFICATION_KEY},
++            // fydroid: expose the WM window type (TYPE_TOAST/IME/OVERLAY) so the
++            // composer can classify standalone (no-TaskId) layers and give them
++            // a zcr_toast_surface. WindowManager sets METADATA_WINDOW_TYPE on
++            // every window's SurfaceControl.
++            {"org.chromium.arc.V1_0.WindowType", METADATA_WINDOW_TYPE},
+     };
+     return genericLayerMetadataKeyMap;
+ }
+-- 
+2.43.0
+

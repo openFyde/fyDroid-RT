@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Administrador de políticas</string>
+    <string name="channel_name">Administrador de políticas</string>
+    <string name="channel_description">Administrador de políticas del subsistema Android</string>
+    <string name="install_title">Instalando aplicaciones de tu organización</string>
+    <string name="install_finished">se ha instalado por política</string>
+    <string name="blocked_by_policy">está bloqueada por tu administrador</string>
+    <string name="managed_info">El subsistema Android está bajo el control del administrador</string>
+</resources>

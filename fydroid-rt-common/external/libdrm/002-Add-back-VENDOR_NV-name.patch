@@ -1,0 +1,14 @@
+diff --git a/include/drm/drm_fourcc.h b/include/drm/drm_fourcc.h
+index 4a138b5f..5ae59be8 100644
+--- a/include/drm/drm_fourcc.h
++++ b/include/drm/drm_fourcc.h
+@@ -480,6 +480,9 @@ extern "C" {
+ 
+ /* add more to the end as needed */
+ 
++/* For backwards compatibility prior to 2.4.92. */
++#define DRM_FORMAT_MOD_VENDOR_NV      DRM_FORMAT_MOD_VENDOR_NVIDIA
++
+ #define DRM_FORMAT_RESERVED	      ((1ULL << 56) - 1)
+ 
+ #define fourcc_mod_get_vendor(modifier) \

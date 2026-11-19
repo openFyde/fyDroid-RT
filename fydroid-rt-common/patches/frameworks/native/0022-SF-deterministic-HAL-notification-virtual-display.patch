@@ -1,0 +1,126 @@
+From 85881dd72433adb23023409a5eb2a1a9caf3c7db Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 15 Jun 2026 14:18:02 +0800
+Subject: [PATCH 22/40] SF: deterministic HAL notification virtual display
+
+The ARC shared notification VirtualDisplay must be HWC-routed so its
+per-notification zcr_notification_surface buffers reach Chrome. Two
+problems made it unreliable:
+
+1. Routing raced. The generic acquireVirtualDisplay() generator path
+   could be null (enableHalVirtualDisplays toggles on a Scheduler
+   thread) or lose a slot race, silently falling back to a GPU sink ->
+   blank notifications boot-to-boot. Mint a reserved fixed HAL id
+   (WaylandGlobals::kNotificationHalVdId) for the notification VD
+   instead, bypassing the generator.
+
+2. Size raced. The VD resolution comes from its output Surface, which
+   sometimes reaches HWC creation as 0x0 -> a broken display (ENOMEM)
+   that misses the notification tag. When the notification flag is armed
+   and the VD arrives invalid (0x0), substitute the armed size; a real
+   task VD always has a valid size.
+
+Also skip the unused per-frame output-composition push for this display
+in RenderSurface: the notification VD presents each layer individually
+(DEVICE composition) and its captured output is never consumed, so its
+dummy SurfaceTexture sink made advanceFrame() fail every frame (-12).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Iaee581018635f167e6c4766953cb35b9cbe9458b
+---
+ .../CompositionEngine/src/RenderSurface.cpp   | 10 +++++
+ services/surfaceflinger/SurfaceFlinger.cpp    | 43 ++++++++++++++++++-
+ 2 files changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+index 5a3af7bfea..b6bbc3382c 100644
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -241,6 +241,16 @@ void RenderSurface::queueBuffer(base::unique_fd readyFence) {
+         }
+     }
+ 
++    // fydroid: the ARC notification VD presents each of its layers individually
++    // as a Wayland notification surface (DEVICE composition in
++    // WaylandHwc2Composer); its SF-level captured output is never consumed, and
++    // its sink is a dummy SurfaceTexture that provides no buffers. So
++    // advanceFrame() fails every frame (ENOMEM) — pure waste plus per-frame log
++    // spam. Skip the unused output-frame push for this display.
++    if (mDisplay.isVirtual() && mDisplay.getName() == "ArcNotificationVirtualDisplay") {
++        return;
++    }
++
+     status_t result = mDisplaySurface->advanceFrame();
+     if (result != NO_ERROR) {
+         ALOGE("[%s] failed pushing new frame to HWC: %d", mDisplay.getName().c_str(), result);
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index c6237c4be9..8191b73ab2 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -146,6 +146,11 @@
+ #include "TunnelModeEnabledReporter.h"
+ #include "WindowInfosListenerInvoker.h"
+ 
++// fydroid: query the armed notification-VD size so acquireVirtualDisplay can
++// route it to a fixed HAL id (deterministic, never GPU). Exported by
++// libfydroid_wayland_service.
++#include "WaylandGlobals.h"
++
+ #include <aidl/android/hardware/graphics/common/DisplayDecorationSupport.h>
+ #include <aidl/android/hardware/graphics/composer3/DisplayCapability.h>
+ #include <aidl/android/hardware/graphics/composer3/RenderIntent.h>
+@@ -556,6 +561,38 @@ void SurfaceFlinger::enableHalVirtualDisplays(bool enable) {
+ 
+ VirtualDisplayId SurfaceFlinger::acquireVirtualDisplay(ui::Size resolution,
+                                                        ui::PixelFormat format) {
++    // fydroid: fixed notification display. The shared ARC notification VD must
++    // always be HWC-routed (HAL) so its zcr_notification_surface buffers reach
++    // Chrome. The generic generator path below is non-deterministic — the HAL
++    // generator can be null (enableHalVirtualDisplays toggles it on a Scheduler
++    // thread, line ~5889) or allocation can lose a slot race, silently falling
++    // back to a GPU sink and leaving notifications blank boot-to-boot. When the
++    // resolution matches the armed notification size, allocate a reserved HAL id
++    // directly, bypassing the generator entirely.
++    if (auto* globals = WaylandGlobals::instance(); globals && globals->isNotificationArmed()) {
++        const bool valid = resolution.width > 0 && resolution.height > 0;
++        // The notification VD's resolution comes from its output Surface, whose
++        // buffer size races with HWC display creation — it sometimes arrives as
++        // 0x0, which would create a broken 0x0 display (ENOMEM on first frame)
++        // and miss the notification tag. A real task VD always has a valid size,
++        // so treat (armed && invalid-size) as the notification VD too, and
++        // substitute the armed size so the HWC display is always correct.
++        if (globals->matchesNotificationSize(resolution.width, resolution.height) || !valid) {
++            const ui::Size notifRes = valid
++                    ? resolution
++                    : ui::Size(globals->armedNotifWidth(), globals->armedNotifHeight());
++            const HalVirtualDisplayId notifId{WaylandGlobals::kNotificationHalVdId};
++            if (getHwComposer().allocateVirtualDisplay(notifId, notifRes, &format)) {
++                ALOGI("acquireVirtualDisplay: fixed notification HAL display id=%" PRIu64
++                      " (%dx%d, requested %dx%d)", notifId.value, notifRes.width,
++                      notifRes.height, resolution.width, resolution.height);
++                return notifId;
++            }
++            ALOGW("acquireVirtualDisplay: fixed notification HAL alloc failed (%dx%d), "
++                  "falling through to generator", notifRes.width, notifRes.height);
++        }
++    }
++
+     if (auto& generator = mVirtualDisplayIdGenerators.hal) {
+         if (const auto id = generator->generateId()) {
+             if (getHwComposer().allocateVirtualDisplay(*id, resolution, &format)) {
+@@ -803,7 +840,11 @@ void SurfaceFlinger::init() {
+ 
+     enableLatchUnsignaledConfig = getLatchUnsignaledConfig();
+ 
+-    if (base::GetBoolProperty("debug.sf.enable_hwc_vds"s, false)) {
++    // fydroid: enable HAL virtual displays so DisplayManager VDs (notably the
++    // ARC notification VirtualDisplay) are HWC-routed through WaylandHwc2Composer
++    // instead of GPU-composited into a dead sink. Without this the notification
++    // surfaces never receive buffers and Chrome can only show the snapshot.
++    if (base::GetBoolProperty("debug.sf.enable_hwc_vds"s, true)) {
+         enableHalVirtualDisplays(true);
+     }
+ 
+-- 
+2.43.0
+

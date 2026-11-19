@@ -1,0 +1,47 @@
+// Stub for payments.mojom types — used by arc/digital_goods.mojom.
+// Derived from components/digital_goods/mojom/digital_goods.mojom in CrOS.
+module payments.mojom;
+
+import "url/mojom/url.mojom";
+
+[Extensible]
+enum BillingResponseCode {
+  kOk,
+  [Default] kError,
+  kItemAlreadyOwned,
+  kItemNotOwned,
+  kItemUnavailable,
+  kClientAppUnavailable,
+  kClientAppError,
+};
+
+[Extensible]
+enum ItemType {
+  [Default] kUnknown,
+  kProduct,
+  kSubscription,
+};
+
+struct PaymentCurrencyAmount {
+  string currency;
+  string value;
+};
+
+struct ItemDetails {
+  string item_id;
+  string title;
+  string description;
+  PaymentCurrencyAmount price;
+  string? subscription_period;
+  string? free_trial_period;
+  PaymentCurrencyAmount? introductory_price;
+  string? introductory_price_period;
+  [MinVersion=1] uint32 introductory_price_cycles;
+  [MinVersion=1] ItemType type;
+  [MinVersion=1] array<url.mojom.Url>? icon_urls;
+};
+
+struct PurchaseReference {
+  string item_id;
+  string purchase_token;
+};

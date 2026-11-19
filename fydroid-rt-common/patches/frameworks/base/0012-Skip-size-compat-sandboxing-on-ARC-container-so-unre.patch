@@ -1,0 +1,52 @@
+From d08010ea3dab11b5500e231adee0cc3e6b89bedf Mon Sep 17 00:00:00 2001
+From: FydeOS <yang@fydeos.io>
+Date: Wed, 29 Apr 2026 16:22:53 +0800
+Subject: [PATCH 12/75] Skip size-compat sandboxing on ARC container so
+ unresizable apps fill screen
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Apps that declare android:resizeableActivity="false" together with a fixed
+orientation or aspect ratio (e.g. com.netease.cloudmusic with
+maxAspectRatio=3.0) get put into ActivityRecord size-compat mode by AOSP,
+which sandboxes them into a phone-sized rectangle (e.g. 840x1073) centered
+on the tablet's full display, with a letterbox around them.
+
+ARC++ on Chrome OS has the same upstream behavior, but for fydroid-rt we
+prefer to give every standard activity the full display bounds — Chrome OS
+gives every Android task the full screen anyway, and visually a letterboxed
+phone window inside a 1600x2560 portrait tablet looks broken to the user.
+The activity's declared maxAspectRatio still applies via applyAspectRatio()
+when it would actually be exceeded; for the common case (1.6:1 tablet vs
+3.0 maxAspectRatio) the limit just doesn't trigger.
+
+Skip size-compat for standard activities when ro.boot.container=1.
+
+Change-Id: Id961b11e728e3499fc935e6a6844fd14d8022082
+---
+ .../core/java/com/android/server/wm/ActivityRecord.java   | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index d872ada1fd0c..6325a5a05dd5 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -8020,6 +8020,14 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+             default:
+                 // Fall through
+         }
++        // ARC container: skip size-compat sandboxing so unresizable apps fill
++        // the (typically larger) tablet display instead of being letterboxed
++        // into a phone-sized rect. Chrome OS gives every Android task the
++        // full display bounds; the app's declared maxAspectRatio still gates
++        // applyAspectRatio() if the bounds exceed it.
++        if (Build.IS_CONTAINER && isActivityTypeStandard()) {
++            return false;
++        }
+         if (inMultiWindowMode() || getWindowConfiguration().hasWindowDecorCaption()) {
+             final ActivityRecord root = task != null ? task.getRootActivity() : null;
+             if (root != null && root != this && !root.shouldCreateCompatDisplayInsets()) {
+-- 
+2.43.0
+

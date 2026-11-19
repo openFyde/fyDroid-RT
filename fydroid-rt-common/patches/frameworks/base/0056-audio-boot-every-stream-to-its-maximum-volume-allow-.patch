@@ -1,0 +1,84 @@
+From 53aad597ddd38638a7b6183f238b79b169d9ebff Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 26 Aug 2026 14:44:02 +0800
+Subject: [PATCH 56/75] audio: boot every stream to its maximum volume, allow
+ runtime decrease until next boot
+
+Gated on ro.config.fydroid_boot_max_volume. Forces max at settings (re)load
+time in both VolumeStreamState.readSettings() and VolumeGroupState.readSettings()
+(the volume-group engine is the applied authority), overriding any lower value
+persisted in Settings.System without a /data migration. Runtime setStreamVolume()
+still lowers a stream for the session; it is re-maxed at the next boot.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Change-Id: I40c9cb02294d890992d1fab6046fbee7d819d0ab
+---
+ .../android/server/audio/AudioService.java    | 38 +++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/services/core/java/com/android/server/audio/AudioService.java b/services/core/java/com/android/server/audio/AudioService.java
+index 3ddb0ae96a22..f453952c084a 100644
+--- a/services/core/java/com/android/server/audio/AudioService.java
++++ b/services/core/java/com/android/server/audio/AudioService.java
+@@ -547,6 +547,18 @@ public class AudioService extends IAudioService.Stub
+     private final boolean mUseFixedVolume;
+     private final boolean mUseVolumeGroupAliases;
+ 
++    // FydeOS/fydroid: when true, every stream is forced to its maximum index each time
++    // volume settings are (re)loaded from persistent storage — i.e. on every boot and
++    // user switch, via readSettings() below. Unlike mUseFixedVolume this does NOT block
++    // runtime volume control: the user can still lower any stream with setStreamVolume(),
++    // and that value persists for the session, but it is overwritten back to max at the
++    // next boot. On ARC the Android stream index is a second attenuator in series with
++    // CRAS while Chrome OS's own slider is the real control, so booting maxed keeps the
++    // two from fighting and matches the "start at full, turn down if needed" model.
++    // Gated on a prop so stock behavior is unchanged when it is absent.
++    private static final boolean sFydroidBootMaxVolume =
++            SystemProperties.getBoolean("ro.config.fydroid_boot_max_volume", false);
++
+     // If absolute volume is supported in AVRCP device
+     private volatile boolean mAvrcpAbsVolSupported = false;
+ 
+@@ -7888,6 +7900,18 @@ public class AudioService extends IAudioService.Stub
+                     }
+                     mIndexMap.put(device, getValidIndex(index));
+                 }
++
++                // FydeOS/fydroid: mirror the boot-to-max override from
++                // VolumeStreamState.readSettings(). With volume groups active this
++                // VolumeGroupState is the authority — applyAllVolumes() pushes the group's
++                // index back into the stream state — so without this the group re-applies the
++                // persisted per-device index and undoes the stream-level max. See
++                // sFydroidBootMaxVolume.
++                if (sFydroidBootMaxVolume) {
++                    for (int i = 0; i < mIndexMap.size(); i++) {
++                        mIndexMap.put(mIndexMap.keyAt(i), mIndexMax);
++                    }
++                }
+             }
+         }
+ 
+@@ -8170,6 +8194,20 @@ public class AudioService extends IAudioService.Stub
+                     mIndexMap.put(device, getValidIndex(10 * index,
+                             true /*hasModifyAudioSettings*/));
+                 }
++
++                // FydeOS/fydroid: force every stream to its maximum on each settings
++                // (re)load — boot and user switch — regardless of any lower value persisted
++                // from a previous session. Runtime setStreamVolume() still lets the user pull
++                // a stream down; that value persists for the session but is overwritten here
++                // at the next boot. For aliased streams this maxes the head; the alias copies
++                // it (rescaled, still max) in checkAllAliasStreamVolumes(). Safe-media-volume
++                // enforcement runs afterwards in readAudioSettings(), so wired output is still
++                // clamped to the hearing-safety cap.
++                if (sFydroidBootMaxVolume) {
++                    for (int i = 0; i < mIndexMap.size(); i++) {
++                        mIndexMap.put(mIndexMap.keyAt(i), mIndexMax);
++                    }
++                }
+             }
+         }
+ 
+-- 
+2.43.0
+

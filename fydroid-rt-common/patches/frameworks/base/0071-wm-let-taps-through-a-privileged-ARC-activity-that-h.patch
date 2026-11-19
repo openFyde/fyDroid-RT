@@ -1,0 +1,86 @@
+From a76f06c372321a4b62c33309a91e6865ba8cbd84 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 22 Sep 2026 17:25:30 +0800
+Subject: [PATCH 71/75] wm: let taps through a privileged ARC activity that has
+ no touchable window
+
+The ARC IME placeholder is a 1x1 FLAG_NOT_TOUCHABLE window raised whenever
+Chrome OS activates a non-ARC window, and its touch-opaque input sink covered
+the whole display, so the window underneath (PackageInstaller's
+Install/Cancel) took no taps.
+
+Signed-by: fyDroidCreator (DC)
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I5b881f760c9ab5c27ccea290357279f94d172e30
+---
+ .../server/wm/ActivityRecordInputSink.java    | 39 ++++++++++++++++++-
+ 1 file changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecordInputSink.java b/services/core/java/com/android/server/wm/ActivityRecordInputSink.java
+index 5d038dcab73a..1a247dfeecf5 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecordInputSink.java
++++ b/services/core/java/com/android/server/wm/ActivityRecordInputSink.java
+@@ -18,6 +18,8 @@ package com.android.server.wm;
+ 
+ import android.app.compat.CompatChanges;
+ import android.compat.annotation.ChangeId;
++import android.content.pm.ApplicationInfo;
++import android.os.Build;
+ import android.os.InputConfig;
+ import android.view.InputWindowHandle;
+ import android.view.SurfaceControl;
+@@ -86,7 +88,8 @@ class ActivityRecordInputSink {
+         final boolean allowPassthrough = activityBelowInTask != null && (
+                 activityBelowInTask.mAllowedTouchUid == mActivityRecord.getUid()
+                         || activityBelowInTask.isUid(mActivityRecord.getUid()));
+-        if (allowPassthrough || !mIsCompatEnabled || mActivityRecord.isInTransition()) {
++        if (allowPassthrough || !mIsCompatEnabled || mActivityRecord.isInTransition()
++                || isArcTouchTransparent()) {
+             mInputWindowHandleWrapper.setInputConfigMasked(InputConfig.NOT_TOUCHABLE,
+                     InputConfig.NOT_TOUCHABLE);
+         } else {
+@@ -95,6 +98,40 @@ class ActivityRecordInputSink {
+         return mInputWindowHandleWrapper;
+     }
+ 
++    /**
++     * fydroid (ARC): a privileged activity that has no touchable window gets no touch sink.
++     *
++     * In the ARC container every task is its own Chrome OS window laid out at the display
++     * origin, and every input window carries an effectively unbounded touchable region — where
++     * a window really is on screen is Chrome's business, not WM's. The InputDispatcher
++     * therefore gives every touch to the topmost touchable window, whichever Chrome window the
++     * user actually aimed at, and a sink on the top task swallows all of them ("Not sending
++     * touch gesture to ... ActivityRecordInputSink ... because it is not responsive").
++     *
++     * This exists for the ARC IME placeholder (org.chromium.arc.applauncher/.PlaceholderActivity):
++     * a 1x1 FLAG_NOT_TOUCHABLE window that ArcWindowManagerService raises to park focus
++     * whenever Chrome OS activates a window that is not ARC's, and that
++     * ArcInputMethodManagerService raises so an Android IME can serve a Chrome text field. The
++     * compositor never shows a 1x1 task, so no touch that reaches its sink was ever meant for
++     * it — yet with the sink on top, every button in the window underneath went dead
++     * (PackageInstaller's Install/Cancel). Android 11 had no sinks.
++     *
++     * Kept narrow: only a privileged app is trusted not to use a touch-transparent activity to
++     * pass taps through to another app, and only an activity none of whose windows can take a
++     * touch qualifies.
++     */
++    private boolean isArcTouchTransparent() {
++        if (!Build.IS_CONTAINER) {
++            return false;
++        }
++        final ApplicationInfo appInfo = mActivityRecord.info.applicationInfo;
++        if (appInfo == null || !appInfo.isPrivilegedApp()) {
++            return false;
++        }
++        return mActivityRecord.getWindow(w ->
++                (w.mAttrs.flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0) == null;
++    }
++
+     private InputWindowHandle createInputWindowHandle() {
+         InputWindowHandle inputWindowHandle = new InputWindowHandle(null,
+                 mActivityRecord.getDisplayId());
+-- 
+2.43.0
+

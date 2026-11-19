@@ -1,0 +1,76 @@
+From a9824a4bcf10b86e169874f9eedf230bb0f1962c Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 16:46:37 +0800
+Subject: [PATCH 2/6] Switch audio/camera/cas HAL services to 64-bit for ARC
+ container
+
+ARC container system services run 64-bit. Native daemons default to
+compile_multilib "first" (64-bit primary) already; these legacy HALs
+explicitly pinned 32/prefer32, so flip them to 64:
+- audio service: the 13 soong_config default (run_64bit conditions_default)
+  prefer32 -> 64 (forces 64 regardless of the config var).
+- camera provider@2.4-service: 32 -> 64.
+- cas@1.2 default: prefer32 -> 64.
+
+The AOSP-11 patch's DescramblerImpl %llu -> PRIu64 fix is already present
+in AOSP-13 upstream, so that hunk is dropped.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I6e64013c9138a154566197cf00f2e5eee3963b6d
+---
+ audio/common/all-versions/default/service/Android.bp | 9 ++++-----
+ camera/provider/2.4/default/Android.bp               | 3 ++-
+ cas/1.2/default/Android.bp                           | 3 ++-
+ 3 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/audio/common/all-versions/default/service/Android.bp b/audio/common/all-versions/default/service/Android.bp
+index 9890be2954..7710b88de7 100644
+--- a/audio/common/all-versions/default/service/Android.bp
++++ b/audio/common/all-versions/default/service/Android.bp
+@@ -23,11 +23,10 @@ android_hardware_audio_config_default {
+     soong_config_variables: {
+         run_64bit: {
+             conditions_default: {
+-                // Prefer 32 bit as the binary must always be installed at the same
+-                // location for init to start it and the build system does not support
+-                // having two binaries installable to the same location even if they are
+-                // not installed in the same build.
+-                compile_multilib: "prefer32",
++                // fydroid-rt: force 64-bit. ARC container system services run
++                // 64-bit (the CRAS/vendor libs the audio HAL links are 64-bit),
++                // so default to 64 instead of the upstream prefer32.
++                compile_multilib: "64",
+             },
+             compile_multilib: "64",
+         },
+diff --git a/camera/provider/2.4/default/Android.bp b/camera/provider/2.4/default/Android.bp
+index bccd6cb536..8b0a26df8e 100644
+--- a/camera/provider/2.4/default/Android.bp
++++ b/camera/provider/2.4/default/Android.bp
+@@ -179,7 +179,8 @@ cc_defaults {
+ cc_binary {
+     name: "android.hardware.camera.provider@2.4-service",
+     defaults: ["camera_service_defaults"],
+-    compile_multilib: "32",
++    // fydroid-rt: 64-bit (ARC container system services run 64-bit).
++    compile_multilib: "64",
+     init_rc: ["android.hardware.camera.provider@2.4-service.rc"],
+ }
+ 
+diff --git a/cas/1.2/default/Android.bp b/cas/1.2/default/Android.bp
+index 38561fd3e7..ccadbb623c 100644
+--- a/cas/1.2/default/Android.bp
++++ b/cas/1.2/default/Android.bp
+@@ -21,7 +21,8 @@ cc_defaults {
+       "TypeConvert.cpp",
+     ],
+ 
+-    compile_multilib: "prefer32",
++    // fydroid-rt: 64-bit (ARC container system services run 64-bit).
++    compile_multilib: "64",
+ 
+     shared_libs: [
+       "android.hardware.cas@1.0",
+-- 
+2.43.0
+

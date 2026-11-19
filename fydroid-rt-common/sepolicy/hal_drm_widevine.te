@@ -1,0 +1,22 @@
+# fydroid Widevine DRM HAL (android.hardware.drm-service.widevine).
+#
+# Unlike a normal DRM HAL it holds no key material: it forwards every session,
+# key and decrypt operation to Chrome's library CDM over the ARC mojo bridge, so
+# on top of the standard hal_drm server rules it needs to be a client of
+# IArcBridgeService. See device/fydeos/docs/widevine-cdm-bridge-plan.md.
+type hal_drm_widevine, domain;
+type hal_drm_widevine_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(hal_drm_widevine)
+
+hal_server_domain(hal_drm_widevine, hal_drm)
+
+# Reaching arc_bridge (a HIDL service) to get the Mojo channel to Chrome.
+hwbinder_use(hal_drm_widevine)
+allow hal_drm_widevine hal_arcbridgeservice_hwservice:hwservice_manager find;
+binder_call(hal_drm_widevine, arc_bridge)
+
+# Mojo moves anything past the inline message limit — a protected media sample,
+# for one — through shared memory. T neverallows new domains to open
+# /dev/ashmem, so this relies on the memfd path that libcutils falls back to.
+allow hal_drm_widevine self:unix_stream_socket { create_stream_socket_perms };

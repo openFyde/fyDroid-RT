@@ -1,0 +1,31 @@
+From e3c4228fd066c68d0d8a3061ce3ecc8a75b51d62 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 17 Apr 2026 12:17:59 +0800
+Subject: [PATCH 3/6] Mark DocumentsUI as persistent for ARC++ container
+
+ArcFileSystemService$Receiver tries to start a background service on
+BOOT_COMPLETED. Without android:persistent="true", Android O+ background
+service restrictions block the startService() call. The proprietary ARC++
+build has this flag set, so we match it here.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ibe46a34525f56b7731932f95fa335b369b5cff1e
+---
+ AndroidManifest.xml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index e84e468e2..0aa1d6153 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -45,6 +45,7 @@
+         android:name=".DocumentsApplication"
+         android:label="@string/app_label"
+         android:icon="@drawable/app_icon"
++        android:persistent="true"
+         android:supportsRtl="true"
+         android:allowBackup="true"
+         android:backupAgent=".prefs.BackupAgent"
+-- 
+2.43.0
+

@@ -1,0 +1,22 @@
+# Typemaps for arc/video_common.mojom native types.
+#
+# VideoFramePlane: ensures ImportBufferForPicture() uses
+#   std::vector<arc::VideoFramePlane> (not InlinedStructPtr)
+# VideoPixelFormat: ensures Encode() uses arc::VideoPixelFormat
+#   (not arc::mojom::VideoPixelFormat)
+#
+# Both match the ABI expected by the proprietary libv4l2_codec2_mojo.so.
+
+mojom = "arc/video_common.mojom"
+public_headers = [
+  "arc/video_frame_plane.h",
+  "arc/video_pixel_format.h",
+]
+traits_headers = [
+  "arc/video_frame_plane_mojom_traits.h",
+  "arc/video_pixel_format_mojom_traits.h",
+]
+type_mappings = [
+  "arc.mojom.VideoFramePlane=arc::VideoFramePlane[copyable_pass_by_value]",
+  "arc.mojom.VideoPixelFormat=arc::VideoPixelFormat",
+]

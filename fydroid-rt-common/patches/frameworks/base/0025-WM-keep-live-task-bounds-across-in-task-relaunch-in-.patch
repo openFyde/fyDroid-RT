@@ -1,0 +1,106 @@
+From 163aee96a51ed85a10a936350084194745182531 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 18 May 2026 17:54:34 +0800
+Subject: [PATCH 25/75] WM: keep live task bounds across in-task relaunch in
+ container mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On fydroid-rt, when the user snaps Settings to half-screen and then
+clicks the Chrome maximize button, AOSP relaunches the resizable
+activity for the snap → fullscreen-equivalent bounds change. After the
+relaunch, opening any nested fragment (Settings → SubSettings) calls
+Task.addChild → ActivityRecord.onParentChanged →
+Task.updateOverrideConfigurationFromLaunchBounds → getLaunchBounds(),
+which used to return mLastNonFullscreenBounds. That field is
+intentionally frozen at the last *pre-fullscreen* freeform value
+(the strict-less-than guard in Task.onConfigurationChanged skips
+display-sized bounds), so getLaunchBounds was handing back the stale
+snap-half rect and AOSP shrank the live 2560×1504 task back to
+1238×1440. The SF buffer then renders at the small size while Chrome
+still shows the maximized frame, so the user sees a stretched window.
+
+Fix in two places:
+
+* Task.getLaunchBounds() — for freeform standard activities in
+  container builds, prefer the task's live bounds over
+  mLastNonFullscreenBounds when adding a child activity into an
+  existing task. The frozen snap rect is the wrong source of truth
+  here; the task's current bounds reflect what the user / Chrome
+  actually wants.
+
+* LaunchParamsPersister.saveTaskToLaunchParam — likewise persist
+  task.getBounds() rather than mLastNonFullscreenBounds, so a
+  cross-session restore picks up the actual last size (including a
+  maximized one) instead of the pre-maximize freeform value.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: Id696a784e2ce657400febc7d5136eeadc9d1db10
+---
+ .../server/wm/LaunchParamsPersister.java      | 20 ++++++++++++++++++-
+ .../core/java/com/android/server/wm/Task.java | 17 ++++++++++++++++
+ 2 files changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/LaunchParamsPersister.java b/services/core/java/com/android/server/wm/LaunchParamsPersister.java
+index b0f3fa28af15..77343d33633c 100644
+--- a/services/core/java/com/android/server/wm/LaunchParamsPersister.java
++++ b/services/core/java/com/android/server/wm/LaunchParamsPersister.java
+@@ -274,7 +274,25 @@ class LaunchParamsPersister {
+         changed |= params.mWindowingMode != wm;
+         params.mWindowingMode = wm;
+ 
+-        if (task.mLastNonFullscreenBounds != null) {
++        // fydroid-rt: persist the task's *current* bounds rather than the
++        // pre-fullscreen freeform snapshot. AOSP's stock behavior keeps
++        // mLastNonFullscreenBounds frozen at the last freeform value when
++        // the user maximizes (the strict-less-than guard in
++        // Task.onConfigurationChanged skips display-sized bounds), so a
++        // close-and-reopen of a maximized window would launch back at the
++        // pre-maximize size. More importantly, when AOSP relaunches a
++        // resizable activity on a snap→maximize resize, the relaunched
++        // instance reads back from this persister, picks up the stale
++        // snap-half bounds (e.g. 872×1440 on a 2560×1600 display) and the
++        // Settings buffer ends up stretched inside Chrome's maximized
++        // frame. Use task.getBounds() so the relaunched task starts at
++        // whatever size the user actually has the window at right now.
++        final Rect liveTaskBounds = task.getBounds();
++        if (android.os.Build.IS_CONTAINER && liveTaskBounds != null
++                && !liveTaskBounds.isEmpty()) {
++            changed |= !Objects.equals(params.mBounds, liveTaskBounds);
++            params.mBounds.set(liveTaskBounds);
++        } else if (task.mLastNonFullscreenBounds != null) {
+             changed |= !Objects.equals(params.mBounds, task.mLastNonFullscreenBounds);
+             params.mBounds.set(task.mLastNonFullscreenBounds);
+         } else {
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 9f96ae403bd2..e4d8aa50e5a8 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -2349,6 +2349,23 @@ class Task extends TaskFragment {
+         } else if (!getWindowConfiguration().persistTaskBounds()) {
+             return rootTask.getRequestedOverrideBounds();
+         }
++        // fydroid-rt: prefer the task's *live* bounds over mLastNonFullscreenBounds
++        // when launching a child activity into an existing task.
++        // mLastNonFullscreenBounds is intentionally frozen at the last
++        // pre-fullscreen freeform value (the guard in onConfigurationChanged
++        // skips display-sized bounds, so a snap→maximize transition leaves
++        // mLastNonFullscreenBounds holding the snap rect). When a new
++        // activity (e.g. Settings → SubSettings) is added to a task that
++        // is currently maximized via Chrome, getLaunchBounds() must NOT
++        // pull the task back to the stale snap rect, otherwise the SF
++        // buffer shrinks to that size while Chrome still displays the
++        // maximized frame, and the user sees a stretched window.
++        if (android.os.Build.IS_CONTAINER) {
++            final Rect liveBounds = getBounds();
++            if (liveBounds != null && !liveBounds.isEmpty()) {
++                return liveBounds;
++            }
++        }
+         return mLastNonFullscreenBounds;
+     }
+ 
+-- 
+2.43.0
+

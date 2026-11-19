@@ -1,0 +1,74 @@
+From 074272bfff9a8d7ff13123efa887778ec528e82a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 4 Aug 2026 14:10:09 +0800
+Subject: [PATCH 50/75] wm: don't clamp an ARC dialog task to the minimum
+ resizable size
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The PackageInstaller confirmation kept focus but every tap landed above
+the card — "focused, but the input offset is wrong".
+
+The install task asks for 576x368 (its card). adjustForMinimalTaskDimensions
+then grows the resolved bounds to the display's default minimum for a
+resizable task: mMinSizeOfResizeableTaskDp=320, which at the panel's 288dpi
+is 576px. So the task resolves to 576x576 while its requested bounds stay
+576x368, and the wrap-content dialog window — centre gravity — is laid out
+as frame=[0,104][576,471] inside the taller parent. The compositor places the
+card from the requested task footprint, so input sat exactly 104px off:
+
+  task 54 (PackageInstaller, broken)   task 49 (a normal app, fine)
+    mBounds      576x368                 mBounds      1600x1000
+    winConfig    576x576   <-- grown     winConfig    1600x1000
+    frame  [0,104][576,471]              frame  [0,0][1600,1000]
+
+Patch 0043 exempts standalone dialog tasks by forcing them FULLSCREEN, which
+returns before the clamp. It explicitly does not cover the translucent
+multi-activity case (PackageInstaller's root InstallStaging is not floating),
+which stays freeform — so that case reaches the clamp and is the one that
+breaks.
+
+The minimum exists so a user cannot resize a task too small to manipulate. An
+ARC dialog is a modal sized to its card and is not user-resizable, so the
+default does not apply. Skip only the default fill-in; a dialog activity that
+declares its own minWidth/minHeight still gets them.
+
+Verified by the user on device: the install confirmation is now tappable.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Change-Id: I3a533b1b96aa94dd0a40906a1cf20fefff2bdb04
+---
+ services/core/java/com/android/server/wm/Task.java | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index bbcb7d81acbc..6a263001c570 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -2094,10 +2094,21 @@ class Task extends TaskFragment {
+             @NonNull Configuration parentConfig) {
+         int minWidth = mMinWidth;
+         int minHeight = mMinHeight;
++        // fydroid-rt: An ARC dialog task is a centered modal, sized to its card and
++        // not resizable by the user, so the "too small to manipulate" default below
++        // does not apply — and enforcing it breaks input. At 288dpi the default is
++        // 320dp = 576px, so PackageInstaller's requested 576x368 task resolves to
++        // 576x576. Its window is wrap-content with centre gravity, so WM then lays
++        // it out as frame=[0,104][576,471] inside that taller parent, while the
++        // compositor places the card from the requested task footprint — every tap
++        // lands 104px off the card (the task keeps focus, which is why this reads as
++        // "focused but the input offset is wrong"). A dialog whose activity declares
++        // its own minWidth/minHeight still gets them; only the default is skipped.
++        final boolean isContainerDialog = android.os.Build.IS_CONTAINER && isDialogTaskNow();
+         // If the task has no requested minimal size, we'd like to enforce a minimal size
+         // so that the user can not render the task fragment too small to manipulate. We don't need
+         // to do this for the root pinned task as the bounds are controlled by the system.
+-        if (!inPinnedWindowingMode()) {
++        if (!inPinnedWindowingMode() && !isContainerDialog) {
+             // Use Display specific min sizes when there is one associated with this Task.
+             final int defaultMinSizeDp = mDisplayContent == null
+                     ? DEFAULT_MIN_TASK_SIZE_DP : mDisplayContent.mMinSizeOfResizeableTaskDp;
+-- 
+2.43.0
+

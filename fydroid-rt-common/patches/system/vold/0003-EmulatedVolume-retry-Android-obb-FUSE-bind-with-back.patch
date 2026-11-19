@@ -1,0 +1,63 @@
+From b47858cfc8059fd1fffd3d4d3ffaefb34db51c0e Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 11 May 2026 19:21:29 +0800
+Subject: [PATCH 3/4] EmulatedVolume: retry /Android/obb FUSE bind with backoff
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On apple-silicon hosts running VMware Fusion (fydroid-rt_apple), vold's
+bind of /mnt/runtime/default/emulated/0/Android/obb into the FUSE
+namespace at /mnt/user/0/emulated/0/Android/obb races the FUSE daemon.
+The /Android/data bind 1 ms earlier succeeds, but the obb bind returns
+ENOENT — the FUSE namespace exists, /Android/data is populated, but
+/Android/obb hasn't been derived yet. Vold then rolls back the entire
+FUSE mount, leaving /storage/emulated/0/ empty for every app: Files
+can't stage an APK to install, MediaProvider can't find
+external_primary, and apps logging to /sdcard see EACCES.
+
+The same vold/esdfs path succeeds on slower hosts (RK3588) because the
+1+ second of FUSE-mount setup gives the daemon enough wall-clock to
+expose obb before the bind.
+
+Retry the obb bind up to 6 times with 500 ms backoff (~3 s total). The
+steady-state code path on hosts where the first attempt already
+succeeds is unchanged — no extra wall time, no extra syscalls.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I7b3382e46ce5fae73eb6be1d99943be6e32cacd4
+---
+ model/EmulatedVolume.cpp | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/model/EmulatedVolume.cpp b/model/EmulatedVolume.cpp
+index d4641390..8d3c3d69 100644
+--- a/model/EmulatedVolume.cpp
++++ b/model/EmulatedVolume.cpp
+@@ -131,7 +131,22 @@ status_t EmulatedVolume::mountFuseBindMounts() {
+     std::string androidObbSource = StringPrintf("%s/obb", androidSource.c_str());
+     std::string androidObbTarget(
+             StringPrintf("/mnt/user/%d/%s/%d/Android/obb", userId, label.c_str(), userId));
+-    status = doFuseBindMount(androidObbSource, androidObbTarget, pathsToUnmount);
++    // ARC++/fydroid-rt: on faster hosts (apple-silicon under VMware Fusion)
++    // vold's bind of /Android/obb can race the FUSE daemon — at this exact
++    // instant the FUSE namespace has /Android/data populated (the bind just
++    // succeeded) but /Android/obb has not yet been derived, and the bind
++    // returns ENOENT. The same code/path succeeds on slower hosts (RK3588)
++    // because the 1+ second of FUSE-mount setup gives the daemon enough
++    // wall-clock to expose obb. Retry the bind with backoff up to ~3 s
++    // before giving up — the steady-state behavior is unchanged on hosts
++    // where the first attempt already succeeds.
++    for (int attempt = 0; attempt < 6; ++attempt) {
++        status = doFuseBindMount(androidObbSource, androidObbTarget, pathsToUnmount);
++        if (status == OK) break;
++        LOG(WARNING) << "OBB bind attempt " << (attempt + 1)
++                     << " failed; retrying after 500ms";
++        usleep(500 * 1000);
++    }
+     if (status != OK) {
+         return status;
+     }
+-- 
+2.43.0
+

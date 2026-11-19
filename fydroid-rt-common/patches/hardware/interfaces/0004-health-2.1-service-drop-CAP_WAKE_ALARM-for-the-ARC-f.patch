@@ -1,0 +1,45 @@
+From fd26f47277bf498a50e0d2a6e08eb59c72dde07c Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 9 Jun 2026 15:37:13 +0800
+Subject: [PATCH 4/6] health@2.1-service: drop CAP_WAKE_ALARM for the ARC
+ (fydroid) container
+
+CAP_WAKE_ALARM (35) is not in the fydroid ARC container's capability bounding
+set, so init refuses to start a service that requests it -> the health HAL
+never comes up -> BatteryService.onStart throws (IHealth/default unavailable)
+-> system_server crash-loops and boot never completes.
+
+libhealthloop's WakeAlarmInit() already degrades gracefully when
+timerfd_create(CLOCK_BOOTTIME_ALARM) fails (it skips alarm-based wakeups; the
+main loop still runs periodic chores), and battery refreshes are driven by the
+ARC power bridge (PowerInstance.powerSupplyInfoChanged ->
+batteryproperties.scheduleUpdate -> IHealth.update), so the periodic wakealarm
+is unnecessary here. Keep BLOCK_SUSPEND (it is in the bounding set).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I8b379d808e0de52480502adf6f96e761355c0637
+---
+ .../2.1/default/android.hardware.health@2.1-service.rc   | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/health/2.1/default/android.hardware.health@2.1-service.rc b/health/2.1/default/android.hardware.health@2.1-service.rc
+index 8728257862..29f2fe1b0f 100644
+--- a/health/2.1/default/android.hardware.health@2.1-service.rc
++++ b/health/2.1/default/android.hardware.health@2.1-service.rc
+@@ -2,5 +2,12 @@ service health-hal-2-1 /vendor/bin/hw/android.hardware.health@2.1-service
+     class hal charger
+     user system
+     group system
+-    capabilities WAKE_ALARM BLOCK_SUSPEND
++    # fydroid: CAP_WAKE_ALARM (35) is not in the ARC container's capability
++    # bounding set, so init would refuse to start the service if it requested it.
++    # libhealthloop's WakeAlarmInit() degrades gracefully when
++    # timerfd_create(CLOCK_BOOTTIME_ALARM) fails (it just skips alarm-based
++    # wakeups), and the host drives battery refreshes via the ARC power bridge
++    # (PowerInstance.powerSupplyInfoChanged -> batteryproperties.scheduleUpdate ->
++    # IHealth.update), so the periodic wakealarm is unnecessary here.
++    capabilities BLOCK_SUSPEND
+     file /dev/kmsg w
+-- 
+2.43.0
+

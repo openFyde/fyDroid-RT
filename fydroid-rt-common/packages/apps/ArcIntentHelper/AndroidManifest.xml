@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Android-side browser: links, web searches, mailto:/geo: links and WebAPK
+  launches from Android apps open in Chrome.
+
+  The package name is not free to choose. Chrome treats a handler from
+  "org.chromium.arc.intent_helper" as Chrome itself (kArcIntentHelperPackageName):
+  it is dropped from the "open with" app lists and makes Chrome the candidate in
+  the external-protocol dialog. Under any other name Chrome would offer to open
+  every web page in this Android app. WebAPK shells also only accept this
+  package as a host browser.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    coreApp="true"
+    package="org.chromium.arc.intent_helper">
+
+    <!--
+      ArcIntentHelperService (system_server) only accepts requests from holders
+      of this permission, so an app cannot open Chrome tabs from the background by
+      broadcasting directly; it has to start this activity like any other link.
+    -->
+    <permission
+        android:name="org.chromium.arc.intent_helper.permission.OPEN_IN_CHROME"
+        android:protectionLevel="signature"/>
+    <uses-permission android:name="org.chromium.arc.intent_helper.permission.OPEN_IN_CHROME"/>
+
+    <application
+        android:label="@string/app_name"
+        android:hasCode="true">
+
+        <!-- ArcViewDownloadsHandler also forwards VIEW_DOWNLOADS here by component. -->
+        <activity
+            android:name=".ArcIntentHelperActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <!--
+              No host, so this is also the default browser (browser role). Newer
+              WebAPKs launch their host with VIEW + start URL and WebAPK extras.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="http"/>
+                <data android:scheme="https"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="mailto"/>
+                <data android:scheme="geo"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SENDTO"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:scheme="mailto"/>
+            </intent-filter>
+            <!-- Shares with Files and other apps; label it so the chooser says what it does. -->
+            <intent-filter android:label="@string/send_email">
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="message/rfc822"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.WEB_SEARCH"/>
+                <action android:name="android.search.action.GLOBAL_SEARCH"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <!-- Scanning with the host's scanners, in the ChromeOS Scan app. -->
+            <intent-filter>
+                <action android:name="org.chromium.arc.intent_helper.action.SCAN"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+            <!-- WebAPKs whose manifest names this package as host browser. -->
+            <intent-filter>
+                <action android:name="com.google.android.apps.chrome.webapps.WebappManager.ACTION_START_WEBAPP"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

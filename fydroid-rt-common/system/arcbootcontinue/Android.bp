@@ -1,0 +1,23 @@
+cc_binary {
+    name: "fydroid_arcbootcontinue",
+    // Output binary as "arcbootcontinue" for compatibility with CrOS arc-setup
+    // which invokes /system/bin/arcbootcontinue via nsenter.
+    stem: "arcbootcontinue",
+
+    srcs: [
+        "main.cpp",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "liblog",
+        "libselinux",
+    ],
+
+    // Use bootstrap linker — arcbootcontinue is called via nsenter from CrOS
+    // arc-setup, potentially before APEX linker is available.
+    bootstrap: true,
+
+    // Install to /system/bin
+    vendor: false,
+}

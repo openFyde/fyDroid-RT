@@ -1,0 +1,464 @@
+From f261694a26b4480880600d4df883414dbe141977 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Sun, 29 Mar 2026 13:52:21 +0800
+Subject: [PATCH 02/75] Apply ARC++ services.jar changes for fydroid-rt
+ container runtime
+
+Adapt the Android system server for running inside a Chrome OS container.
+
+Changes:
+- SystemServer: ARC service class constants, PowerManager replacement for
+  cheets hardware, WiFi gating, ARC fuse/obb mounter startup, and
+  mPowerManagerService.systemReady() null guard
+- ActivityManagerService: ANR pre-notification with CPU throttle awareness
+  (isARCThrottled, maybeHandleTimeoutMessage with retry sentinel 43797)
+- ActiveServices: Pass timeout duration in message args for ANR retry
+- BroadcastQueue: Broadcast ANR tolerance with configurable retry count
+  when CPU is throttled (up to 6 retries, or 3 with pre-notification)
+- ProcessList: WebView usage metrics via arc_metrics_service, timeout arg
+  on PROC_START_TIMEOUT_MSG
+- WebViewUpdateServiceImpl: Lazy WebView zygote init support
+- BackgroundDexOptService: Signal dexopt completion in dev mode
+- WindowState: ARC notification sizing for type 2017 windows
+- UsbService: Container USB support (always create UsbHostManager, cheets
+  guard for UsbDeviceManager, null guard in setCurrentFunctions)
+
+New files:
+- IArcMetricsService.aidl: 21-method AIDL interface for ARC metrics
+- ArcAnrService.java: Abstract stub for ANR pre-notification callbacks
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I9940e2de25773e3bb486e310ee8a07b0830a4980
+---
+ services/core/Android.bp                      |  1 +
+ .../com/android/server/am/ActiveServices.java |  9 ++--
+ .../server/am/ActivityManagerService.java     | 48 +++++++++++++++++++
+ .../com/android/server/am/BroadcastQueue.java | 43 +++++++++++++++++
+ .../com/android/server/am/ProcessList.java    | 25 ++++++++--
+ .../arc/metrics/IArcMetricsService.aidl       | 41 ++++++++++++++++
+ .../android/server/power/ArcAnrService.java   | 36 ++++++++++++++
+ .../com/android/server/usb/UsbService.java    | 16 ++++---
+ 8 files changed, 206 insertions(+), 13 deletions(-)
+ create mode 100644 services/core/java/com/android/server/arc/metrics/IArcMetricsService.aidl
+ create mode 100644 services/core/java/com/android/server/power/ArcAnrService.java
+
+diff --git a/services/core/Android.bp b/services/core/Android.bp
+index 89c8ca567dd9..05458cba4df6 100644
+--- a/services/core/Android.bp
++++ b/services/core/Android.bp
+@@ -120,6 +120,7 @@ java_library_static {
+         "java/com/android/server/am/EventLogTags.logtags",
+         "java/com/android/server/wm/EventLogTags.logtags",
+         "java/com/android/server/policy/EventLogTags.logtags",
++        "java/com/android/server/arc/metrics/IArcMetricsService.aidl",
+     ],
+ 
+     libs: [
+diff --git a/services/core/java/com/android/server/am/ActiveServices.java b/services/core/java/com/android/server/am/ActiveServices.java
+index c36e0700c723..1eaf57c2f854 100644
+--- a/services/core/java/com/android/server/am/ActiveServices.java
++++ b/services/core/java/com/android/server/am/ActiveServices.java
+@@ -5772,7 +5772,8 @@ public final class ActiveServices {
+                 anrMessage = "executing service " + timeout.shortInstanceName;
+             } else {
+                 Message msg = mAm.mHandler.obtainMessage(
+-                        ActivityManagerService.SERVICE_TIMEOUT_MSG);
++                        ActivityManagerService.SERVICE_TIMEOUT_MSG, 0,
++                        proc.execServicesFg ? SERVICE_TIMEOUT : SERVICE_BACKGROUND_TIMEOUT);
+                 msg.obj = proc;
+                 mAm.mHandler.sendMessageAtTime(msg, psr.shouldExecServicesFg()
+                         ? (nextTime+SERVICE_TIMEOUT) : (nextTime + SERVICE_BACKGROUND_TIMEOUT));
+@@ -5853,7 +5854,8 @@ public final class ActiveServices {
+             return;
+         }
+         Message msg = mAm.mHandler.obtainMessage(
+-                ActivityManagerService.SERVICE_TIMEOUT_MSG);
++                ActivityManagerService.SERVICE_TIMEOUT_MSG, 0,
++                proc.execServicesFg ? SERVICE_TIMEOUT : SERVICE_BACKGROUND_TIMEOUT);
+         msg.obj = proc;
+         mAm.mHandler.sendMessageDelayed(msg, proc.mServices.shouldExecServicesFg()
+                 ? SERVICE_TIMEOUT : SERVICE_BACKGROUND_TIMEOUT);
+@@ -5864,7 +5866,8 @@ public final class ActiveServices {
+             return;
+         }
+         Message msg = mAm.mHandler.obtainMessage(
+-                ActivityManagerService.SERVICE_FOREGROUND_TIMEOUT_MSG);
++                ActivityManagerService.SERVICE_FOREGROUND_TIMEOUT_MSG, 0,
++                SERVICE_START_FOREGROUND_TIMEOUT);
+         msg.obj = r;
+         r.fgWaiting = true;
+         mAm.mHandler.sendMessageDelayed(msg, mAm.mConstants.mServiceStartForegroundTimeoutMs);
+diff --git a/services/core/java/com/android/server/am/ActivityManagerService.java b/services/core/java/com/android/server/am/ActivityManagerService.java
+index ba0aaa1b7d8c..1dd5a23e4791 100644
+--- a/services/core/java/com/android/server/am/ActivityManagerService.java
++++ b/services/core/java/com/android/server/am/ActivityManagerService.java
+@@ -384,6 +384,7 @@ import com.android.server.LocalServices;
+ import com.android.server.LockGuard;
+ import com.android.server.NetworkManagementInternal;
+ import com.android.server.PackageWatchdog;
++import com.android.server.power.ArcAnrService;
+ import com.android.server.ServiceThread;
+ import com.android.server.SystemConfig;
+ import com.android.server.SystemService;
+@@ -1677,6 +1678,52 @@ public class ActivityManagerService extends IActivityManager.Stub
+         }
+     }
+ 
++    private static boolean isARCThrottled() {
++        return SystemProperties.getInt("dev.arc.cpurestriction", 0) == 1;
++    }
++
++    /* package */ boolean maybeHandleTimeoutMessage(Message msg) {
++        int type;
++        switch (msg.what) {
++            case SERVICE_TIMEOUT_MSG:
++                type = 2;
++                break;
++            case PROC_START_TIMEOUT_MSG:
++                type = 6;
++                break;
++            case CONTENT_PROVIDER_PUBLISH_TIMEOUT_MSG:
++                type = 4;
++                break;
++            case SERVICE_FOREGROUND_TIMEOUT_MSG:
++                type = 2;
++                break;
++            default:
++                return false;
++        }
++        if (msg.arg1 != 0) {
++            if (msg.arg1 == 43797) {
++                ((ArcAnrService) LocalServices.getService(ArcAnrService.class))
++                        .onAnrRecoveryFailed(type);
++                return false;
++            }
++            Slog.wtf(TAG, "Unexpected arguments for timeout message: " + msg);
++            return false;
++        }
++        if (msg.arg2 == 0) {
++            Slog.wtf(TAG, "Timeout was not set in the message: " + msg);
++            return false;
++        }
++        if (!isARCThrottled()) {
++            return false;
++        }
++        ((ArcAnrService) LocalServices.getService(ArcAnrService.class)).onPreAnr(type);
++        Message msgNew = msg.getTarget().obtainMessage();
++        msgNew.copyFrom(msg);
++        msgNew.arg1 = 43797;
++        msgNew.getTarget().sendMessageDelayed(msgNew, msgNew.arg2);
++        return true;
++    }
++
+     final class MainHandler extends Handler {
+         public MainHandler(Looper looper) {
+             super(looper, null, true);
+@@ -1684,6 +1731,7 @@ public class ActivityManagerService extends IActivityManager.Stub
+ 
+         @Override
+         public void handleMessage(Message msg) {
++            if (maybeHandleTimeoutMessage(msg)) return;
+             switch (msg.what) {
+             case GC_BACKGROUND_PROCESSES_MSG: {
+                 synchronized (ActivityManagerService.this) {
+diff --git a/services/core/java/com/android/server/am/BroadcastQueue.java b/services/core/java/com/android/server/am/BroadcastQueue.java
+index 621e3dbde360..0ddf23adad61 100644
+--- a/services/core/java/com/android/server/am/BroadcastQueue.java
++++ b/services/core/java/com/android/server/am/BroadcastQueue.java
+@@ -74,6 +74,7 @@ import android.os.Process;
+ import android.os.RemoteException;
+ import android.os.SystemClock;
+ import android.os.Trace;
++import android.os.SystemProperties;
+ import android.os.UserHandle;
+ import android.os.UserManager;
+ import android.permission.IPermissionManager;
+@@ -88,6 +89,7 @@ import com.android.internal.util.ArrayUtils;
+ import com.android.internal.util.FrameworkStatsLog;
+ import com.android.server.LocalServices;
+ import com.android.server.pm.UserManagerInternal;
++import com.android.server.power.ArcAnrService;
+ 
+ import java.io.FileDescriptor;
+ import java.io.PrintWriter;
+@@ -108,6 +110,9 @@ public final class BroadcastQueue {
+     private static final String TAG_MU = TAG + POSTFIX_MU;
+     private static final String TAG_BROADCAST = TAG + POSTFIX_BROADCAST;
+ 
++    private static final int MAX_ARC_ATTEMPTS_ON_THROTTLING = 6;
++    private static final int MAX_ARC_ATTEMPTS_ON_THROTTLING_USE_PRENOTIFY = 3;
++
+     static final int MAX_BROADCAST_HISTORY = ActivityManager.isLowRamDeviceStatic() ? 10 : 50;
+     static final int MAX_BROADCAST_SUMMARY_HISTORY
+             = ActivityManager.isLowRamDeviceStatic() ? 25 : 300;
+@@ -181,6 +186,7 @@ public final class BroadcastQueue {
+      * Set when we current have a BROADCAST_INTENT_MSG in flight.
+      */
+     boolean mBroadcastsScheduled = false;
++    int mAttemptsOnARCThrottled;
+ 
+     /**
+      * True if we have a pending unexpired BROADCAST_TIMEOUT_MSG posted to our handler.
+@@ -2093,6 +2099,7 @@ public final class BroadcastQueue {
+             Message msg = mHandler.obtainMessage(BROADCAST_TIMEOUT_MSG, this);
+             mHandler.sendMessageAtTime(msg, timeoutTime);
+             mPendingBroadcastTimeoutMessage = true;
++            mAttemptsOnARCThrottled = 1;
+         }
+     }
+ 
+@@ -2103,6 +2110,21 @@ public final class BroadcastQueue {
+         }
+     }
+ 
++    private static boolean isARCThrottled() {
++        return SystemProperties.getInt("dev.arc.cpurestriction", 0) == 1;
++    }
++
++    private static boolean shouldArcPreNotifyANR() {
++        return SystemProperties.getInt("ro.boot.arc.broadcast_anr_prenotify", 0) == 1;
++    }
++
++    private static int getAttemptsOnARCThrottled() {
++        if (!shouldArcPreNotifyANR()) {
++            return MAX_ARC_ATTEMPTS_ON_THROTTLING;
++        }
++        return MAX_ARC_ATTEMPTS_ON_THROTTLING_USE_PRENOTIFY;
++    }
++
+     final void broadcastTimeoutLocked(boolean fromMsg) {
+         if (fromMsg) {
+             mPendingBroadcastTimeoutMessage = false;
+@@ -2143,6 +2165,27 @@ public final class BroadcastQueue {
+                 setBroadcastTimeoutLocked(timeoutTime);
+                 return;
+             }
++            if (isARCThrottled()) {
++                if (mAttemptsOnARCThrottled < getAttemptsOnARCThrottled()) {
++                    int newAttemptsOnARCThrottled = mAttemptsOnARCThrottled + 1;
++                    long timeoutTime2 = r.receiverTime
++                            + (mConstants.TIMEOUT * ((long) newAttemptsOnARCThrottled));
++                    Slog.w(TAG_BROADCAST, "Number of ARC attempts on throttling "
++                            + mAttemptsOnARCThrottled + " timeout [" + mQueueName + "] @ " + now
++                            + ": resetting BROADCAST_TIMEOUT_MSG for " + timeoutTime2);
++                    setBroadcastTimeoutLocked(timeoutTime2);
++                    mAttemptsOnARCThrottled = newAttemptsOnARCThrottled;
++                    if (shouldArcPreNotifyANR()) {
++                        ((ArcAnrService) LocalServices.getService(ArcAnrService.class))
++                                .onPreAnr(3);
++                        Slog.w(TAG_BROADCAST, "Notified pre-ANR");
++                        return;
++                    }
++                    return;
++                }
++                Slog.e(TAG_BROADCAST,
++                        "No more ARC attempts on throttling [" + mQueueName + "]");
++            }
+         }
+ 
+         if (r.state == BroadcastRecord.WAITING_SERVICES) {
+diff --git a/services/core/java/com/android/server/am/ProcessList.java b/services/core/java/com/android/server/am/ProcessList.java
+index 8c9373b98c58..c782148147b2 100644
+--- a/services/core/java/com/android/server/am/ProcessList.java
++++ b/services/core/java/com/android/server/am/ProcessList.java
+@@ -97,6 +97,7 @@ import android.os.PowerManager;
+ import android.os.Process;
+ import android.os.RemoteCallbackList;
+ import android.os.RemoteException;
++import android.os.ServiceManager;
+ import android.os.StrictMode;
+ import android.os.SystemClock;
+ import android.os.SystemProperties;
+@@ -128,6 +129,7 @@ import com.android.internal.util.FrameworkStatsLog;
+ import com.android.internal.util.MemInfoReader;
+ import com.android.server.AppStateTracker;
+ import com.android.server.LocalServices;
++import com.android.server.arc.metrics.IArcMetricsService;
+ import com.android.server.ServiceThread;
+ import com.android.server.SystemConfig;
+ import com.android.server.Watchdog;
+@@ -487,6 +489,9 @@ public final class ProcessList {
+     @GuardedBy("mAppExitInfoTracker")
+     final AppExitInfoTracker mAppExitInfoTracker = new AppExitInfoTracker();
+ 
++    private IArcMetricsService mArcMetricsService;
++    private static volatile boolean sWebViewUsageReported = false;
++
+     /**
+      * The processes that are forked off an application zygote.
+      */
+@@ -854,6 +859,11 @@ public final class ProcessList {
+     }
+ 
+     void onSystemReady() {
++        mArcMetricsService = IArcMetricsService.Stub.asInterface(
++                ServiceManager.getService("arc_metrics_service"));
++        if (mArcMetricsService == null) {
++            Slog.wtf(TAG, "ArcMetricsService is not available for reporting WebView usage");
++        }
+         mAppExitInfoTracker.onSystemReady();
+     }
+ 
+@@ -2295,6 +2305,14 @@ public final class ProcessList {
+             final Process.ProcessStartResult startResult;
+             boolean regularZygote = false;
+             if (hostingRecord.usesWebviewZygote()) {
++                if (!sWebViewUsageReported && mArcMetricsService != null) {
++                    sWebViewUsageReported = true;
++                    try {
++                        mArcMetricsService.reportWebViewProcessStarted();
++                    } catch (RemoteException e) {
++                        Slog.wtf(TAG, "Failed to log WebView usage for ARC");
++                    }
++                }
+                 startResult = startWebView(entryPoint,
+                         app.processName, uid, uid, gids, runtimeFlags, mountExternal,
+                         app.info.targetSdkVersion, seInfo, requiredAbi, instructionSet,
+@@ -2638,10 +2656,11 @@ public final class ProcessList {
+         mService.addPidLocked(app);
+         synchronized (mService.mPidsSelfLocked) {
+             if (!procAttached) {
+-                Message msg = mService.mHandler.obtainMessage(PROC_START_TIMEOUT_MSG);
++                int timeout = usingWrapper
++                        ? PROC_START_TIMEOUT_WITH_WRAPPER : PROC_START_TIMEOUT;
++                Message msg = mService.mHandler.obtainMessage(PROC_START_TIMEOUT_MSG, 0, timeout);
+                 msg.obj = app;
+-                mService.mHandler.sendMessageDelayed(msg, usingWrapper
+-                        ? PROC_START_TIMEOUT_WITH_WRAPPER : PROC_START_TIMEOUT);
++                mService.mHandler.sendMessageDelayed(msg, timeout);
+             }
+         }
+         checkSlow(app.getStartTime(), "startProcess: done updating pids map");
+diff --git a/services/core/java/com/android/server/arc/metrics/IArcMetricsService.aidl b/services/core/java/com/android/server/arc/metrics/IArcMetricsService.aidl
+new file mode 100644
+index 000000000000..0fb49dc963e0
+--- /dev/null
++++ b/services/core/java/com/android/server/arc/metrics/IArcMetricsService.aidl
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (C) 2021 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.server.arc.metrics;
++
++interface IArcMetricsService {
++    void reportCompanionLibApiUsage(int apiId);
++    void reportAppKill(int type, int count);
++    void reportMetricPriAbiMigEvent(int eventId);
++    void reportMetricPriAbiMigFailedTrials(int attempts);
++    void reportMetricPriAbiMigDowngradeDelay(long delayInMilliSeconds);
++    void reportMetricPriAbiMigBootTime();
++    void reportMetricSystemHealthUpgrade(long durationMs, boolean packagesDeleted);
++    void reportLowLatencyStylusLibApiUsage(int apiId);
++    void reportLowLatencyStylusLibPredictionTarget(int type, int target);
++    void reportDnsQueryResult(int query, boolean success);
++    void reportMainAccountHashMigrationMetrics(int status);
++    void reportArcNetworkEvent(int event);
++    void reportArcNetworkError(int error);
++    void reportAppPrimaryAbi(int abi);
++    void reportProvisioningPreSignIn();
++    void reportWaylandTimingLateEvent(int event, long durationUs);
++    void reportWebViewProcessStarted();
++    void reportVpnServiceBuilderCompatApiUsage(int apiId);
++    void reportQosSocketPercentage(int perc);
++    void reportNewQosSocketCount(int count);
++    void reportApkCacheHit(boolean hit);
++}
+diff --git a/services/core/java/com/android/server/power/ArcAnrService.java b/services/core/java/com/android/server/power/ArcAnrService.java
+new file mode 100644
+index 000000000000..fc59f352aedf
+--- /dev/null
++++ b/services/core/java/com/android/server/power/ArcAnrService.java
+@@ -0,0 +1,36 @@
++/*
++ * Copyright (C) 2021 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.server.power;
++
++/**
++ * Stub for ARC++ ANR pre-notification service.
++ * The real implementation is provided by ArcPowerManagerService and registered
++ * via LocalServices. This stub exists only for compilation.
++ */
++public abstract class ArcAnrService {
++    /**
++     * Called before an ANR is triggered when CPU is throttled.
++     * @param type ANR type: 2=service/fg_service, 3=broadcast, 4=content_provider, 6=proc_start
++     */
++    public abstract void onPreAnr(int type);
++
++    /**
++     * Called when ANR recovery failed (after the retry with arg1=43797).
++     * @param type ANR type (same values as onPreAnr)
++     */
++    public abstract void onAnrRecoveryFailed(int type);
++}
+diff --git a/services/usb/java/com/android/server/usb/UsbService.java b/services/usb/java/com/android/server/usb/UsbService.java
+index 86f877fcd531..eb896f2a8824 100644
+--- a/services/usb/java/com/android/server/usb/UsbService.java
++++ b/services/usb/java/com/android/server/usb/UsbService.java
+@@ -44,6 +44,7 @@ import android.hardware.usb.UsbManager;
+ import android.hardware.usb.UsbPort;
+ import android.hardware.usb.UsbPortStatus;
+ import android.os.Binder;
++import android.os.Build;
+ import android.os.Bundle;
+ import android.os.ParcelFileDescriptor;
+ import android.os.RemoteException;
+@@ -175,11 +176,8 @@ public class UsbService extends IUsbManager.Stub {
+         mPermissionManager = new UsbPermissionManager(context, this);
+         mAlsaManager = new UsbAlsaManager(context);
+ 
+-        final PackageManager pm = mContext.getPackageManager();
+-        if (pm.hasSystemFeature(PackageManager.FEATURE_USB_HOST)) {
+-            mHostManager = new UsbHostManager(context, mAlsaManager, mPermissionManager);
+-        }
+-        if (new File("/sys/class/android_usb").exists()) {
++        mHostManager = new UsbHostManager(context, mAlsaManager, mPermissionManager);
++        if (new File("/sys/class/android_usb").exists() || Build.HARDWARE.equals("cheets")) {
+             mDeviceManager = new UsbDeviceManager(context, mAlsaManager, mSettingsManager,
+                     mPermissionManager);
+         }
+@@ -608,8 +606,12 @@ public class UsbService extends IUsbManager.Stub {
+     public void setCurrentFunctions(long functions) {
+         mContext.enforceCallingOrSelfPermission(android.Manifest.permission.MANAGE_USB, null);
+         Preconditions.checkArgument(UsbManager.areSettableFunctions(functions));
+-        Preconditions.checkState(mDeviceManager != null);
+-        mDeviceManager.setCurrentFunctions(functions);
++        if (Build.HARDWARE.equals("cheets") && mDeviceManager == null) {
++            Slog.wtf(TAG, "[Container R] UsbDeviceManager is null. Skipping setCurrentFunctions.");
++        } else {
++            Preconditions.checkState(mDeviceManager != null);
++            mDeviceManager.setCurrentFunctions(functions);
++        }
+     }
+ 
+     @Override
+-- 
+2.43.0
+

@@ -1,0 +1,29 @@
+// Checks whether gralloc (minigbm) buffers survive being shared with the GPU
+// that Android's EGL picked. Written for the dual-GPU openfyde_iris bring-up,
+// where minigbm allocates on i915 but EGL may render on nouveau (zink/NVK).
+//
+// Deliberately NOT in PRODUCT_PACKAGES — it is a developer tool, not part of the
+// image. Build and push it explicitly:
+//
+//   m fydroid_gpu_import_probe
+//   push $OUT/system/bin/fydroid_gpu_import_probe to /data/local/tmp in the container
+//
+// See gpu_import_probe.cpp for what it tests and how to aim it at a GPU.
+cc_binary {
+    name: "fydroid_gpu_import_probe",
+    srcs: ["gpu_import_probe.cpp"],
+    shared_libs: [
+        "libEGL",
+        "libGLESv3",
+        "libcutils",
+        "libhardware",
+        "liblog",
+        "libnativewindow",
+    ],
+    cflags: [
+        "-DEGL_EGLEXT_PROTOTYPES",
+        "-DGL_GLEXT_PROTOTYPES",
+        "-Wall",
+        "-Werror",
+    ],
+}

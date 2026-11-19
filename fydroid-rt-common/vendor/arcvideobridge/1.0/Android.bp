@@ -1,0 +1,12 @@
+hidl_interface {
+    name: "vendor.google_arc.arcvideobridge@1.0",
+    root: "vendor.google_arc",
+    srcs: [
+        "types.hal",
+        "IArcVideoBridgeService.hal",
+    ],
+    interfaces: [
+        "android.hidl.base@1.0",
+    ],
+    gen_java: false,
+}

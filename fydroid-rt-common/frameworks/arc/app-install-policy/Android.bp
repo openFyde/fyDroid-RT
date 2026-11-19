@@ -1,0 +1,14 @@
+// The ArcPolicy app-install rules, shared by the two components that enforce
+// them, so they cannot disagree on which entry governs a package:
+//   - FydroidPolicyManager (the device-owner app): after-install enable/disable,
+//     force install, Play prompt.
+//   - arc-services' ArcPolicyService (system_server): the install-time gate that
+//     PackageInstallerSession consults through
+//     com.android.server.pm.ArcInstallGate.
+// Static-linked into both; pure Java plus org.json, no platform APIs, so the same
+// sources build unchanged on AOSP 13 and 17. See docs/policy-manager.md.
+java_library {
+    name: "fydroid-app-install-policy",
+    srcs: ["java/**/*.java"],
+    sdk_version: "core_current",
+}

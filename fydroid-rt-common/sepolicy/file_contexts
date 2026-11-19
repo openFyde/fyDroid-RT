@@ -1,0 +1,83 @@
+# ARC++ container file contexts (fydroid-rt)
+# Only ARC/Chrome OS-specific entries; standard AOSP HAL entries are in platform policy.
+
+# --- Chrome OS runtime paths ---
+/var(/.*)?                      u:object_r:rootfs:s0
+/var/run(/.*)?                  u:object_r:rootfs:s0
+/var/run/arc(/.*)?              u:object_r:arc_file:s0
+/var/run/arc/adb(/.*)?          u:object_r:adb_socket:s0
+/var/run/arc/sdcard(/.*)?       u:object_r:storage_file:s0
+/var/run/arc/apkcache(/.*)?     u:object_r:apkcache_file:s0
+/var/run/arc/bugreport(/.*)?    u:object_r:debug_bugreport:s0
+/var/run/arc/testharness(/.*)?  u:object_r:testharness:s0
+/var/run/arc/dalvik-cache(/.*)? u:object_r:dalvikcache_data_file:s0
+/var/run/arc/debugfs/sync(/.*)? u:object_r:debugfs_sync:s0
+/var/run/arc/arc-bugreport(/.*)?    u:object_r:debug_arc_bugreport:s0
+/var/run/cras(/.*)?             u:object_r:cras_socket:s0
+/var/run/camera(/.*)?           u:object_r:camera_socket:s0
+/var/run/camera                 u:object_r:camera_dir:s0
+/var/run/chrome                 u:object_r:chrome_file:s0
+/var/run/chrome/wayland-0       u:object_r:wayland_socket:s0
+/var/run/chrome/arc_bridge.sock u:object_r:arc_bridge_socket:s0
+
+# --- Device nodes ---
+/dev/dri(/.*)?                  u:object_r:gpu_device:s0
+/dev/pts(/.*)?                  u:object_r:devpts:s0
+/dev/pts/ptmx                   u:object_r:ptmx_device:s0
+/dev/mali0                      u:object_r:gpu_device:s0
+/dev/pvr_sync                   u:object_r:gpu_device:s0
+/dev/sw_sync                    u:object_r:sw_sync_dev:s0
+
+# --- Debugfs ---
+/sys/kernel/debug/?             u:object_r:debugfs:s0
+/sys/kernel/debug/sync/sw_sync  u:object_r:debugfs_sw_sync:s0
+/var/run/arc/debugfs/sync/sw_sync u:object_r:debugfs_sw_sync:s0
+
+# --- Data paths ---
+/data/misc/wltrace(/.*)?        u:object_r:wl_trace_data_file:s0
+/data/system/devices/keychars(/.*)?     u:object_r:kcm_data:s0
+
+# --- Misc ---
+/dummy                          u:object_r:rootfs:s0
+/config/sdcardfs                u:object_r:rootfs:s0
+# The compiled file_contexts.bin lands at the system-as-root image root (root/
+# is merged into system). Stock AOSP only labels /plat_file_contexts, so this
+# file is otherwise unlabeled — harmless for the mksquashfs .raw.img (fs_config
+# falls back to a default) but strict e2fsdroid aborts building the ext4
+# system.img ("set_selinux_xattr: No such file or directory searching for label").
+/file_contexts\.bin             u:object_r:file_contexts_file:s0
+
+# --- ARC system binaries ---
+/system/bin/arcwlservice        u:object_r:arc_wake_lock_exec:s0
+/system/bin/arctraceservice     u:object_r:arc_trace_service_exec:s0
+/system/bin/fydroid_lmkd        u:object_r:lmkd_exec:s0
+/system/bin/arc-bugreport       u:object_r:arc_bugreport_exec:s0
+/system/bin/arc-bugreportd      u:object_r:arc_bugreportd_exec:s0
+/system/bin/arcbootcontinue     u:object_r:arc_boot_continue_exec:s0
+/system/bin/imelangd            u:object_r:arc_imelang_exec:s0
+/system/bin/arccachesetup       u:object_r:arc_cache_setup_exec:s0
+/system/bin/fydroid_surfaceflinger  u:object_r:surfaceflinger_exec:s0
+
+# --- Vendor HAL binaries (fydroid replacements using original stems) ---
+/vendor/bin/hw/arcpower                                                      u:object_r:hal_power_default_exec:s0
+/vendor/bin/hw/vendor\.google_arc\.arcbridge@1\.0-service    u:object_r:arc_bridge_exec:s0
+/vendor/bin/hw/vendor\.google_arc\.arcvideobridge@1\.0-service    u:object_r:mediacodec_exec:s0
+/vendor/bin/hw/android\.hardware\.media\.c2@1\.0-service-mojo             u:object_r:mediacodec_exec:s0
+/vendor/bin/hw/android\.hardware\.media\.c2@1\.0-service-default-stub     u:object_r:mediacodec_exec:s0
+/vendor/bin/hw/android\.hardware\.sensors@2\.1-service\.multihal   u:object_r:hal_sensors_default_exec:s0
+# HAL services/libs with non-standard stems that the AOSP vendor file_contexts
+# regexes don't match — without a label they fall back to vendor_file and init
+# refuses to domain-transition, so the service never starts ("incorrect label or
+# no domain transition" / hwservicemanager "Could not find ..."), even in
+# permissive mode. (Standard stems — audio/camera/cas/drm/keymaster/omx/sensors
+# and graphics.allocator@4.0-service / gatekeeper@1.0-service — are already
+# labeled by AOSP; only these custom-suffixed ones need an entry.)
+/vendor/bin/hw/android\.hardware\.drm-service\.widevine                       u:object_r:hal_drm_widevine_exec:s0
+/vendor/bin/hw/android\.hardware\.gatekeeper@1\.0-service\.software           u:object_r:hal_gatekeeper_default_exec:s0
+/vendor/bin/hw/android\.hardware\.graphics\.allocator@4\.0-service\.minigbm   u:object_r:hal_graphics_allocator_default_exec:s0
+/vendor/lib(64)?/hw/android\.hardware\.graphics\.mapper@4\.0-impl\.minigbm\.so  u:object_r:same_process_hal_file:s0
+# Shared cros_gralloc driver instance, dep of both the gralloc0 HAL (mesa) and
+# the gralloc4 mapper. The mapper is a same-process HAL dlopen()ed into app/
+# system processes, which then load this dep, so it must be readable there —
+# same_process_hal_file, not the default vendor_file. (Not under hw/.)
+/vendor/lib(64)?/libcros_gralloc\.so                                          u:object_r:same_process_hal_file:s0

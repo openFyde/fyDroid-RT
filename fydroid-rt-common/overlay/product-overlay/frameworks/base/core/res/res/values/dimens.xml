@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright (C) 2024 The FydeOS Authors
+
+  Minimum size enforced for resizable freeform tasks that declare no
+  android:minWidth/minHeight. WindowManager (Task.adjustForMinimalTask-
+  Dimensions) clamps both width and height up to this value. Stock AOSP is
+  220dp; fydroid raises it to 320dp so freeform app windows can't be sized
+  (or open) too small to be usable on the Chrome OS desktop.
+-->
+<resources>
+    <dimen name="default_minimal_size_resizable_task">320dp</dimen>
+</resources>

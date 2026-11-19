@@ -1,0 +1,20 @@
+// Invisible editor that gives an Android IME (Gboard) a Chrome OS text field to
+// edit. Launched by ArcInputMethodManagerService on focus.
+//
+// The input_method_manager AIDL is compiled in rather than taken from
+// com.google.android.chromeos: that jar is a <uses-library>, and binder
+// compatibility here is by descriptor + transaction code, which the AIDL text
+// fixes. Same reason arc-services carries its own copy.
+android_app {
+    name: "ArcPlaceholder",
+    srcs: [
+        "src/**/*.java",
+        "aidl/**/*.aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+}

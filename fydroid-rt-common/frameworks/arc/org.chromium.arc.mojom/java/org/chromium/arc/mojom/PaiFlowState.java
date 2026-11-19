@@ -1,0 +1,38 @@
+package org.chromium.arc.mojom;
+
+public final class PaiFlowState {
+    public static final int INTERRUPTED = 4;
+    public static final int NO_ACCOUNT = 2;
+    public static final int NO_APPS = 3;
+    public static final int PLAY_STORE_NOT_RESPONDED = 5;
+    public static final int PLAY_STORE_NO_ACCESS = 6;
+    public static final int PROXY_NOT_FOUND = 7;
+    public static final int PROXY_NO_ACCESS = 8;
+    public static final int SUCCEEDED = 0;
+    public static final int TIMEOUT = 9;
+    public static final int UNKNOWN = 1;
+
+    private PaiFlowState() {
+    }
+
+    public static boolean isKnownValue(int i) {
+        switch (i) {
+            case 0:
+            case 1:
+            case 2:
+            case 3:
+            case 4:
+            case 5:
+            case 6:
+            case 7:
+            case 8:
+            case 9:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    public static void validate(int i) {
+    }
+}

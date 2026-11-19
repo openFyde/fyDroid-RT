@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">策略管理器</string>
+    <string name="channel_name">策略管理器</string>
+    <string name="channel_description">Android 策略管理服務</string>
+    <string name="install_title">來自您組織的應用程式正在安裝</string>
+    <string name="install_finished">已透過策略完成安裝</string>
+    <string name="blocked_by_policy">已遭您的管理員封鎖</string>
+    <string name="managed_info">Android 子系統正受到管理員控制</string>
+</resources>

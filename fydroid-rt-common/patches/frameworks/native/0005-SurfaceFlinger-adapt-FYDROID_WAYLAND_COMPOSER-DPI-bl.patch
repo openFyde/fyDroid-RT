@@ -1,0 +1,46 @@
+From b096464edd04d7a3028641adc8edd3fda5164ea5 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 14:36:19 +0800
+Subject: [PATCH 05/40] SurfaceFlinger: adapt FYDROID_WAYLAND_COMPOSER DPI
+ block to AOSP-13
+
+The #if FYDROID_WAYLAND_COMPOSER getDisplayInfo density path used 11-era APIs:
+getId() (was std::optional<DisplayId>) and HWComposer::getConfigs. On 13 getId()
+returns a non-optional DisplayId, HWC modes come from getModes(PhysicalDisplayId),
+and HWCDisplayMode.dpiX is the raw HWC DPI_X attribute (dots per 1000 inches).
+PhysicalDisplayId::tryCast + getModes + dpiX/1000.0f preserve the density math.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I564b58785ff88a5d544198087c773af30113ae7f
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index b5dfeef534..c1c3be72c9 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -958,12 +958,15 @@ status_t SurfaceFlinger::getStaticDisplayInfo(const sp<IBinder>& displayToken,
+     // Use HWC2 DPI from the active display config (WaylandDisplay computes
+     // the correct overrideDpi from lcd_density and device scale factor).
+     {
+-        const auto displayId = display->getId();
++        // AOSP-13: getId() now returns a non-optional DisplayId; HWC modes come from
++        // getModes(PhysicalDisplayId) (was getConfigs), and HWCDisplayMode.dpiX is the
++        // raw HWC DPI_X attribute (dots per 1000 inches), so divide to get real DPI.
++        const auto physId = PhysicalDisplayId::tryCast(display->getId());
+         float hwcDpi = 0.0f;
+-        if (displayId) {
+-            const auto& configs = getHwComposer().getConfigs(*displayId);
+-            if (!configs.empty()) {
+-                hwcDpi = configs[0]->getDpiX();
++        if (physId) {
++            const auto modes = getHwComposer().getModes(*physId);
++            if (!modes.empty()) {
++                hwcDpi = modes[0].dpiX / 1000.0f;
+             }
+         }
+         info->density = (hwcDpi > 0.0f ? hwcDpi : mInternalDisplayDensity)
+-- 
+2.43.0
+

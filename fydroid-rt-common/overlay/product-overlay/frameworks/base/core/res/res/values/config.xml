@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright (C) 2024 The FydeOS Authors
+
+  fydroid runs each app in its own freeform window composited by Chrome.
+  On a cold first launch (no saved window bounds) the WM app-open transition
+  animates the freeform window in; fydroid forwards the mid-animation surface
+  size to Chrome, Chrome echoes it back, and onGeometryChanged resizes the
+  Android task to that transient size — which then sticks (clamped to the
+  220dp resizable-task minimum), so the window opens far too narrow.
+
+  WindowManagerService falls back to config_appTransitionAnimationDuration-
+  ScaleDefault when TRANSITION_ANIMATION_SCALE is unset (it is never seeded
+  into the settings DB). Default it to 0 so the open transition is instant —
+  no transient frames are composited/forwarded, and the window opens at its
+  proper size. Only the transition scale is affected; window_animation_scale
+  and animator_duration_scale keep their stock 1.0 defaults.
+-->
+<resources>
+    <item name="config_appTransitionAnimationDurationScaleDefault" format="float" type="dimen">0.0</item>
+
+    <!--
+      WeChat (and other apps) call AppWidgetManager.getInstance(ctx).getAppWidgetIds()
+      right after account initialization and assume a non-null manager. getInstance()
+      returns null unless the framework's AppWidgetService is started, which crashes
+      such apps with:
+        NullPointerException: Attempt to invoke virtual method
+        'int[] AppWidgetManager.getAppWidgetIds(ComponentName)' on a null object reference
+          at com.tencent.mm.plugin.appbrand.app.r9.onAccountInitialized(...)
+
+      ARC advertises android.software.app_widgets as an unavailable-feature (no
+      home-screen widget hosting) but still expects the service ENABLED via this
+      bool — see permissions/cheets.xml and b/110122867. The framework default is
+      false, so enable it here: AppWidgetService starts, getInstance() is non-null,
+      getAppWidgetIds() returns an empty array, and the app no longer crashes. The
+      feature stays unavailable, so nothing offers to place home-screen widgets.
+    -->
+    <bool name="config_enableAppWidgetService">true</bool>
+</resources>

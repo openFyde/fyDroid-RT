@@ -1,0 +1,17 @@
+Index: minigbm/rockchip.c
+===================================================================
+--- minigbm.orig/rockchip.c
++++ minigbm/rockchip.c
+@@ -19,6 +19,12 @@
+ #include "drv_priv.h"
+ #include "util.h"
+
++#ifndef DRM_FORMAT_MOD_VENDOR_CHROMEOS
++#define DRM_FORMAT_MOD_VENDOR_CHROMEOS 0xf0
++#endif
++
++#define DRM_FORMAT_MOD_CHROMEOS_ROCKCHIP_AFBC    fourcc_mod_code(CHROMEOS, 1)
++
+ #define DRM_FORMAT_MOD_ROCKCHIP_AFBC                                                               \
+ 	DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 | AFBC_FORMAT_MOD_SPARSE |        \
+ 				AFBC_FORMAT_MOD_YTR)

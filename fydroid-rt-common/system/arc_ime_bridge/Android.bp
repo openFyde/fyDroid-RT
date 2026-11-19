@@ -1,0 +1,23 @@
+cc_binary {
+    name: "fydroid_arc_ime_bridge",
+    stem: "arc_ime_bridge",
+
+    srcs: [
+        "main.cpp",
+        "ArcImeMojoService.cpp",
+        "ArcImeBinderService.cpp",
+    ],
+
+    shared_libs: [
+        "libarcbridge",
+        "libarcbridgeservice",
+        "libbase",
+        "libbinder",
+        "libchrome",
+        "liblog",
+        "libmojo",
+        "libutils",
+    ],
+
+    vendor: false,
+}

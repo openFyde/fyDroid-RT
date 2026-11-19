@@ -1,0 +1,7 @@
+android_app {
+    name: "ArcIntentHelper",
+    srcs: ["src/**/*.java"],
+    resource_dirs: ["res"],
+    platform_apis: true,
+    certificate: "platform",
+}

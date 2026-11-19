@@ -1,0 +1,88 @@
+From 587b129061512a53bca688336228bbf5b3415376 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 19 Aug 2026 17:00:52 +0800
+Subject: [PATCH 53/75] fydroid: stamp the IME window's content top on its
+ surface for the compositor
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Ibd364bc66be3149d60d7617da4c58eafbe50519f
+---
+ core/java/android/view/SurfaceControl.java    | 16 +++++++++++
+ .../server/wm/WindowManagerService.java       | 27 +++++++++++++++++++
+ 2 files changed, 43 insertions(+)
+
+diff --git a/core/java/android/view/SurfaceControl.java b/core/java/android/view/SurfaceControl.java
+index 36a353bdac39..2096772897d6 100644
+--- a/core/java/android/view/SurfaceControl.java
++++ b/core/java/android/view/SurfaceControl.java
+@@ -823,6 +823,22 @@ public final class SurfaceControl implements Parcelable {
+      */
+     public static final int METADATA_IS_FLOATING_ACTIVITY = 13;
+ 
++    /**
++     * Top of the IME window's content (the keys) within the window, in px.
++     * An IME window is the full display with a transparent region above the
++     * keyboard, so the compositor cannot tell where the keys begin; without
++     * this the Chrome OS input-method surface takes input across the whole
++     * desktop and every tap outside the keyboard is swallowed.
++     * fydroid-rt: must match METADATA_IME_CONTENT_TOP in
++     * frameworks/native LayerMetadata.h. Do NOT reuse another key's id —
++     * SurfaceFlinger emits every generic-metadata key bound to an id with that
++     * id's value, so sharing 13 with METADATA_IS_FLOATING_ACTIVITY published
++     * this int as IsFloatingActivity too and made the compositor register the
++     * keyboard as a modal window.
++     * @hide
++     */
++    public static final int METADATA_IME_CONTENT_TOP = 14;
++
+     /**
+      * A wrapper around HardwareBuffer that contains extra information about how to
+      * interpret the screenshot HardwareBuffer.
+diff --git a/services/core/java/com/android/server/wm/WindowManagerService.java b/services/core/java/com/android/server/wm/WindowManagerService.java
+index c7f8d34d725d..89c0b1faa2d9 100644
+--- a/services/core/java/com/android/server/wm/WindowManagerService.java
++++ b/services/core/java/com/android/server/wm/WindowManagerService.java
+@@ -2186,6 +2186,32 @@ public class WindowManagerService extends IWindowManager.Stub
+         }
+     }
+ 
++    /**
++     * fydroid-rt: publish where the IME's keys start, for the Chrome OS compositor.
++     *
++     * An IME window is laid out as the full display with a transparent region
++     * above the keyboard, and the compositor only ever sees that full-display
++     * layer. Presented as-is, the Chrome OS input-method surface has no input
++     * region and therefore takes touch across the whole desktop — every tap
++     * outside the keyboard is swallowed while it is up.
++     *
++     * The IME itself is the only thing that knows where its keys begin, and it
++     * tells us here, so mirror it onto the window's surface as generic layer
++     * metadata (same channel as WindowType / TaskId).
++     */
++    private void stampImeContentTopIfNeeded(WindowState w) {
++        if (w.mAttrs.type != TYPE_INPUT_METHOD) {
++            return;
++        }
++        final SurfaceControl sc = w.mWinAnimator != null
++                ? w.mWinAnimator.getSurfaceControl() : null;
++        if (sc == null || !sc.isValid()) {
++            return;
++        }
++        w.getPendingTransaction().setMetadata(
++                sc, SurfaceControl.METADATA_IME_CONTENT_TOP, w.mGivenContentInsets.top);
++    }
++
+     void setInsetsWindow(Session session, IWindow client, int touchableInsets, Rect contentInsets,
+             Rect visibleInsets, Region touchableRegion) {
+         int uid = Binder.getCallingUid();
+@@ -2211,6 +2237,7 @@ public class WindowManagerService extends IWindowManager.Stub
+                     }
+                     w.setDisplayLayoutNeeded();
+                     w.updateSourceFrame(w.getFrame());
++                    stampImeContentTopIfNeeded(w);
+                     mWindowPlacerLocked.performSurfacePlacement();
+                     w.getDisplayContent().getInputMonitor().updateInputWindowsLw(true);
+ 
+-- 
+2.43.0
+

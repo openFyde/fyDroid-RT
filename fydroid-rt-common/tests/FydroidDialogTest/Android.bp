@@ -1,0 +1,31 @@
+// Minimal modal-dialog client, for regression-testing input on Android dialogs
+// under fydroid.
+//
+// Deliberately NOT in PRODUCT_PACKAGES — it is a developer tool, not part of the
+// image. Build and install it explicitly:
+//
+//   m FydroidDialogTest
+//   push the apk and `pm install -r` it inside the container
+//
+// Drive it with (each mode logs every touch/key it receives, tag FydroidDialogTest):
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode perm      # POST_NOTIFICATIONS prompt
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode alert     # AlertDialog
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode dialogact # dialog-themed activity
+// The dialog activity's "Use" buttons start a full-screen page (same task or a new
+// task) while the dialog stays up: the shape of the TapTap SDK login in Phigros.
+//
+// Hardware-key typing: the main screen has a text, a password and an
+// autocorrect field, and WebActivity has the same three as WebView inputs; each
+// logs its value on every change (tag FydroidDialogTest).
+//   am start -n io.fydeos.dialogtest/.WebActivity                      # WebView fields
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode translucentweb
+//     # translucent WebView activity over MainActivity in the same task
+// Run modes from a cold start (am force-stop first).
+android_app {
+    name: "FydroidDialogTest",
+    srcs: ["src/**/*.java"],
+    sdk_version: "current",
+    dex_preopt: {
+        enabled: false,
+    },
+}

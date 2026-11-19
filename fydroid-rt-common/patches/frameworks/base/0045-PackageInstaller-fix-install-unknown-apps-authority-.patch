@@ -1,0 +1,176 @@
+From 821777a2d30681fb13b0492fb6bea0f530b25e7a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 13 Jul 2026 14:31:09 +0800
+Subject: [PATCH 45/75] PackageInstaller: fix "install unknown apps" authority
+ screen on ARC
+
+On fydroid/ARC, letting F-Droid (an untrusted source) install an app was
+broken end-to-end at the "Allow install unknown apps" step:
+
+- The Settings authority screen (ExternalSourcesDetails, launched from
+  PackageInstaller's ExternalSourcesBlockedDialog) was started in-task via
+  startActivityForResult, so it inherited the installer's small IS_DIALOG
+  virtual display and rendered as a ~391x197dp dialog card instead of a
+  normal window.
+- Split into its own task, the installer's CONTAINER_OVERLAY dialog
+  (WaylandModalWindow) stacks structurally above normal windows and occluded
+  touches to the authority screen (untrusted-touch drops).
+- Backgrounding the installer to clear that overlay tears it down, and
+  onDestroy unregistered the app-op watcher, so after the grant the install
+  dialog never came back.
+
+Fix:
+- Launch the authority screen in its OWN task (FLAG_ACTIVITY_NEW_TASK), in
+  freeform windowing mode, via startActivity -- startActivityForResult +
+  NEW_TASK delivers RESULT_CANCELED immediately. The grant is observed by the
+  existing UnknownSourcesListener app-op watcher, so no result is needed.
+- moveTaskToBack the installer on hand-off so its overlay stops occluding the
+  authority screen.
+- Keep the app-op watcher registered across the resulting teardown
+  (mDeferUnknownSourcesUnregister) and re-front the installer from the
+  application context with NEW_TASK | REORDER_TO_FRONT once the grant lands,
+  re-creating the confirm dialog now that the source is trusted.
+
+Verified on amd64: the authority screen shows as a normal, interactive
+window and the install confirm returns after granting.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ia0f8420f2aaaf84d1e4ce4c6b1729385b48f46fa
+---
+ .../PackageInstallerActivity.java             | 83 ++++++++++++++++---
+ 1 file changed, 72 insertions(+), 11 deletions(-)
+
+diff --git a/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java b/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java
+index 9c6113ce4b47..26e005bd7272 100644
+--- a/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java
++++ b/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java
+@@ -24,6 +24,8 @@ import android.Manifest;
+ import android.annotation.NonNull;
+ import android.annotation.StringRes;
+ import android.app.Activity;
++import android.app.ActivityOptions;
++import android.app.WindowConfiguration;
+ import android.app.AlertDialog;
+ import android.app.AppGlobals;
+ import android.app.AppOpsManager;
+@@ -43,6 +45,8 @@ import android.content.pm.PackageManager;
+ import android.content.pm.PackageManager.NameNotFoundException;
+ import android.net.Uri;
+ import android.os.Bundle;
++import android.os.Handler;
++import android.os.Looper;
+ import android.os.Process;
+ import android.os.UserManager;
+ import android.provider.Settings;
+@@ -127,6 +131,12 @@ public class PackageInstallerActivity extends AlertActivity {
+     // If unknown sources are temporary allowed
+     private boolean mAllowUnknownSources;
+ 
++    // fydroid: set when we hand off to the Settings "install unknown apps"
++    // authority screen and moveTaskToBack() ourselves. It keeps the app-op
++    // watcher (UnknownSourcesListener) alive across this activity's teardown so
++    // onOpChanged can still re-front the installer once the grant lands.
++    private boolean mDeferUnknownSourcesUnregister;
++
+     // Would the mOk button be enabled if this activity would be resumed
+     private boolean mEnableOk = false;
+ 
+@@ -402,6 +412,12 @@ public class PackageInstallerActivity extends AlertActivity {
+     @Override
+     protected void onDestroy() {
+         super.onDestroy();
++        if (mDeferUnknownSourcesUnregister) {
++            // We tore ourselves down via moveTaskToBack() when handing off to the
++            // authority screen. Keep the app-op watcher registered so its
++            // onOpChanged can re-front the installer after the user grants.
++            return;
++        }
+         while (!mActiveUnknownSourcesListeners.isEmpty()) {
+             unregister(mActiveUnknownSourcesListeners.get(0));
+         }
+@@ -766,14 +782,20 @@ public class PackageInstallerActivity extends AlertActivity {
+             }
+             unregister(this);
+             mActiveUnknownSourcesListeners.remove(this);
+-            if (isDestroyed()) {
+-                return;
+-            }
+-            getMainThreadHandler().postDelayed(() -> {
+-                if (!isDestroyed()) {
+-                    startActivity(getIntent().addFlags(FLAG_ACTIVITY_REORDER_TO_FRONT));
+-                }
+-            }, 500);
++            // fydroid: re-front the installer after the grant. When we hand off
++            // to the authority screen we moveTaskToBack() ourselves so the
++            // installer overlay stops occluding it, which tears this activity
++            // down while backgrounded. Launch from the application context (the
++            // activity token is gone) with NEW_TASK | REORDER_TO_FRONT so the
++            // original CONFIRM_INSTALL intent brings the install task back to the
++            // front — re-creating the confirm dialog, now that the source is
++            // trusted. Post on the main looper (not getMainThreadHandler(), which
++            // is tied to this dead activity).
++            final Context appContext = getApplicationContext();
++            final Intent relaunch = new Intent(getIntent()).addFlags(
++                    Intent.FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_REORDER_TO_FRONT);
++            new Handler(Looper.getMainLooper()).postDelayed(
++                    () -> appContext.startActivity(relaunch), 500);
+ 
+         }
+ 
+@@ -822,11 +844,50 @@ public class PackageInstallerActivity extends AlertActivity {
+                                             Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+                                     final Uri packageUri = Uri.parse("package:" + argument);
+                                     settingsIntent.setData(packageUri);
+-                                    settingsIntent.setFlags(FLAG_ACTIVITY_NO_HISTORY);
++                                    // fydroid: launch the "install unknown apps"
++                                    // authority screen (Settings ExternalSources)
++                                    // in its OWN task so ARC gives it a normal
++                                    // window / virtual display, instead of
++                                    // rendering it inside the PackageInstaller
++                                    // dialog's small modal VD (same-task
++                                    // startActivityForResult put it there,
++                                    // squeezing the full Settings page into a
++                                    // ~391x197dp dialog card).
++                                    //
++                                    // The grant is observed by UnknownSourcesListener
++                                    // (an app-op change), which re-fronts the
++                                    // installer, so onActivityResult is not needed.
++                                    // startActivityForResult + NEW_TASK is invalid
++                                    // (it delivers RESULT_CANCELED immediately and
++                                    // would finish() the installer), so use
++                                    // startActivity().
++                                    settingsIntent.setFlags(FLAG_ACTIVITY_NO_HISTORY
++                                            | Intent.FLAG_ACTIVITY_NEW_TASK);
+                                     try {
+                                         activity.register(activity.new UnknownSourcesListener());
+-                                        activity.startActivityForResult(settingsIntent,
+-                                                REQUEST_TRUST_EXTERNAL_SOURCE);
++                                        // Run the authority screen in freeform
++                                        // (floating) windowing mode so it is a
++                                        // floating window of its own.
++                                        final ActivityOptions options =
++                                                ActivityOptions.makeBasic();
++                                        options.setLaunchWindowingMode(
++                                                WindowConfiguration.WINDOWING_MODE_FREEFORM);
++                                        activity.startActivity(settingsIntent,
++                                                options.toBundle());
++                                        // The installer dialog is a CONTAINER_OVERLAY
++                                        // window (WaylandModalWindow), which Chrome
++                                        // stacks structurally ABOVE normal app
++                                        // windows — so the authority window can never
++                                        // be raised in front of it by focus. Send the
++                                        // installer task to the back so its overlay
++                                        // is not drawn while the user is on the
++                                        // authority screen. It is not a system-modal
++                                        // (no set_system_modal), so nothing locks up,
++                                        // and UnknownSourcesListener re-fronts the
++                                        // installer (REORDER_TO_FRONT) once the app-op
++                                        // is granted.
++                                        activity.mDeferUnknownSourcesUnregister = true;
++                                        activity.moveTaskToBack(true);
+                                     } catch (ActivityNotFoundException exc) {
+                                         Log.e(TAG, "Settings activity not found for action: "
+                                                 + Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+-- 
+2.43.0
+

@@ -1,0 +1,42 @@
+From 930bd5c228a9150b76435d6f4bbdbe87cc81888e Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 16:51:18 +0800
+Subject: [PATCH 19/40] RenderEngine: adapt NV12/YV12 bind bypass to AOSP-13
+ void bindExternalTextureBuffer
+
+bindExternalTextureBuffer returns void in 13 (was status_t in 11). The NV12/YV12
+early-bypass paths returned NO_ERROR on a successful direct dmabuf import; change
+to a bare `return`. fydroid_surfaceflinger + libgui build clean with the full
+NV12/YV12 GLESRenderEngine cluster.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I5ab1c38468ad0a9a71a355040f6b5ce5dcb5b5b9
+---
+ libs/renderengine/gl/GLESRenderEngine.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libs/renderengine/gl/GLESRenderEngine.cpp b/libs/renderengine/gl/GLESRenderEngine.cpp
+index 07e2d9163d..ff70542173 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.cpp
++++ b/libs/renderengine/gl/GLESRenderEngine.cpp
+@@ -1508,7 +1508,7 @@ void GLESRenderEngine::bindExternalTextureBuffer(uint32_t texName, const sp<Grap
+                     bufferFence->waitForever("RenderEngine::bindNV12");
+                 }
+                 if (bindNv12(buffer, texName)) {
+-                    return NO_ERROR;
++                    return;  // AOSP-13: bindExternalTextureBuffer is void
+                 }
+                 ALOGW("NV12 import failed, falling through to normal path");
+             } else if (h->format == DRM_FORMAT_YVU420 ||
+@@ -1517,7 +1517,7 @@ void GLESRenderEngine::bindExternalTextureBuffer(uint32_t texName, const sp<Grap
+                     bufferFence->waitForever("RenderEngine::bindYV12");
+                 }
+                 if (bindYv12(buffer, texName)) {
+-                    return NO_ERROR;
++                    return;  // AOSP-13: bindExternalTextureBuffer is void
+                 }
+                 ALOGW("YV12 import failed, falling through to normal path");
+             }
+-- 
+2.43.0
+

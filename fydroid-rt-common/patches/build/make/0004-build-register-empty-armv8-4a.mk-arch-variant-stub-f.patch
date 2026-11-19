@@ -1,0 +1,24 @@
+From 5058a661aded5ed0bdb7c34453c2f95decfe5771 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 8 May 2026 15:23:16 +0800
+Subject: [PATCH 4/7] build: register empty armv8-4a.mk arch-variant stub for
+ arm64
+
+Pairs with the build/soong armv8-4a allowlist extension. The legacy
+Make side resolves TARGET_ARCH_VARIANT via file existence under
+core/combo/arch/<TARGET_ARCH>/<variant>.mk; the existing armv8-2a.mk
+is also empty (the actual cflag wiring lives in Soong now).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I0af062572be8eb1579d87e6f76ba39a2c20ed020
+---
+ core/combo/arch/arm64/armv8-4a.mk | 0
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+ create mode 100644 core/combo/arch/arm64/armv8-4a.mk
+
+diff --git a/core/combo/arch/arm64/armv8-4a.mk b/core/combo/arch/arm64/armv8-4a.mk
+new file mode 100644
+index 0000000000..e69de29bb2
+-- 
+2.43.0
+

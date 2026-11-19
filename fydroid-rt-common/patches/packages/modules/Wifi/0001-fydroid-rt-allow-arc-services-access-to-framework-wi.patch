@@ -1,0 +1,32 @@
+From e0d21e64d630a5121f10950e3585e4513e5f2c00 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 15:54:44 +0800
+Subject: [PATCH] fydroid-rt: allow arc-services access to framework-wifi.impl
+
+ArcWifiService (in arc-services) needs framework-wifi @hide APIs. Add the
+fydroid arc-services package to framework-wifi's impl_library_visibility.
+(AOSP 13 port of the AOSP-11 frameworks/base framework-wifi-pre-jarjar patch;
+Wifi is now a mainline module with a restricted impl visibility allowlist.)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I04af58e362cbe038718cd9d956783b3562844bd8
+---
+ framework/Android.bp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/framework/Android.bp b/framework/Android.bp
+index 3c1d0a0fdf..d1bc4bf864 100644
+--- a/framework/Android.bp
++++ b/framework/Android.bp
+@@ -155,6 +155,8 @@ java_sdk_library {
+         "//frameworks/opt/net/wifi/service:__subpackages__",
+         "//packages/modules/Wifi/service:__subpackages__",
+         "//packages/modules/Wifi/WifiDialog:__subpackages__",
++        // fydroid-rt: arc-services (ArcWifiService) needs framework-wifi @hide APIs.
++        "//device/fydeos/fydroid-rt-common/frameworks/arc/arc-services",
+     ] + test_access_hidden_api_whitelist,
+ 
+     apex_available: [
+-- 
+2.43.0
+

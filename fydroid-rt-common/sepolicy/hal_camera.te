@@ -1,0 +1,13 @@
+# fydroid camera HAL (camera.bertha_v3, loaded by
+# android.hardware.camera.provider@2.4-service).
+#
+# Unlike a normal camera HAL it owns no buffers of its own: it hands Android's
+# gralloc handles to Chrome over Mojo and Chrome fills them in place
+# (BufferAdapter). Registering and locking those handles goes through the
+# gralloc mapper, which is a same-process (passthrough) HAL, so the domain
+# needs to look its hwservice up in order to load the implementation.
+#
+# AOSP grants this to graphics clients via hal_graphics_allocator_client; the
+# camera HAL is not one, so grant the lookup directly rather than pulling in
+# allocator-server access it never uses.
+allow hal_camera_default hal_graphics_mapper_hwservice:hwservice_manager find;

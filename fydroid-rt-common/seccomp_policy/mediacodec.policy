@@ -1,0 +1,13 @@
+# Needed for ARC video encoder (OMX.arc.h264.encode)
+epoll_create1: 1
+epoll_ctl: 1
+epoll_pwait: 1
+getegid32: 1
+geteuid32: 1
+getgid32: 1
+recvmsg: 1
+sched_getaffinity: 1
+sendmsg: 1
+sendto: 1
+socketpair: 1
+sysinfo: 1

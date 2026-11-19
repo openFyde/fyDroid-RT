@@ -1,0 +1,49 @@
+diff --git a/amdgpu.c b/amdgpu.c
+--- a/amdgpu.c
++++ b/amdgpu.c
+@@ -632,25 +632,31 @@
+ 			    uint64_t use_flags)
+ {
+ 	struct combination *combo;
+-	struct amdgpu_priv *priv = bo->drv->priv;
+ 
+ 	combo = drv_get_combination(bo->drv, format, use_flags);
+ 	if (!combo)
+ 		return -EINVAL;
+ 
+-	if (combo->metadata.tiling == TILE_TYPE_DRI) {
+-		// See b/122049612
+-		if (use_flags & (BO_USE_SCANOUT) && priv->dev_info.family == AMDGPU_FAMILY_CZ) {
+-			uint32_t bytes_per_pixel = drv_bytes_per_pixel_from_format(format, 0);
+-			width = ALIGN(width, 256 / bytes_per_pixel);
+-		}
+-
+-		return dri_bo_create(priv->dri, bo, width, height, format, use_flags);
+-	} else if (combo->metadata.tiling == TILE_TYPE_DRI_MODIFIER) {
+-		return dri_bo_create_with_modifiers(priv->dri, bo, width, height, format, use_flags,
+-						    &combo->metadata.modifier, 1);
+-	}
+-
++	/*
++	 * This tree builds Mesa with zink + RADV only: radeonsi (the native
++	 * gallium GL driver) needs LLVM and is not built, so minigbm's DRI
++	 * allocation path is forced onto zink (MESA_LOADER_DRIVER_OVERRIDE, see
++	 * dri.c). zink's DRI image-export entrypoint (dri_create_image) returns
++	 * NULL on amdgpu here, so every render/texture BO created via
++	 * dri_bo_create()/dri_bo_create_with_modifiers() fails ("Failed to
++	 * create bo"). SurfaceFlinger then gets a non-GPU-writeable output
++	 * buffer and aborts in validateOutputBufferUsage ("output buffer not
++	 * gpu writeable"), crash-looping the whole graphics stack.
++	 *
++	 * Allocate every BO directly through the amdgpu GEM ioctl (linear)
++	 * instead. zink still imports these as dmabufs for rendering and
++	 * compositing (amdgpu_import_bo -> dri_bo_import -> from_dma_bufs).
++	 * Linear is not tile-optimal but is correct, scanout-capable on amdgpu,
++	 * and needs no gallium GL driver. The TILE_TYPE_DRI / DRI_MODIFIER
++	 * combos registered in amdgpu_init() are treated the same as LINEAR
++	 * until a native gallium driver (radeonsi) is built.
++	 */
++	(void)combo;
+ 	return amdgpu_create_bo_linear(bo, width, height, format, use_flags);
+ }
+ 

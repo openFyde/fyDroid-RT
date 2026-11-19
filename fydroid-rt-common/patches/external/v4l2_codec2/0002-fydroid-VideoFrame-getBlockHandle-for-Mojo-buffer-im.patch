@@ -1,0 +1,51 @@
+From 4a86dee975628d948165c8e6f8ac9782fa40bdc7 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 18:50:19 +0800
+Subject: [PATCH 2/6] fydroid: VideoFrame::getBlockHandle() for Mojo buffer
+ import
+
+MojoDecoder needs the cros_gralloc handle (plane offsets/strides/format
+modifier) to ImportBufferForPicture into Chrome's VDA. Expose the underlying
+C2Handle from VideoFrame (patch 0002 equivalent). Decode-path hook for the
+Mojo backend in libfydroid_c2_mojo; local commit only.
+
+Change-Id: I5f1177786fa02d3dfb9fd7ffd505bc47f63efb2c
+---
+ components/VideoFrame.cpp                              | 7 +++++++
+ components/include/v4l2_codec2/components/VideoFrame.h | 4 ++++
+ 2 files changed, 11 insertions(+)
+
+diff --git a/components/VideoFrame.cpp b/components/VideoFrame.cpp
+index b7481ad..537c7e5 100644
+--- a/components/VideoFrame.cpp
++++ b/components/VideoFrame.cpp
+@@ -54,4 +54,11 @@ C2ConstGraphicBlock VideoFrame::getGraphicBlock() {
+     return mGraphicBlock->share(C2Rect(mVisibleRect.width(), mVisibleRect.height()), C2Fence());
+ }
+ 
++// fydroid: expose the underlying C2Handle so MojoDecoder can read the
++// cros_gralloc plane offsets/strides/modifier when importing buffers to
++// Chrome's VDA. See device/fydeos/docs/c2-codec2-mojo-port-plan.md.
++const C2Handle* VideoFrame::getBlockHandle() const {
++    return mGraphicBlock->handle();
++}
++
+ }  // namespace android
+diff --git a/components/include/v4l2_codec2/components/VideoFrame.h b/components/include/v4l2_codec2/components/VideoFrame.h
+index b5d7b99..9dedc72 100644
+--- a/components/include/v4l2_codec2/components/VideoFrame.h
++++ b/components/include/v4l2_codec2/components/VideoFrame.h
+@@ -35,6 +35,10 @@ public:
+     // Get the read-only C2GraphicBlock, should be called after calling setVisibleRect().
+     C2ConstGraphicBlock getGraphicBlock();
+ 
++    // fydroid: the underlying C2Handle (cros_gralloc handle), used by MojoDecoder
++    // to read plane offsets/strides/modifier when importing buffers to Chrome.
++    const C2Handle* getBlockHandle() const;
++
+ private:
+     VideoFrame(std::shared_ptr<C2GraphicBlock> block, std::vector<int> fds);
+ 
+-- 
+2.43.0
+

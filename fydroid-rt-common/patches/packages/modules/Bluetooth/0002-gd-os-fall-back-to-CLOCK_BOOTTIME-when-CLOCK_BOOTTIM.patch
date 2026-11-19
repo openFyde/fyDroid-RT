@@ -1,0 +1,94 @@
+From bdb93689c2c90a358615f3e01260a8d9209b7d8a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 14:54:02 +0800
+Subject: [PATCH 2/4] gd/os: fall back to CLOCK_BOOTTIME when
+ CLOCK_BOOTTIME_ALARM is unavailable
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the ARC container, timerfd_create(CLOCK_BOOTTIME_ALARM) returns EPERM:
+the alarm clock gates on capable(CAP_WAKE_ALARM) checked against the init user
+namespace, which a capability held only in the container's child userns does not
+satisfy. So Alarm/RepeatingAlarm got fd == -1, and ASSERT(fd_ != -1) aborted the
+BT stack during CounterMetrics::Start() (StackManager::handle_start_up) ->
+com.android.bluetooth crash-loop, Bluetooth never starts.
+
+Fall back to CLOCK_BOOTTIME when the alarm clock fails (Android builds only).
+Loses suspend wakeups (fine in the ARC container — Chrome OS owns power/suspend);
+BT timers still fire while awake. Mirrors the AlarmManagerService soft-alarm
+approach used for the same userns wakealarm gap.
+
+Verified on device: the 'fd_ != -1' assertion is gone, the BT stack starts
+up past CounterMetrics (now blocks later on the missing IBluetoothHci HAL).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I63e19ebf6a82b037a2196ee69d53c0138b1ca2b5
+---
+ system/gd/os/linux_generic/alarm.cc           | 19 ++++++++++++++++++-
+ system/gd/os/linux_generic/repeating_alarm.cc | 19 ++++++++++++++++++-
+ 2 files changed, 36 insertions(+), 2 deletions(-)
+
+diff --git a/system/gd/os/linux_generic/alarm.cc b/system/gd/os/linux_generic/alarm.cc
+index 22bd3b2282..5cbf078463 100644
+--- a/system/gd/os/linux_generic/alarm.cc
++++ b/system/gd/os/linux_generic/alarm.cc
+@@ -37,7 +37,24 @@ namespace os {
+ using common::Closure;
+ using common::OnceClosure;
+ 
+-Alarm::Alarm(Handler* handler) : handler_(handler), fd_(TIMERFD_CREATE(ALARM_CLOCK, 0)) {
++namespace {
++// fydroid/ARC: CLOCK_BOOTTIME_ALARM requires CAP_WAKE_ALARM checked against the
++// init user namespace, which a capability held only in the container's child
++// userns cannot satisfy -> timerfd_create() returns EPERM and fd == -1, aborting
++// the BT stack (ASSERT below). Fall back to CLOCK_BOOTTIME (no suspend wakeups,
++// fine here -- Chrome OS owns power/suspend).
++static int create_alarm_timerfd() {
++  int fd = TIMERFD_CREATE(ALARM_CLOCK, 0);
++#ifdef OS_ANDROID
++  if (fd == -1) {
++    fd = TIMERFD_CREATE(CLOCK_BOOTTIME, 0);
++  }
++#endif
++  return fd;
++}
++}  // namespace
++
++Alarm::Alarm(Handler* handler) : handler_(handler), fd_(create_alarm_timerfd()) {
+   ASSERT_LOG(fd_ != -1, "cannot create timerfd: %s", strerror(errno));
+ 
+   token_ = handler_->thread_->GetReactor()->Register(
+diff --git a/system/gd/os/linux_generic/repeating_alarm.cc b/system/gd/os/linux_generic/repeating_alarm.cc
+index 8a718f29fc..5ac41a9883 100644
+--- a/system/gd/os/linux_generic/repeating_alarm.cc
++++ b/system/gd/os/linux_generic/repeating_alarm.cc
+@@ -36,7 +36,24 @@ namespace bluetooth {
+ namespace os {
+ using common::Closure;
+ 
+-RepeatingAlarm::RepeatingAlarm(Handler* handler) : handler_(handler), fd_(TIMERFD_CREATE(ALARM_CLOCK, 0)) {
++namespace {
++// fydroid/ARC: CLOCK_BOOTTIME_ALARM requires CAP_WAKE_ALARM checked against the
++// init user namespace, which a capability held only in the container's child
++// userns cannot satisfy -> timerfd_create() returns EPERM and fd == -1, aborting
++// the BT stack (ASSERT below). Fall back to CLOCK_BOOTTIME (no suspend wakeups,
++// fine here -- Chrome OS owns power/suspend).
++static int create_alarm_timerfd() {
++  int fd = TIMERFD_CREATE(ALARM_CLOCK, 0);
++#ifdef OS_ANDROID
++  if (fd == -1) {
++    fd = TIMERFD_CREATE(CLOCK_BOOTTIME, 0);
++  }
++#endif
++  return fd;
++}
++}  // namespace
++
++RepeatingAlarm::RepeatingAlarm(Handler* handler) : handler_(handler), fd_(create_alarm_timerfd()) {
+   ASSERT(fd_ != -1);
+ 
+   token_ = handler_->thread_->GetReactor()->Register(
+-- 
+2.43.0
+

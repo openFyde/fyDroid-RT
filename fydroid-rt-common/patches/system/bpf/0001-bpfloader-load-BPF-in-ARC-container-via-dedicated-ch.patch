@@ -1,0 +1,100 @@
+From 10d992ff67dbe3bdb70ad6ff0908b57eee545bb8 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 17:09:14 +0800
+Subject: [PATCH] bpfloader: load BPF in ARC++ container via dedicated cheets
+ service
+
+Stock AOSP runs bpfloader unconditionally; fydroid had gated it to
+ro.boot.hardware=bertha and, on cheets (the ARC++ container), skipped loading
+entirely (just `setprop bpf.progs_loaded 1`) because the BPF filesystem could
+not be set up inside the container.
+
+That was fine on Android 11 but breaks Android 13: netd's libnetd_updatable
+(BpfHandler::init) hard-requires the pinned programs under
+/sys/fs/bpf/netd_shared/ and aborts when they're missing, so netd crash-loops
+and takes zygote down ("Failed to get program from
+/sys/fs/bpf/netd_shared/prog_netd_cgroupskb_egress_stats").
+
+Load BPF for real on cheets via a dedicated `bpfloader_cheets` service. It
+mirrors the stock bpfloader service (CHOWN/SYS_ADMIN/NET_ADMIN, oneshot,
+updatable) but with two container adjustments:
+  - OMITS reboot_on_failure, so a BPF failure during bring-up stays
+    inspectable instead of hard-looping CrOS;
+  - OMITS `rlimit memlock 1GiB`: setrlimit(RLIMIT_MEMLOCK) returns EPERM in the
+    container, and on the v6.12 kernel (CONFIG_MEMCG) BPF memory is
+    memcg-accounted so the memlock rlimit isn't consulted for BPF anyway.
+
+The tethering-apex programs
+(/apex/com.android.tethering/etc/bpf/netd_shared/netd.o) are already in the
+image; the loader pins them to /sys/fs/bpf/netd_shared/.
+
+Requires host-side (run_oci) setup: a writable container-userns-owned bpffs at
+/sys/fs/bpf, the CHOWN/SYS_ADMIN/NET_ADMIN caps, and a kernel with
+CONFIG_DEBUG_INFO_BTF (/sys/kernel/btf/vmlinux). Verified on a fydroid-rt
+board: with the new BTF-enabled kernel, bpfloader_cheets launches and
+reaches program loading; the only remaining blocker is bpffs being owned by the
+host userns (overflowuid). See
+device/fydeos/docs/bpf-container-host-requirements.md.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I123b3ec9d83c951f5b7bd7f42d53cdb9e3bfb292
+---
+ bpfloader/bpfloader.rc | 38 +++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/bpfloader/bpfloader.rc b/bpfloader/bpfloader.rc
+index 0d92cd8..e1b2e86 100644
+--- a/bpfloader/bpfloader.rc
++++ b/bpfloader/bpfloader.rc
+@@ -14,7 +14,8 @@
+ # stuff) and we absolutely want to be before netd and the system boot slot is
+ # considered to have booted successfully.
+ #
+-on load_bpf_programs
++# fydroid-rt: gate stock bpfloader on non-container hardware (matches ARC R).
++on load_bpf_programs && property:ro.boot.hardware=bertha
+     # Linux 5.16-rc1 has changed the default to 2 (disabled but changeable),
+     # but we need 0
+     write /proc/sys/kernel/unprivileged_bpf_disabled 0
+@@ -84,3 +85,38 @@ service bpfloader /system/bin/bpfloader
+     reboot_on_failure reboot,bpfloader-failed
+     # we're not really updatable, but want to be able to load bpf programs shipped in apexes
+     updatable
++
++# fydroid-rt: ARC++ container — load BPF programs for real.
++#
++# Android 13's netd (libnetd_updatable / BpfHandler) HARD-REQUIRES the pinned
++# programs under /sys/fs/bpf/netd_shared/ (unlike Android 11, which tolerated
++# their absence). The old skip-stub (just `setprop bpf.progs_loaded 1`) left
++# /sys/fs/bpf empty, so netd's libnetd_updatable_init() failed and netd
++# crash-looped, taking zygote down with it.
++#
++# This now works because the CrOS host (run_oci) sets up the container so the
++# loader can succeed:
++#   - /sys/fs/bpf is a writable bpffs owned by the container's root userns
++#     (not overflowuid), so bpfloader can mkdir/chown/pin into it;
++#   - the container's bounding set includes CHOWN, SYS_ADMIN, NET_ADMIN
++#     (and RLIMIT_MEMLOCK is raised / CAP_SYS_RESOURCE granted);
++#   - the kernel exposes /sys/kernel/btf/vmlinux (CONFIG_DEBUG_INFO_BTF).
++# See device/fydeos/docs/bpf-container-host-requirements.md for the full
++# host<->container contract.
++#
++# We use a dedicated cheets service rather than the stock one so we can OMIT
++# reboot_on_failure: during bring-up a BPF failure should leave the system
++# inspectable instead of hard-looping CrOS. The /proc/sys/{kernel,net} sysctl
++# writes the bertha path does are host-owned and are set on the host side.
++on load_bpf_programs && property:ro.boot.hardware=cheets
++    exec_start bpfloader_cheets
++
++service bpfloader_cheets /system/bin/bpfloader
++    capabilities CHOWN SYS_ADMIN NET_ADMIN
++    oneshot
++    # we're not really updatable, but want to load bpf programs shipped in apexes
++    updatable
++    # No `rlimit memlock`: the stock service raises it to 1GiB, but in the
++    # container setrlimit(RLIMIT_MEMLOCK) returns EPERM, and on this kernel
++    # (v6.12, CONFIG_MEMCG) BPF map memory is memcg-accounted so the memlock
++    # rlimit is not consulted for BPF anyway. Dropping it avoids a CRIT log.
+-- 
+2.43.0
+

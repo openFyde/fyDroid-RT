@@ -1,0 +1,69 @@
+From ac5146c5f5fc45b333b9940646bf11f5836dc7c4 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 16:16:34 +0800
+Subject: [PATCH 3/4] bluetooth: dynamically load the ARC bridge
+ (libbluetooth_arc) instead of Fluoride
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The AOSP-13 Fluoride stack needs an IBluetoothHci HAL, which the ARC container
+doesn't have (it bridges Bluetooth to the host BlueZ at the bt_interface_t level
+via libbluetooth_arc, a Mojo bridge). Statically-linked Fluoride therefore
+crash-loops com.android.bluetooth (no HCI; also the CLOCK_BOOTTIME_ALARM issue).
+
+Build libbluetooth_jni with -DDYNAMIC_LOAD_BLUETOOTH so hal_util_load_bt_library
+dlopen()s the bt_interface_t at runtime, and point that dlopen at
+libbluetooth_arc.so directly (instead of "libbluetooth.so") — avoids renaming the
+ARC lib or colliding with the statically-linked Fluoride libbluetooth, and keeps
+it at /system/lib64. (Pairs with a system/linkerconfig change letting the
+com.android.btservices apex namespace load libbluetooth_arc + its ARC-bridge deps
+from /system.)
+
+Verified on device: libbluetooth_jni dlopens libbluetooth_arc; the bridge
+logs "ARC bridge ready / registered BluetoothInstance with Chrome OS /
+BluetoothHost connected". Fluoride is bypassed (HCI/timerfd crashes gone).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Id3d580533b98c141a08911042b203aad02e08ec1
+---
+ android/app/Android.bp                                      | 5 +++++
+ .../jni/com_android_bluetooth_btservice_AdapterService.cpp  | 6 ++++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/android/app/Android.bp b/android/app/Android.bp
+index 2e71dccc46..d5eb9dc914 100644
+--- a/android/app/Android.bp
++++ b/android/app/Android.bp
+@@ -57,6 +57,11 @@ cc_library_shared {
+     name: "libbluetooth_jni",
+     defaults: ["fluoride_full_defaults"],
+     srcs: ["jni/**/*.cpp"],
++    // fydroid/ARC: load the bt_interface_t at runtime via dlopen("libbluetooth.so")
++    // + dlsym("bluetoothInterface") instead of the statically-linked Fluoride one,
++    // so the ARC Mojo bridge (libbluetooth_arc, deployed as libbluetooth.so) can
++    // replace the Fluoride stack (which has no HCI HAL in the container).
++    cflags: ["-DDYNAMIC_LOAD_BLUETOOTH"],
+     header_libs: [
+         "jni_headers",
+         "libbluetooth_headers",
+diff --git a/android/app/jni/com_android_bluetooth_btservice_AdapterService.cpp b/android/app/jni/com_android_bluetooth_btservice_AdapterService.cpp
+index f25e208d97..270d2e49ef 100644
+--- a/android/app/jni/com_android_bluetooth_btservice_AdapterService.cpp
++++ b/android/app/jni/com_android_bluetooth_btservice_AdapterService.cpp
+@@ -886,8 +886,10 @@ int hal_util_load_bt_library(const bt_interface_t** interface) {
+   const char* sym = BLUETOOTH_INTERFACE_STRING;
+   bt_interface_t* itf = nullptr;
+ 
+-  // The library name is not set by default, so the preset library name is used.
+-  void* handle = dlopen("libbluetooth.so", RTLD_NOW);
++  // fydroid/ARC: load the ARC Mojo bridge (libbluetooth_arc) directly by its own
++  // name instead of "libbluetooth.so" — avoids renaming it / colliding with the
++  // statically-linked Fluoride libbluetooth, and keeps it at /system/lib64.
++  void* handle = dlopen("libbluetooth_arc.so", RTLD_NOW);
+   if (!handle) {
+     const char* err_str = dlerror();
+     ALOGE("%s: failed to load Bluetooth library, error=%s", __func__,
+-- 
+2.43.0
+

@@ -1,0 +1,59 @@
+From c9f11c6f1f28082f7d9e07b37221ff5713f311b2 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 5 Jun 2026 17:05:37 +0800
+Subject: [PATCH 3/6] compat_matrix.6: relax power + drm for the ARC (fydroid)
+ container at FCM 6
+
+The Chrome OS container provides a narrower HAL set than a Treble device. Two
+FCM-6 required entries can't/needn't be satisfied as-is, so relax them:
+ - power: optional (Chrome OS owns power management; bridged via arc power.mojom /
+   wake_lock.mojom; no AIDL IPower HAL in the container).
+ - drm: accept @1.0-1.4 (Widevine is host-bridged via arc oemcrypto.mojom and
+   served by the generic drm@1.0-service-lazy; AOSP ships no generic @1.4 drm
+   service, only clearkey).
+
+graphics.mapper is NOT relaxed: the container now serves gralloc4
+(mapper@4.0 / allocator@4.0 via minigbm), satisfying the matrix as-is.
+
+Enables PRODUCT_ENFORCE_VINTF_MANIFEST for fydroid_rt_* without a full VINTF port.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I1d1ecf48806c3f22bf18d4a89dcd16f03bc14392
+---
+ compatibility_matrices/compatibility_matrix.6.xml | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/compatibility_matrices/compatibility_matrix.6.xml b/compatibility_matrices/compatibility_matrix.6.xml
+index e19d2dd12e..48f16aa7ae 100644
+--- a/compatibility_matrices/compatibility_matrix.6.xml
++++ b/compatibility_matrices/compatibility_matrix.6.xml
+@@ -195,9 +195,13 @@
+             <instance>default</instance>
+         </interface>
+     </hal>
++    <!-- fydroid (ARC container): Widevine DRM is host-bridged (arc oemcrypto.mojom),
++         served via the open-source generic drm@1.0-service-lazy + plugin; AOSP ships
++         no generic @1.4 drm service. Accept @1.0-1.4 so the container's drm@1.0 +
++         @1.2 clearkey are not flagged deprecated. -->
+     <hal format="hidl" optional="true">
+         <name>android.hardware.drm</name>
+-        <version>1.3-4</version>
++        <version>1.0-4</version>
+         <interface>
+             <name>ICryptoFactory</name>
+             <regex-instance>.*</regex-instance>
+@@ -423,7 +427,10 @@
+             <instance>default</instance>
+         </interface>
+     </hal>
+-    <hal format="aidl" optional="false">
++    <!-- fydroid (ARC container): Chrome OS owns power management (bridged via arc
++         power.mojom/wake_lock.mojom); there is no AIDL IPower HAL in the container,
++         so power is optional here. -->
++    <hal format="aidl" optional="true">
+         <name>android.hardware.power</name>
+         <version>1-2</version>
+         <interface>
+-- 
+2.43.0
+

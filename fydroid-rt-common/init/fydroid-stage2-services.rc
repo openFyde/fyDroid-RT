@@ -1,0 +1,111 @@
+# fydroid-rt: Defer stage-2 services
+#
+# In ARC++ two-stage boot, zygote runs in stage 1 (before /data mount).
+# These services belong to class "main" which should only start in stage 2.
+# Override them as disabled so they don't start during stage 1, even if
+# zygote crashes and its onrestart triggers fire.
+# They are enabled in on resume_boot (init.cheets.rc).
+
+service netd /system/bin/netd
+    override
+    disabled
+    class main
+    capabilities CHOWN DAC_OVERRIDE DAC_READ_SEARCH FOWNER IPC_LOCK KILL NET_ADMIN NET_BIND_SERVICE NET_RAW SETUID SETGID
+    socket dnsproxyd stream 0660 root inet
+    socket mdns stream 0660 root system
+    socket fwmarkd stream 0660 root inet
+    onrestart restart zygote
+    onrestart restart zygote_secondary
+    updatable
+
+service cameraserver /system/bin/cameraserver
+    override
+    disabled
+    class main
+    user cameraserver
+    group audio camera input drmrpc
+    ioprio rt 4
+    task_profiles CameraServiceCapacity MaxPerformance
+    rlimit rtprio 10 10
+
+service media /system/bin/mediaserver
+    override
+    disabled
+    class main
+    user media
+    group audio camera inet net_bt net_bt_admin net_bw_acct drmrpc mediadrm
+    ioprio rt 4
+    task_profiles ProcessCapacityHigh HighPerformance
+
+service wificond /system/bin/wificond
+    override
+    disabled
+    class main
+    user wifi
+    group wifi net_raw net_admin
+    capabilities NET_RAW NET_ADMIN
+
+# iorapd — IO readahead/prefetching daemon. Not used in ARC++ container.
+service iorapd /system/bin/iorapd
+    override
+    disabled
+
+# Override zygote to remove onrestart triggers for stage-2 services.
+# Without this, a zygote crash in stage 1 would start netd/cameraserver/
+# media/wificond via the original onrestart block.
+service zygote /system/bin/app_process64 -Xzygote /system/bin --zygote --start-system-server --socket-name=zygote
+    override
+    class main
+    priority -20
+    user root
+    group root readproc reserved_disk
+    socket zygote stream 660 root system
+    socket usap_pool_primary stream 660 root system
+    onrestart exec_background - system system -- /system/bin/vdc volume abort_fuse
+    onrestart write /sys/power/state on
+    onrestart restart audioserver
+    task_profiles ProcessCapacityHigh MaxPerformance
+
+# Re-arm the zygote -> netd restart for stage 2.
+#
+# netd keeps the netId table for the networks ConnectivityService created, and
+# a fresh system_server restarts netId allocation at 100.  Stock init.zygote*.rc
+# restarts netd along with zygote so the two never disagree; the override above
+# had to drop that line because in stage 1 `restart` would *start* netd before
+# /data is mounted.  Without it, any system_server restart (a Watchdog kill, for
+# example) leaves the old netd behind and the ARC ethernet agent fails to
+# register with "Error creating network [100 ETHERNET]: File exists" — no
+# default network, no default route, no internet until the whole container is
+# restarted.  ro.data_ready is set by resume_boot, so these only fire in stage 2.
+#
+# netd is stopped rather than restarted on purpose: `restart` would run netd's
+# own `onrestart restart zygote`, which — unlike the stock case, where the
+# restart happens inside zygote's Reap while zygote is still SVC_RESTARTING —
+# can land after the new zygote is already running and bounce it, giving a
+# zygote <-> netd restart loop.  A stopped service is reaped without running
+# its onrestart commands, so the loop cannot form.
+on property:init.svc.zygote=restarting && property:ro.data_ready=1
+    setprop fydroid.netd.rearm 1
+    stop netd
+
+# init notifies "stopped" only once the process has actually been reaped, so
+# this brings netd back with an empty netId table well before the new
+# system_server gets far enough to register its networks.
+#
+# Gated on the marker set above rather than on ro.data_ready, so it only fires
+# for the stop this file issued.  Triggering on *any* netd stop was worse than
+# it looks: a netd started outside the zygote path comes up with empty routing
+# tables and nothing re-pushes them, because system_server never restarted.  A
+# plain `stop netd` then left the container with netd running, no default route
+# and no internet, while ConnectivityService still reported "Active default
+# network: 100" — a far more confusing state than the netd-is-down one the
+# operator asked for, and it made netd impossible to keep stopped for debugging.
+on property:init.svc.netd=stopped && property:fydroid.netd.rearm=1
+    start netd
+    setprop fydroid.netd.rearm 0
+
+# Backstop for the case where netd was already down when zygote restarted: no
+# state change means no "stopped" notification, so nothing would restart it.
+# `start` on a running service is a no-op.
+on property:init.svc.zygote=running && property:ro.data_ready=1
+    start netd

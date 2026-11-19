@@ -1,0 +1,121 @@
+# ARC++ / fydroid-rt type definitions
+# Types NOT in AOSP 11 base policy, needed for Chrome OS container runtime.
+
+# --- File types ---
+type arc_file, file_type;
+type arc_bridge_socket, file_type;
+type wayland_socket, file_type;
+type cras_socket, file_type;
+type camera_socket, file_type;
+type camera_dir, file_type;
+type chrome_file, file_type;
+# Stub for the CrOS-side /run/chrome dir label (defined in chromeos.cil
+# file.te as `arc_dir`). Declared here so AOSP secilc accepts rules referring
+# to it; merged with the real CrOS definition at policy combine time.
+type arc_dir, file_type;
+type apkcache_file, file_type;
+type debug_bugreport, file_type;
+type debug_arc_bugreport, file_type;
+type testharness, file_type;
+type adb_socket, file_type;
+type wl_trace_data_file, file_type, data_file_type, core_data_file_type;
+type kcm_data, file_type, data_file_type, core_data_file_type;
+type debugfs_sync, fs_type, debugfs_type;
+type debugfs_sw_sync, fs_type, debugfs_type;
+type sw_sync_dev, dev_type;
+
+# --- Exec types (vendor binaries) ---
+type arc_bridge_exec, exec_type, vendor_file_type, file_type;
+
+# --- Exec types (system binaries) ---
+type arc_wake_lock_exec, exec_type, file_type, system_file_type;
+type arc_trace_service_exec, exec_type, file_type, system_file_type;
+type arc_lmkd_exec, exec_type, file_type, system_file_type;
+type arc_bugreport_exec, exec_type, file_type, system_file_type;
+type arc_bugreportd_exec, exec_type, file_type, system_file_type;
+type arc_boot_continue_exec, exec_type, file_type, system_file_type;
+type arc_imelang_exec, exec_type, file_type, system_file_type;
+type arc_cache_setup_exec, exec_type, file_type, system_file_type;
+
+# --- Binder service types ---
+type arc_ime_service, service_manager_type;
+type arc_display_layout_service, service_manager_type;
+type arc_anr_messenger_service, service_manager_type;
+type arc_app_fuse_mounter_service, service_manager_type;
+type arc_bridge_service, service_manager_type;
+type arc_data_device_provider_service, service_manager_type;
+type arc_data_device_service, service_manager_type;
+type arc_disk_space_service, service_manager_type;
+type arc_hash_service, service_manager_type;
+type arc_input_method_manager_service, service_manager_type;
+type arc_lock_screen_service, service_manager_type;
+type arc_metrics_service, service_manager_type;
+type arc_obb_mounter_service, service_manager_type;
+type arc_print_service, service_manager_type;
+type arc_screen_capture_service, service_manager_type;
+type arc_task_controller_service, service_manager_type;
+type arc_task_window_placer_service, service_manager_type;
+type arc_toast_service, service_manager_type;
+type arc_volume_mounter_service, service_manager_type;
+type arc_wake_lock_service, service_manager_type;
+type arc_window_manager_service, service_manager_type;
+type wayland_service, service_manager_type;
+type wayland_input_injector_service, service_manager_type;
+
+# --- HIDL HW service type ---
+type hal_arcbridgeservice_hwservice, hwservice_manager_type;
+
+# --- Property types ---
+# AOSP 13 enables enforce_sysprop_owner (PRODUCT_SHIPPING_API_LEVEL >= 31): every
+# property_type must carry a system/product/vendor owner attribute or the policy
+# fails to link. Use the owner macros (te_macros), classified by namespace:
+#   - non-vendor names (arc.*, ro.arc.*, ro.boot.*) set by system_server/init →
+#     system-owned. system_restricted: settable only by coredomain, readable
+#     system-wide.
+#   - vendor.*/ro.vendor.* names → vendor-owned (vendor_restricted).
+# These types carry no allow rules in fydroid policy (the container runs
+# permissive post-boot), so the owner/scope choice only needs to satisfy the
+# neverallows, which it does.
+
+# System-owned (arc.*, ro.arc.*).
+system_restricted_prop(chromeos_prop)
+# System-owned (ro.boot.* and arc.* set by init / system_server).
+system_restricted_prop(arc_drop_caches_prop)
+system_restricted_prop(arc_vpn_active_prop)
+system_restricted_prop(arc_cache_prop)
+system_restricted_prop(arc_demo_prop)
+system_restricted_prop(arc_abi_migrationstatus_prop)
+system_restricted_prop(disable_boot_completed_prop)
+system_restricted_prop(enable_adb_sideloading_prop)
+system_restricted_prop(enable_arc_nearby_share_prop)
+system_restricted_prop(enable_consumer_auto_update_toggle_prop)
+system_restricted_prop(iioservice_present_prop)
+system_restricted_prop(locale_prop)
+system_restricted_prop(preferred_languages_prop)
+system_restricted_prop(supervision_transition_prop)
+system_restricted_prop(zram_size_prop)
+
+# Vendor-owned (vendor.arc.*, ro.vendor.arc.*) — split out of chromeos_prop so the
+# vendor-namespace properties carry a vendor owner.
+vendor_restricted_prop(chromeos_vendor_prop)
+# Vendor-owned (ro.vendor.arc.on_boot).
+vendor_restricted_prop(chromeos_boot_prop)
+# Vendor-owned (vendor.arc.boot_type, ro.vendor.cts_*, ro.vendor.cdm.*).
+vendor_restricted_prop(vendor_arc_boot_type_prop)
+vendor_restricted_prop(vendor_interaction_helper_prop)
+vendor_restricted_prop(vendor_widevine_cdm_prop)
+
+# --- Process domain types ---
+type arc_wake_lock, domain;
+type arc_trace_service, domain;
+type arc_boot_continue, domain;
+# fydroid_imelangd: reads Gboard's current language (see arc_permissive.te).
+type arc_imelang, domain;
+type arc_bridge, domain;
+
+# --- App domain types ---
+type arc_apkcache_app, domain;
+type arc_applauncher_app, domain;
+type arc_intent_helper_app, domain;
+type arc_print_spooler_app, domain;
+type arc_testapp_input_app, domain;

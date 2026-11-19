@@ -1,0 +1,48 @@
+From d631fd713aa31cfef657bfae882d26dc6cf86226 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 15 Apr 2026 11:13:16 +0800
+Subject: [PATCH] mkuserimg_mke2fs: add --uid_map and --gid_map for e2fsdroid
+
+Pass UID/GID mapping tables through to e2fsdroid's -u/-g flags,
+enabling user-namespace UID/GID remapping in ext4 images.
+
+Comma-separated triplets are converted to newline-separated format
+before passing to e2fsdroid.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I8f2dbeee7cc43c91a4ac56a7e60fee2fd38e0445
+---
+ ext4_utils/mkuserimg_mke2fs.py | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/ext4_utils/mkuserimg_mke2fs.py b/ext4_utils/mkuserimg_mke2fs.py
+index 41ae8cd7..2e1f6507 100644
+--- a/ext4_utils/mkuserimg_mke2fs.py
++++ b/ext4_utils/mkuserimg_mke2fs.py
+@@ -113,6 +113,12 @@ def ParseArguments(argv):
+                       help="The mke2fs hash seed (mke2fs).")
+   parser.add_argument("--share_dup_blocks", "-c", action="store_true",
+                       help="ext4 share dup blocks (e2fsdroid).")
++  parser.add_argument("--uid_map",
++                      help="UID mapping (e2fsdroid). Comma-separated "
++                           "'child parent len' triplets.")
++  parser.add_argument("--gid_map",
++                      help="GID mapping (e2fsdroid). Comma-separated "
++                           "'child parent len' triplets.")
+ 
+   args, remainder = parser.parse_known_args(argv)
+   # The current argparse doesn't handle intermixed arguments well. Checks
+@@ -160,6 +166,10 @@ def ConstructE2fsCommands(args):
+     e2fsdroid_opts += ["-D", args.base_alloc_file_out]
+   if args.share_dup_blocks:
+     e2fsdroid_opts.append("-s")
++  if args.uid_map:
++    e2fsdroid_opts += ["-u", args.uid_map.replace(',', '\n')]
++  if args.gid_map:
++    e2fsdroid_opts += ["-g", args.gid_map.replace(',', '\n')]
+   if args.file_contexts:
+     e2fsdroid_opts += ["-S", args.file_contexts]
+ 
+-- 
+2.43.0
+

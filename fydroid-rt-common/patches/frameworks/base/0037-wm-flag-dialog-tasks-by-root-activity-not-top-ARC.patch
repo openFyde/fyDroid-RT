@@ -1,0 +1,52 @@
+From 76688fa58162f273abac728dde4b416d07a9e61d Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 12 Jun 2026 13:37:27 +0800
+Subject: [PATCH 37/75] wm: flag dialog tasks by root activity, not top (ARC)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Task.setTaskMetadata() set METADATA_IS_DIALOG when the *top* activity used a
+floating theme. The Chrome-side fydroid composer turns a dialog task into a
+frameless modal overlay, so this flagged a normal app the instant it showed a
+dialog-themed activity on top: the metadata propagates to the task's child
+layers and the composer latches the whole app task into a modal. Worse,
+setTaskMetadata re-runs from makeAnimationLeash (the dialog-open transition),
+so the flag flips mid-animation and — because the composer never reverts a
+latched modal — the app stays collapsed into a dialog.
+
+Check the ROOT activity instead: a task is a dialog only when it is
+fundamentally a standalone dialog (PackageInstaller, permission prompts, whose
+base activity is floating). An app showing a dialog activity on top keeps its
+normal app root, so it is no longer misclassified.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: If84134c5830826ec54afc3ea5ff0cd968b717ee1
+---
+ services/core/java/com/android/server/wm/Task.java | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 08504a575201..2166eade3dca 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -3119,7 +3119,15 @@ class Task extends TaskFragment {
+                         == ApplicationInfo.CATEGORY_GAME) {
+             b.setMetadata(METADATA_IS_GAME, 1);
+         }
+-        if (isDialogTask(topActivity)) {
++        // A task is a dialog task only when its ROOT activity uses a floating
++        // theme — i.e. the whole task is a standalone dialog (PackageInstaller,
++        // permission prompts). Checking the top activity instead flags a normal
++        // app the moment it shows a dialog-themed activity on top: the task
++        // metadata propagates to all child layers, and the Chrome-side composer
++        // latches the entire app task into a modal overlay. setTaskMetadata is
++        // re-run on makeAnimationLeash (the dialog-open transition), so the
++        // top-activity check would flip mid-animation and stick.
++        if (isDialogTask(getRootActivity())) {
+             b.setMetadata(METADATA_IS_DIALOG, 1);
+         }
+         if (getActivityType() == ACTIVITY_TYPE_HOME) {
+-- 
+2.43.0
+

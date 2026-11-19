@@ -1,0 +1,125 @@
+From 5541852dbc66fd348332bdbfb3bd844f4ee14138 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 18 May 2026 14:48:23 +0800
+Subject: [PATCH 20/75] TaskLaunchParamsModifier: rotation-stable launch size +
+ persister recovery
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two related fixes for unresizable activities with declared AR
+constraints (e.g. NetEase Cloud Music maxAspectRatio=3.0):
+
+1. Size the AR-clamped launch window from DIP constants
+   (defaultShortDp=480, maxLongDp=1280) converted via the live
+   densityDpi, instead of dispShort * 0.6. The fraction-of-display
+   short side made the launch size change after rotation — the same
+   app launched at 480×640 DIP in landscape and 960×1280 DIP in
+   portrait, because dispShort changed.
+
+2. Detect "stale tiny bounds" from LaunchParamsPersister. If
+   currentParams.mBounds were saved at a postage-stamp size during
+   a prior session, the dispNaturalAR short-circuit would let them
+   pass through and the user got a 544×960 px window on a
+   2560×1600 display. Reject any incoming bounds whose short side
+   is below the AOSP phone-portrait default
+   (DEFAULT_PORTRAIT_PHONE_WIDTH_DP × density) and let the
+   AR-based recompute give a sane size.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I02767a04f190497f6854cf2c0d85cf80906163a7
+---
+ .../server/wm/TaskLaunchParamsModifier.java   | 69 ++++++++++++++++---
+ 1 file changed, 61 insertions(+), 8 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index 37870ed258ff..d4a09e81ad66 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -433,6 +433,46 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+         final int dispH = displayBounds.height();
+         if (dispW <= 0 || dispH <= 0) return;
+ 
++        // If the display's natural AR is already inside the activity's
++        // declared range, the activity accepts whatever AR the display
++        // happens to be — no need to snap to a predefined value and
++        // shrink the window. Bail out so the patch-25 "unresizable apps
++        // fill screen" flow can give the activity the full display.
++        // Without this, wide-range tablet apps (e.g.,
++        // com.netease.cloudmusic declares min=1.0 max=3.0, which trivially
++        // contains every real display AR) launch at ~1280x720 on a
++        // 2048x1128 display instead of filling the screen.
++        //
++        // Exception: if the launch bounds came in absurdly small (e.g.
++        // 544×960 px on a 2560×1600 display, restored by
++        // LaunchParamsPersister from a prior session that ended at a
++        // tiny size), keep going and recompute a reasonable default —
++        // otherwise we'd respect the stale tiny bounds and the user
++        // gets a postage-stamp window. Threshold: smaller than the
++        // typical phone-portrait default (~412×732 dp).
++        final float densityCheck =
++                (float) display.getConfiguration().densityDpi / DENSITY_DEFAULT;
++        final int minOkShortPx =
++                (int) (DEFAULT_PORTRAIT_PHONE_WIDTH_DP * densityCheck + 0.5f);
++        final int boundsShortPx =
++                Math.min(outParams.mBounds.width(), outParams.mBounds.height());
++        final boolean boundsTooSmall = !outParams.mBounds.isEmpty()
++                && boundsShortPx > 0 && boundsShortPx < minOkShortPx;
++        final float dispLongCheck = Math.max(dispW, dispH);
++        final float dispShortCheck = Math.max(1f, Math.min(dispW, dispH));
++        final float dispNaturalAR = dispLongCheck / dispShortCheck;
++        final float effectiveMin = minAR > 0f ? minAR : 1.0f;
++        final float effectiveMax = maxAR > 0f ? maxAR : Float.MAX_VALUE;
++        if (!boundsTooSmall
++                && dispNaturalAR >= effectiveMin
++                && dispNaturalAR <= effectiveMax) {
++            if (DEBUG) {
++                appendLog("arc-aspect-display-fits-range minAR=" + effectiveMin
++                        + " maxAR=" + effectiveMax + " dispAR=" + dispNaturalAR);
++            }
++            return;
++        }
++
+         // Decide whether the window should be portrait or landscape from
+         // the activity's preferred orientation, falling back to whatever
+         // orientation the current default bounds already chose.
+@@ -450,15 +490,28 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+         if (maxAR > 0f && targetAR > maxAR) targetAR = maxAR;
+         if (targetAR <= 0f) return;
+ 
+-        // Default the short side to roughly half the display short side so
+-        // the window doesn't dominate the screen. Cap to 1280 long side
+-        // to match the existing freeform default size feel.
+-        int shortSide = Math.max(360, (int) Math.round(dispShort * 0.6f));
+-        int longSide = (int) Math.round(shortSide * targetAR);
+-        if (longSide > 1280) {
+-            longSide = 1280;
+-            shortSide = (int) Math.round(longSide / targetAR);
++        // Size the launch window from DIP constants, not as a fraction of
++        // the display's physical short side — otherwise rotating the
++        // display changes the launched size (e.g. NetEase
++        // IconChangeDefaultAlias goes 480×640 DIP in landscape but
++        // 960×1280 DIP in portrait, because dispShort changes). The DIP
++        // constants below are converted to display pixels via the live
++        // densityDpi, so the result stays the same number of DIPs
++        // regardless of rotation.
++        final float density =
++                (float) display.getConfiguration().densityDpi / DENSITY_DEFAULT;
++        final int defaultShortDp = 480;
++        final int minShortDp = 360;
++        final int maxLongDp = 1280;
++        int shortSideDp = defaultShortDp;
++        int longSideDp = Math.round(shortSideDp * targetAR);
++        if (longSideDp > maxLongDp) {
++            longSideDp = maxLongDp;
++            shortSideDp = Math.round(longSideDp / targetAR);
+         }
++        if (shortSideDp < minShortDp) shortSideDp = minShortDp;
++        final int shortSide = (int) (shortSideDp * density + 0.5f);
++        final int longSide = (int) (longSideDp * density + 0.5f);
+ 
+         final int targetW = portrait ? shortSide : longSide;
+         final int targetH = portrait ? longSide : shortSide;
+-- 
+2.43.0
+

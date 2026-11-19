@@ -1,0 +1,79 @@
+From 9ac57f9b4382a416253e8a80e7b945512503b35b Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 4 Sep 2026 14:54:37 +0800
+Subject: [PATCH 3/5] debuggerd: survive PR_SET_DUMPABLE restore on a
+ fs.suid_dumpable=2 host
+
+debuggerd_signal_handler() saves PR_GET_DUMPABLE, forces it to 1 so crash_dump
+can ptrace the target, and restores the saved value afterwards. PR_GET_DUMPABLE
+can return SUID_DUMP_ROOT (2), but PR_SET_DUMPABLE only accepts 0 and 1 --
+kernel/sys.c returns -EINVAL for anything else -- so the restore fails and
+fatal_errno() aborts the process it just finished dumping.
+
+Chrome OS sets fs.suid_dumpable=2 in /etc/sysctl.d/00-sysctl.conf. The sysctl is
+global, so the ARC container inherits it, and commit_creds() stamps dumpable =
+suid_dumpable onto every zygote-forked process when it drops to its app uid.
+Every ANR trace and every native backtrace therefore killed its own target.
+Observed on a 3.5 GB amd64 board under memory pressure: an app ANR made
+ActivityManager collect stack traces, and system_server died mid-collection with
+
+  E system_server: libdebuggerd_client: failed to read status response from tombstoned
+  F libc    : failed to restore dumpable: Invalid argument
+
+taking all of Android down with it and restarting it into a ~90 s, ~100%-of-a-core
+rebuild -- three times in ten minutes.
+
+Fall back to SUID_DUMP_DISABLE when the kernel rejects the saved value. That is
+the nearest state it will accept and is equivalent to SUID_DUMP_ROOT for both
+things that gate access here: __ptrace_may_access() requires CAP_SYS_PTRACE for
+any value other than SUID_DUMP_USER, and task_dump_owner() leaves /proc/<pid>
+root-owned unless dumpable is SUID_DUMP_USER. Only kernel core-dump generation
+is given up, which Android does not use, and a later dump still works because
+the handler re-raises dumpable to 1 each time.
+
+Behaviour is unchanged on any host where the original restore succeeded.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Change-Id: Iaf6452f541a8968cd582db87722e75a74beb0a85
+---
+ debuggerd/handler/debuggerd_handler.cpp | 24 +++++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/debuggerd/handler/debuggerd_handler.cpp b/debuggerd/handler/debuggerd_handler.cpp
+index 35be2bf310..7d287af380 100644
+--- a/debuggerd/handler/debuggerd_handler.cpp
++++ b/debuggerd/handler/debuggerd_handler.cpp
+@@ -580,7 +580,29 @@ static void debuggerd_signal_handler(int signal_number, siginfo_t* info, void* c
+ 
+   // Restore PR_SET_DUMPABLE to its original value.
+   if (prctl(PR_SET_DUMPABLE, orig_dumpable) != 0) {
+-    fatal_errno("failed to restore dumpable");
++    // fydroid-rt: PR_GET_DUMPABLE above can return SUID_DUMP_ROOT (2), but
++    // PR_SET_DUMPABLE only accepts SUID_DUMP_DISABLE (0) and SUID_DUMP_USER (1)
++    // -- anything else is -EINVAL (kernel/sys.c, PR_SET_DUMPABLE). So on a host
++    // that sets fs.suid_dumpable=2 the original value cannot be restored and
++    // this fatal_errno() kills the process *after* a successful dump. Chrome OS
++    // sets exactly that (/etc/sysctl.d/00-sysctl.conf), the sysctl is global so
++    // the ARC container inherits it, and every zygote-forked process picks up
++    // dumpable=2 from commit_creds() when it drops to its app uid. The result
++    // was that any ANR trace or native backtrace killed its target: when that
++    // target was system_server, all of Android restarted.
++    //
++    // Fall back to SUID_DUMP_DISABLE, the nearest state the kernel will accept.
++    // It is equivalent to SUID_DUMP_ROOT for both things that actually gate
++    // access here -- __ptrace_may_access() demands CAP_SYS_PTRACE for any value
++    // other than SUID_DUMP_USER (kernel/ptrace.c), and /proc/<pid> stays
++    // root-owned because task_dump_owner() only hands it to the task's own uid
++    // when dumpable is SUID_DUMP_USER (fs/proc/base.c). It gives up kernel
++    // core-dump generation, which Android does not use (crashes go through
++    // debuggerd/tombstoned), and a later dump still works because the
++    // PR_SET_DUMPABLE 1 above re-raises it each time.
++    if (errno != EINVAL || prctl(PR_SET_DUMPABLE, 0 /* SUID_DUMP_DISABLE */) != 0) {
++      fatal_errno("failed to restore dumpable");
++    }
+   }
+ 
+   // Restore PR_SET_PTRACER to its original value.
+-- 
+2.43.0
+

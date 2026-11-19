@@ -1,0 +1,64 @@
+From 1949de629e9a0de935928a92558ec386b9f34e0d Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 9 Sep 2026 16:50:29 +0800
+Subject: [PATCH 65/75] am: give ARC containers a longer process-start budget
+
+PROC_START_TIMEOUT is not just a report threshold -- AMS kills the process that
+misses it. In the container that turns a slow start into a guaranteed app hang:
+an ad SDK calls WebSettings.getDefaultUserAgent() on the main thread, which
+blocks until WebView's sandboxed renderer is up; the renderer misses 10 s, AMS
+kills it and retries, so the blocked JNI call can never complete and the app
+ANRs on the next input event.
+
+Measured on an ARC board: an ordinary process binds in 12-18 ms, but the first
+WebView sandboxed renderer after a cold start takes 4509 ms (the second, warm,
+takes 3 ms) -- so under memory pressure, when WebView's pages have been evicted
+to zram, that cold cost can cross 10 s. AOSP already concedes the environment
+can be slow: PROC_START_TIMEOUT_WITH_WRAPPER is 1200 s.
+
+Scoped to IS_CONTAINER so other targets keep stock timing, and left multiplied
+by HW_TIMEOUT_MULTIPLIER. Deliberately not raised via ro.hw_timeout_multiplier,
+which would also inflate the ANR stack-dump budget and NATIVE_DUMP_TIMEOUT_MS.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I5d265905f9d0eef8f591d11bdadbbff953c16075
+---
+ .../server/am/ActivityManagerService.java     | 22 ++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/am/ActivityManagerService.java b/services/core/java/com/android/server/am/ActivityManagerService.java
+index 1dd5a23e4791..06b8509ffb13 100644
+--- a/services/core/java/com/android/server/am/ActivityManagerService.java
++++ b/services/core/java/com/android/server/am/ActivityManagerService.java
+@@ -502,7 +502,27 @@ public class ActivityManagerService extends IActivityManager.Stub
+ 
+     // How long we wait for a launched process to attach to the activity manager
+     // before we decide it's never going to come up for real.
+-    static final int PROC_START_TIMEOUT = 10 * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
++    // fydroid: ARC needs a longer process-start budget than a phone.
++    //
++    // The stock 10 s is not just a report threshold -- AMS KILLS the process that
++    // misses it ("am_kill ... -10000, start timeout"). In the container that turns
++    // a slow start into a guaranteed app hang: an ad SDK calls
++    // WebSettings.getDefaultUserAgent() on the main thread, which blocks until
++    // WebView's sandboxed renderer is up; the renderer misses 10 s, AMS kills it
++    // and retries, so the blocked JNI call can never complete and the app ANRs on
++    // the next input event. Measured on device (Asphalt 8, Crossy Road): repeated
++    // am_process_start_timeout on com.android.webview:sandboxed_process0 at
++    // exactly 10.0 s, each followed by an ANR. gservices has missed the same
++    // budget, so this is not WebView-specific -- process start here is simply
++    // slower than the constant assumes, and killing the victim makes it worse.
++    //
++    // AOSP already concedes the environment can be slow: PROC_START_TIMEOUT_WITH_WRAPPER
++    // below is 1200 s. Scoped to IS_CONTAINER so non-ARC targets keep stock timing,
++    // and left multiplied by HW_TIMEOUT_MULTIPLIER so ro.hw_timeout_multiplier still
++    // scales it. Deliberately NOT raised via that property, which would also inflate
++    // the ANR stack-dump budget and NATIVE_DUMP_TIMEOUT_MS.
++    static final int PROC_START_TIMEOUT =
++            (Build.IS_CONTAINER ? 30 : 10) * 1000 * Build.HW_TIMEOUT_MULTIPLIER;
+     // How long we wait to kill an application zygote, after the last process using
+     // it has gone away.
+     static final int KILL_APP_ZYGOTE_DELAY_MS = 5 * 1000;
+-- 
+2.43.0
+

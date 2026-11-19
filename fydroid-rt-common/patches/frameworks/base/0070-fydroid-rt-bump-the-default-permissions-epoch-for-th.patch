@@ -1,0 +1,32 @@
+From de802301cc0374a65e1349cb19d088cfd67bb84a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 16 Sep 2026 12:52:57 +0800
+Subject: [PATCH 70/75] fydroid-rt: bump the default-permissions epoch for the
+ Play Store grants
+
+default-permissions-fydroid-gms.xml now grants the Play Store its runtime
+permissions as well as Play services, and an already-provisioned profile
+only re-reads that directory when the epoch moves.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I5ec3898e2e424271f00a48da4bc01f61f5a93bd2
+---
+ services/core/java/com/android/server/pm/Settings.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/pm/Settings.java b/services/core/java/com/android/server/pm/Settings.java
+index e66a2ef518a3..792e623bcbb0 100644
+--- a/services/core/java/com/android/server/pm/Settings.java
++++ b/services/core/java/com/android/server/pm/Settings.java
+@@ -5440,7 +5440,7 @@ public final class Settings implements Watchable, Snappable {
+         //
+         // Bump this whenever the default-permission content we ship changes; that
+         // makes the next boot run exactly one more grant pass per user.
+-        private static final int FYDROID_DEFAULT_PERMISSIONS_EPOCH = 2;
++        private static final int FYDROID_DEFAULT_PERMISSIONS_EPOCH = 3;
+ 
+         private static final Random sRandom = new Random();
+ 
+-- 
+2.43.0
+

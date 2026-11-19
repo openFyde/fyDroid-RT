@@ -1,0 +1,78 @@
+From 3e550cdff5b18f05656a5ce120b9bdc83e2f3c01 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 20 Apr 2026 17:14:12 +0800
+Subject: [PATCH 31/75] Fix NPEs in two-stage boot: RollbackStore,
+ AppExitInfoTracker, Keyguard
+
+In ARC++ container two-stage boot, /data is not mounted during the
+first stage. Several services crash with NPEs when they try to access
+/data paths before the second stage completes:
+
+- RollbackStore.loadRollbacks(): listFiles() returns null when the
+  rollback data directory doesn't exist; the for-each loop NPEs on the
+  null array.
+- AppExitInfoTracker.loadExistingProcessExitInfo(): mProcExitInfoFile
+  is null when init() returns early due to failed directory creation;
+  onSystemReady() then dereferences it.
+- KeyguardViewMediator.showLocked(): mShowKeyguardWakeLock is null
+  when handleSystemReady() fires before start()/setupLocked() has run,
+  which happens due to two-stage boot timing.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Id3653a117f06b0d0e8541db7dce283cf40732c34
+---
+ .../android/systemui/keyguard/KeyguardViewMediator.java    | 4 ++++
+ .../java/com/android/server/am/AppExitInfoTracker.java     | 3 ++-
+ .../java/com/android/server/rollback/RollbackStore.java    | 7 ++++++-
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java b/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
+index 58ed3aae233e..091acd7d51f4 100644
+--- a/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
++++ b/packages/SystemUI/src/com/android/systemui/keyguard/KeyguardViewMediator.java
+@@ -2060,6 +2060,10 @@ public class KeyguardViewMediator implements CoreStartable, Dumpable,
+     private void showLocked(Bundle options) {
+         Trace.beginSection("KeyguardViewMediator#showLocked acquiring mShowKeyguardWakeLock");
+         if (DEBUG) Log.d(TAG, "showLocked");
++        if (mShowKeyguardWakeLock == null) {
++            Trace.endSection();
++            return;
++        }
+         // ensure we stay awake until we are finished displaying the keyguard
+         mShowKeyguardWakeLock.acquire();
+         Message msg = mHandler.obtainMessage(SHOW, options);
+diff --git a/services/core/java/com/android/server/am/AppExitInfoTracker.java b/services/core/java/com/android/server/am/AppExitInfoTracker.java
+index 32d20718c192..44428f9ef375 100644
+--- a/services/core/java/com/android/server/am/AppExitInfoTracker.java
++++ b/services/core/java/com/android/server/am/AppExitInfoTracker.java
+@@ -649,7 +649,8 @@ public final class AppExitInfoTracker {
+      */
+     @VisibleForTesting
+     void loadExistingProcessExitInfo() {
+-        if (!mProcExitInfoFile.canRead()) {
++        // Stage-1 boot: mProcExitInfoFile is null when init() bailed (no /data).
++        if (mProcExitInfoFile == null || !mProcExitInfoFile.canRead()) {
+             mAppExitInfoLoaded.set(true);
+             return;
+         }
+diff --git a/services/core/java/com/android/server/rollback/RollbackStore.java b/services/core/java/com/android/server/rollback/RollbackStore.java
+index f973f5ce9ce0..f406cdcc7e04 100644
+--- a/services/core/java/com/android/server/rollback/RollbackStore.java
++++ b/services/core/java/com/android/server/rollback/RollbackStore.java
+@@ -84,7 +84,12 @@ class RollbackStore {
+     private static List<Rollback> loadRollbacks(File rollbackDataDir) {
+         List<Rollback> rollbacks = new ArrayList<>();
+         rollbackDataDir.mkdirs();
+-        for (File rollbackDir : rollbackDataDir.listFiles()) {
++        // Stage-1 boot: /data not mounted yet, listFiles() returns null.
++        File[] files = rollbackDataDir.listFiles();
++        if (files == null) {
++            return rollbacks;
++        }
++        for (File rollbackDir : files) {
+             if (rollbackDir.isDirectory()) {
+                 try {
+                     rollbacks.add(loadRollback(rollbackDir));
+-- 
+2.43.0
+

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">套件安裝</string>
+    <string name="notification_channel_description">APK 安裝進度</string>
+    <string name="mode_user">[使用者]</string>
+    <string name="mode_policy">[政策]</string>
+    <string name="installing">%1$s 正在安裝: %2$s</string>
+    <string name="installed">%1$s 已安裝: %2$s</string>
+    <string name="install_failed">%1$s 安裝失敗: %2$s</string>
+</resources>

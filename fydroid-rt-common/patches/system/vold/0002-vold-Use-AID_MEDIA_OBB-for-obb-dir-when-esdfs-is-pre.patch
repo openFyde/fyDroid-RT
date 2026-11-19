@@ -1,0 +1,61 @@
+From eaefb8dd1c40afe620271548e35c5896e0b31524 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 23 Apr 2026 15:44:14 +0800
+Subject: [PATCH 2/4] vold: Use AID_MEDIA_OBB for obb dir when esdfs is present
+
+Chrome OS esdfs derive_gid mode requires the obb directory to have
+uid/gid=AID_MEDIA_OBB(1059) with mode 0770.  Using AID_MEDIA_RW(1023)
+with mode 02771 causes esdfs default view to fail stat on the obb dir,
+which makes the FUSE bind mount fail and triggers scope guard teardown
+of the entire mount chain.
+
+Matches the reference device behavior.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I87167c29bf233270141ea4e69a987ca43f80e831
+---
+ Utils.cpp | 27 +++++++++++++++++++--------
+ 1 file changed, 19 insertions(+), 8 deletions(-)
+
+diff --git a/Utils.cpp b/Utils.cpp
+index 5e66e9f5..8d607904 100644
+--- a/Utils.cpp
++++ b/Utils.cpp
+@@ -1698,15 +1698,26 @@ status_t PrepareAndroidDirs(const std::string& volumeRoot) {
+         return -errno;
+     }
+ 
+-    gid_t obbGid = useSdcardFs ? AID_MEDIA_RW : AID_EXT_OBB_RW;
+-    if (fs_prepare_dir(androidObbDir.c_str(), mode, AID_MEDIA_RW, obbGid) != 0) {
+-        PLOG(ERROR) << "Failed to create " << androidObbDir;
+-        return -errno;
++    // Chrome OS esdfs derives GIDs from directory paths; the obb directory must
++    // use AID_MEDIA_OBB (1059) with mode 0770 to match what esdfs expects.
++    bool isEsdfs = IsFilesystemSupported("esdfs");
++    if (isEsdfs) {
++        mode_t obbMode = S_IRWXU | S_IRWXG;  // 0770
++        if (fs_prepare_dir(androidObbDir.c_str(), obbMode, AID_MEDIA_OBB, AID_MEDIA_OBB) != 0) {
++            PLOG(ERROR) << "Failed to create " << androidObbDir;
++            return -errno;
++        }
++    } else {
++        gid_t obbGid = useSdcardFs ? AID_MEDIA_RW : AID_EXT_OBB_RW;
++        if (fs_prepare_dir(androidObbDir.c_str(), mode, AID_MEDIA_RW, obbGid) != 0) {
++            PLOG(ERROR) << "Failed to create " << androidObbDir;
++            return -errno;
++        }
++        // Some other apps, like installers, have write access to the OBB directory
++        // to pre-download them. To make sure newly created folders in this directory
++        // have the right permissions, set a default ACL.
++        SetDefaultAcl(androidObbDir, mode, AID_MEDIA_RW, obbGid, {});
+     }
+-    // Some other apps, like installers, have write access to the OBB directory
+-    // to pre-download them. To make sure newly created folders in this directory
+-    // have the right permissions, set a default ACL.
+-    SetDefaultAcl(androidObbDir, mode, AID_MEDIA_RW, obbGid, {});
+ 
+     if (fs_prepare_dir(androidMediaDir.c_str(), mode, AID_MEDIA_RW, AID_MEDIA_RW) != 0) {
+         PLOG(ERROR) << "Failed to create " << androidMediaDir;
+-- 
+2.43.0
+

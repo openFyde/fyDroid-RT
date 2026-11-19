@@ -1,0 +1,35 @@
+From da74078a354cd7e66961fa4c57cae99bb036226b Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 17 Apr 2026 17:26:01 +0800
+Subject: [PATCH 20/40] Link InputFlinger against libinputreader_arc for ARC
+ input bridge
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace stock libinputreader with libinputreader_arc which provides
+InputReaderArc — a pipe-based input reader that receives events from
+SurfaceFlinger's Wayland service instead of EventHub.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Idf3a58e4e86b88efee5e13a0929fda11d0f23447
+---
+ services/inputflinger/Android.bp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/inputflinger/Android.bp b/services/inputflinger/Android.bp
+index 41878e3487..67a1752a66 100644
+--- a/services/inputflinger/Android.bp
++++ b/services/inputflinger/Android.bp
+@@ -108,7 +108,7 @@ cc_library_shared {
+         // in cc_defaults so that they are included in the tests.
+         "libinputflinger_base",
+         "libinputreporter",
+-        "libinputreader",
++        "libinputreader_arc",
+         "libgui",
+     ],
+     static_libs: [
+-- 
+2.43.0
+

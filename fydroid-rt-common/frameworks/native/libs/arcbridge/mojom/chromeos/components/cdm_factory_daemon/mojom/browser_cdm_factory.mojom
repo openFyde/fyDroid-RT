@@ -1,0 +1,4 @@
+// Stub for chromeos.cdm.mojom.BrowserCdmFactory — used by arc/video.mojom.
+module chromeos.cdm.mojom;
+
+interface BrowserCdmFactory {};

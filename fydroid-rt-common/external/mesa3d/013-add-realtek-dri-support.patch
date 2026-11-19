@@ -1,0 +1,24 @@
+diff --git a/src/gallium/targets/dril/dril_target.c b/src/gallium/targets/dril/dril_target.c
+index b5ba5180cbd..e4c7b233a56 100644
+--- a/src/gallium/targets/dril/dril_target.c
++++ b/src/gallium/targets/dril/dril_target.c
+@@ -684,6 +684,7 @@ DEFINE_LOADER_DRM_ENTRYPOINT(stm)
+ DEFINE_LOADER_DRM_ENTRYPOINT(sun4i_drm)
+ DEFINE_LOADER_DRM_ENTRYPOINT(udl)
+ DEFINE_LOADER_DRM_ENTRYPOINT(zynqmp_dpsub)
++DEFINE_LOADER_DRM_ENTRYPOINT(realtek)
+ DEFINE_LOADER_DRM_ENTRYPOINT(lima)
+ DEFINE_LOADER_DRM_ENTRYPOINT(d3d12)
+ DEFINE_LOADER_DRM_ENTRYPOINT(zink)
+diff --git a/src/gallium/targets/dril/meson.build b/src/gallium/targets/dril/meson.build
+index 55f10dc7805..b4326805403 100644
+--- a/src/gallium/targets/dril/meson.build
++++ b/src/gallium/targets/dril/meson.build
+@@ -100,6 +100,7 @@ foreach d : [[with_gallium_kmsro, [
+                'udl',
+                'vkms',
+                'zynqmp-dpsub',
++               'realtek',
+              ]],
+              [with_gallium_radeonsi, ['radeonsi']],
+              [with_gallium_nouveau, ['nouveau']],

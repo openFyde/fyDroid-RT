@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.chromium.arc.data_device">
+
+    <permission
+        android:name="org.chromium.arc.data_device.NOTIFY_CONTENT_PROVIDER_ACCESS"
+        android:protectionLevel="signature|privileged" />
+
+    <application android:label="ArcDataDevice">
+        <provider
+            android:name=".ArcDataDeviceProvider"
+            android:authorities="org.chromium.arc.data_device.provider"
+            android:grantUriPermissions="true"
+            android:exported="true" />
+    </application>
+</manifest>

@@ -1,0 +1,14 @@
+# SELinux rules for F-Droid (priv-app).
+#
+# F-Droid runs as priv_app and uses PackageInstaller via the "package"
+# binder service to install/delete packages. In AOSP 11 the SELinux type
+# is package_service (carrying the app_api_service attribute), not
+# package_installer_service which is the Android 12+ name. Both rules
+# below are already implicitly granted via upstream priv_app rules
+# (priv_app→app_api_service:service_manager find, plus
+# binder_call(appdomain, binderservicedomain)) — kept here as belt-and-
+# suspenders so an audit-only run with ro.control_privapp_permissions=
+# enforce can't surface denials on the F-Droid install/uninstall path.
+
+allow priv_app package_service:service_manager find;
+allow priv_app system_server:binder call;

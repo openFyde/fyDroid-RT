@@ -1,0 +1,65 @@
+//
+// Copyright (C) 2024 The FydeOS Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+// ArcSystemUI: the FydeOS SystemUI variant for ARC++ on AOSP 13.
+// This is a thin overlay over SystemUI-core (it does NOT copy SystemUI). It
+// substitutes ARC-specific Dagger modules and no-op keyguard/shade classes so
+// that Chrome OS — not Android — owns the host chrome (status bar, recents,
+// lock screen, notification shade). See device/fydeos/docs/arcsystemui-*.md.
+//
+// AOSP 11 reference fork: ../ArcSystemUI-aosp11/ (not built).
+
+android_app {
+    name: "ArcSystemUI",
+
+    srcs: ["src/**/*.java"],
+
+    // fydroid: the ARC system interfaces (IArcWindowManager). Compile-time only
+    // — it is a device shared library at /system/framework, declared with
+    // <uses-library> in the manifest, not bundled into the APK.
+    libs: ["com.google.android.chromeos"],
+    // Soong cross-checks <uses-library> against the build graph; this one is an
+    // optional device library, so declare it on both sides.
+    optional_uses_libs: ["com.google.android.chromeos"],
+
+    static_libs: [
+        "SystemUI-core",
+        "dagger2",
+        "jsr330",
+    ],
+
+    // Dagger annotation processor generates DaggerArcGlobalRootComponent.
+    plugins: ["dagger2-compiler"],
+
+    resource_dirs: ["res"],
+
+    platform_apis: true,
+    system_ext_specific: true,
+    certificate: "platform",
+    privileged: true,
+
+    optimize: {
+        enabled: false,
+    },
+
+    kotlincflags: ["-Xjvm-default=enable"],
+
+    dxflags: ["--multi-dex"],
+
+    overrides: ["SystemUI"],
+
+    required: ["privapp_whitelist_com.android.systemui"],
+}

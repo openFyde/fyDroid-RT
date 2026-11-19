@@ -1,0 +1,16 @@
+// Installable wrapper for android.mojo — the upstream module in
+// external/libchrome is a plain java_library (not installable).
+// We need it as a shared library on the device so that apps declaring
+// <uses-library android:name="android.mojo"/> can resolve it.
+java_library {
+    name: "android.mojo.installable",
+    installable: true,
+    stem: "android.mojo",
+    // Non-SDK <uses-library> provided to apps that list it in the manifest
+    // (e.g. DocumentsUI); needed for Soong's dexpreopt uses-library check.
+    // The provided name matches the installed stem (android.mojo.jar), not the
+    // module name.
+    provides_uses_lib: "android.mojo",
+    static_libs: ["android.mojo"],
+    platform_apis: true,
+}

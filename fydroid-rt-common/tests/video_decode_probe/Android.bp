@@ -1,0 +1,28 @@
+// Decodes a clip through a named MediaCodec into an ImageReader surface and
+// reports what happened: whether the codec started, how many frames came out,
+// the gralloc layout of those frames, and whether their luma looks like a
+// picture. Written for ARC hardware decode, where the c2 mojo decoders hand
+// Android-allocated buffers to Chrome's VA-API decoder.
+//
+// Deliberately NOT in PRODUCT_PACKAGES — it is a developer tool, not part of the
+// image. Build and push it explicitly:
+//
+//   m fydroid_video_decode_probe
+//   push $OUT/system/bin/fydroid_video_decode_probe and a clip to /data/local/tmp
+//
+// See video_decode_probe.cpp for options.
+cc_binary {
+    name: "fydroid_video_decode_probe",
+    srcs: ["video_decode_probe.cpp"],
+    shared_libs: [
+        "libcutils",
+        "libhardware",
+        "liblog",
+        "libmediandk",
+        "libnativewindow",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}

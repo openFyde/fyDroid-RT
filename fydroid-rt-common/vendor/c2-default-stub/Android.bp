@@ -1,0 +1,28 @@
+// Copyright 2026 The FydeOS Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+cc_binary {
+    name: "fydroid_c2_default_stub",
+    stem: "android.hardware.media.c2@1.0-service-default-stub",
+
+    defaults: [
+        "hidl_defaults",
+        "libcodec2-hidl-defaults",
+    ],
+    vendor: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "service.cpp",
+    ],
+
+    init_rc: ["fydroid_c2_default_stub.rc"],
+
+    shared_libs: [
+        "liblog",
+        "libcodec2_vndk",
+    ],
+
+    compile_multilib: "64",
+}

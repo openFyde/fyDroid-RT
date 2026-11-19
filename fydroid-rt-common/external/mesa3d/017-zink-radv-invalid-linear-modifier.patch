@@ -1,0 +1,21 @@
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 7efcbaa050a..08f1079f4c9 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -3121,6 +3121,16 @@ init_driver_workarounds(struct zink_screen *screen)
+    case VK_DRIVER_ID_MESA_PANVK:
+    case VK_DRIVER_ID_ARM_PROPRIETARY:
+    case VK_DRIVER_ID_QUALCOMM_PROPRIETARY:
++   /* fydroid: this board runs zink-over-RADV on Android with no DRI3/Wayland
++    * modifier negotiation, and minigbm's amdgpu backend allocates all shared
++    * BOs linearly (see external/minigbm/amdgpu.c). SurfaceFlinger/RenderEngine
++    * therefore imports those dmabufs with modifier INVALID; treating INVALID as
++    * LINEAR is correct here (the buffer really is linear) and is required to
++    * import them at all. Without this, zink_resource_from_handle() returns NULL
++    * ("doesn't support DRI3 modifiers ... INVALID<->LINEAR") and SF aborts. */
++   case VK_DRIVER_ID_MESA_RADV:
++   case VK_DRIVER_ID_AMD_OPEN_SOURCE:
++   case VK_DRIVER_ID_AMD_PROPRIETARY:
+       screen->driver_workarounds.can_do_invalid_linear_modifier = true;
+       break;
+    default:

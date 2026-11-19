@@ -1,0 +1,21 @@
+android_app {
+    name: "ArcDataDevice",
+    srcs: [
+        "src/**/*.java",
+        ":arc-data-device-aidl",
+    ],
+    aidl: {
+        local_include_dirs: ["aidl"],
+    },
+    platform_apis: true,
+    certificate: "platform",
+    privileged: true,
+}
+
+filegroup {
+    name: "arc-data-device-aidl",
+    srcs: [
+        "aidl/**/*.aidl",
+    ],
+    path: "aidl",
+}

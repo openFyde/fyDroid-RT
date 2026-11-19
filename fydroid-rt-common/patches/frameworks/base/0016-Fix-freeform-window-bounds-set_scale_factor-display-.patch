@@ -1,0 +1,89 @@
+From e78d195ee1995c867221daa524c20677367a02db Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 21 Apr 2026 12:39:16 +0800
+Subject: [PATCH 16/75] Fix freeform window bounds: set_scale_factor +
+ display-size guard
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Task.java: Replace IS_CONTAINER guard with display-size guard —
+  don't persist bounds that fill the display (Chrome/Exo may resize
+  windows to fullscreen during close, causing growth on next open)
+- TaskLaunchParamsModifier.java: Add shelf insets constraint to
+  getDefaultFreeformSize — constrain default window height to fit
+  above Chrome OS shelf with 27dp edge margins (matching ARC++)
+- SystemServer.java: Handle empty config_deviceSpecificAudioService
+  gracefully (fall back to AudioService.Lifecycle)
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I5c9d1434b498066faac59c7c7a3ad06a24f652d1
+---
+ .../core/java/com/android/server/wm/Task.java  | 18 ++++++++++++------
+ .../java/com/android/server/SystemServer.java  | 12 ++++++++----
+ 2 files changed, 20 insertions(+), 10 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 82eb279b7d9a..3d80c9ae0af6 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -157,7 +157,6 @@ import android.graphics.Matrix;
+ import android.graphics.Point;
+ import android.graphics.Rect;
+ import android.os.Binder;
+-import android.os.Build;
+ import android.os.Debug;
+ import android.os.Handler;
+ import android.os.IBinder;
+@@ -1952,13 +1951,20 @@ class Task extends TaskFragment {
+ 
+         // If the configuration supports persistent bounds (eg. Freeform), keep track of the
+         // current (non-fullscreen) bounds for persistence.
+-        // On ARC/container, Chrome/Exo controls window placement and sizing.
+-        // Bounds from Chrome are in a different coordinate space (pixel vs DIP)
+-        // and saving them causes windows to grow on each open/close cycle.
+-        if (getWindowConfiguration().persistTaskBounds() && !Build.IS_CONTAINER) {
++        if (getWindowConfiguration().persistTaskBounds()) {
+             final Rect currentBounds = getRequestedOverrideBounds();
+             if (!currentBounds.isEmpty()) {
+-                setLastNonFullscreenBounds(currentBounds);
++                // Don't persist bounds that fill (or exceed) the display — a freeform
++                // window at display size is effectively fullscreen (e.g. Chrome/Exo
++                // resized the window during close).  Saving such bounds causes the
++                // window to reopen at fullscreen on next launch.
++                final Rect displayBounds = mDisplayContent != null
++                        ? mDisplayContent.getBounds() : null;
++                if (displayBounds == null
++                        || (currentBounds.width() < displayBounds.width()
++                            && currentBounds.height() < displayBounds.height())) {
++                    setLastNonFullscreenBounds(currentBounds);
++                }
+             }
+         }
+ 
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index 46141940a907..8f8e4c2345ed 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -2133,10 +2133,14 @@ public final class SystemServer implements Dumpable {
+             } else {
+                 String className = context.getResources()
+                         .getString(R.string.config_deviceSpecificAudioService);
+-                try {
+-                    mSystemServiceManager.startService(className + "$Lifecycle");
+-                } catch (Throwable e) {
+-                    reportWtf("starting " + className, e);
++                if (TextUtils.isEmpty(className)) {
++                    mSystemServiceManager.startService(AudioService.Lifecycle.class);
++                } else {
++                    try {
++                        mSystemServiceManager.startService(className + "$Lifecycle");
++                    } catch (Throwable e) {
++                        reportWtf("starting " + className, e);
++                    }
+                 }
+             }
+             t.traceEnd();
+-- 
+2.43.0
+

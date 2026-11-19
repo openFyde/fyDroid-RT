@@ -1,0 +1,16 @@
+soong_config_module_type {
+    name: "libdrm_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "fydroid_libdrm",
+    bool_variables: ["use_udev"],
+    properties: ["cflags"],
+}
+
+libdrm_cc_defaults {
+    name: "libdrm_device_config",
+    soong_config_variables: {
+        use_udev: {
+            cflags: ["-DUDEV=1"],
+        },
+    },
+}

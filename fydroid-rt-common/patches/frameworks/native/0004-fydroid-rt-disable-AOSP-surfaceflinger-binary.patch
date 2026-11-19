@@ -1,0 +1,64 @@
+From e25072f8090f70bb717d735c5869a5b58bad05c1 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 15 Apr 2026 12:48:49 +0800
+Subject: [PATCH 04/40] fydroid-rt: disable AOSP surfaceflinger binary
+
+fydroid_surfaceflinger (in device/fydeos/) replaces the AOSP surfaceflinger
+with a monolithic statically-linked binary that includes Wayland integration.
+Disable the AOSP thin wrapper binary to avoid conflicts with stem renaming.
+
+Change-Id: I2d7cdb74b0c47f2d75f79fb4b0aa8299d18ac070
+---
+ services/surfaceflinger/Android.bp | 36 +++++++++++++++++-------------
+ 1 file changed, 20 insertions(+), 16 deletions(-)
+
+diff --git a/services/surfaceflinger/Android.bp b/services/surfaceflinger/Android.bp
+index 000a2cb0d3..3259eb7750 100644
+--- a/services/surfaceflinger/Android.bp
++++ b/services/surfaceflinger/Android.bp
+@@ -242,22 +242,26 @@ filegroup {
+     ],
+ }
+ 
+-cc_binary {
+-    name: "surfaceflinger",
+-    defaults: ["libsurfaceflinger_binary"],
+-    init_rc: ["surfaceflinger.rc"],
+-    srcs: [
+-        ":surfaceflinger_binary_sources",
+-        // Note: SurfaceFlingerFactory is not in the filegroup so that it
+-        // can be easily replaced.
+-        "SurfaceFlingerFactory.cpp",
+-    ],
+-    shared_libs: [
+-        "libSurfaceFlingerProp",
+-    ],
+-
+-    logtags: ["EventLog/EventLogTags.logtags"],
+-}
++// fydroid-rt (AOSP-13 port of patch 0012): AOSP surfaceflinger binary disabled —
++// replaced by fydroid_surfaceflinger (stem "surfaceflinger") in
++// device/fydeos/fydroid-rt-common/. Avoids the system/bin/surfaceflinger install
++// collision and the two-binary stem conflict.
++// cc_binary {
++//     name: "surfaceflinger",
++//     defaults: ["libsurfaceflinger_binary"],
++//     init_rc: ["surfaceflinger.rc"],
++//     srcs: [
++//         ":surfaceflinger_binary_sources",
++//         // Note: SurfaceFlingerFactory is not in the filegroup so that it
++//         // can be easily replaced.
++//         "SurfaceFlingerFactory.cpp",
++//     ],
++//     shared_libs: [
++//         "libSurfaceFlingerProp",
++//     ],
++//
++//     logtags: ["EventLog/EventLogTags.logtags"],
++// }
+ 
+ subdirs = [
+     "layerproto",
+-- 
+2.43.0
+

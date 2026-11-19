@@ -1,0 +1,19 @@
+# ART heap budget — the no-profile tier.
+#
+# Deliberately empty of commands. init.cheets.rc selects a heap profile by
+# expanding a property into the import path:
+#
+#     import /system/etc/init/hw/init.dalvik_heap.${ro.boot.arc_dalvik_memory_profile:-default}.rc
+#
+# Chrome only sends a profile for hosts with >= 3.5 GB of RAM; below that
+# ApplyDalvikMemoryProfile() picks DEFAULT (arc_session_impl.cc:108) and
+# arc-setup omits the boot argument entirely (arc_setup.cc:517), leaving the
+# property unset. A board that gets no profile keeps the conservative defaults
+# baked into build.prop by fydroid_rt_common.mk — which is exactly the intent,
+# so there is nothing for this file to do.
+#
+# It still has to exist. init's ExpandProps (system/core/init/util.cpp) treats an
+# unset property as an *error* rather than an empty string, and without the
+# ":-default" fallback in the import path the whole line fails to expand and
+# init logs a parse error on every sub-3.5 GB board. The fallback names this
+# file; this file makes the import resolve.

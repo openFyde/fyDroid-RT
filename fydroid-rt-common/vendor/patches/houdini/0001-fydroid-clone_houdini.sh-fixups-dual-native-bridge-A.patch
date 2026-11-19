@@ -1,0 +1,103 @@
+From 5cd55fec8a254f0332cfaacb495435152bf0492d Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 2 Jul 2026 14:16:08 +0800
+Subject: [PATCH] fydroid: clone_houdini.sh fixups (dual native bridge +
+ AOSP-13 sepolicy)
+
+Snapshot of the fixups clone_houdini.sh applies on top of the chromeos_octopus
+clone (all reproducible by re-running the script; upstream is read-only github):
+- houdini.mk: drop the ro.dalvik.vm.native.bridge=libhoudini.so build.prop
+  hardcode (host selects the bridge via ro.boot.native_bridge).
+- houdini.rc: gate binfmt registration on the selected bridge.
+- Android.mk: drop the vestigial /system/etc/binfmt_misc -> /vendor symlink
+  (ELOOP-collides with ndk_translation's real /system/etc/binfmt_misc).
+- sepolicy/{property_contexts,system_server.te,vendor_init.te}: drop dead
+  exported_dalvik_prop refs (AOSP 13 folded it into dalvik_config_prop).
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ Android.mk                    | 2 --
+ houdini.mk                    | 3 +--
+ prebuilts/etc/init/houdini.rc | 4 ++--
+ sepolicy/property_contexts    | 1 -
+ sepolicy/system_server.te     | 1 -
+ sepolicy/vendor_init.te       | 1 -
+ 6 files changed, 3 insertions(+), 9 deletions(-)
+
+diff --git a/Android.mk b/Android.mk
+index ca70052..97835b8 100644
+--- a/Android.mk
++++ b/Android.mk
+@@ -50,7 +50,6 @@ LOCAL_MODULE_CLASS := ETC
+ LOCAL_PROPRIETARY_MODULE := true
+ LOCAL_MODULE_RELATIVE_PATH := binfmt_misc
+ LOCAL_SRC_FILES := prebuilts/etc/binfmt_misc/arm_dyn
+-LOCAL_POST_INSTALL_CMD := ln -sf /vendor/etc/binfmt_misc $(TARGET_OUT)/etc/binfmt_misc
+ include $(BUILD_PREBUILT)
+ 
+ include $(CLEAR_VARS)
+@@ -69,7 +68,6 @@ LOCAL_MODULE_CLASS := ETC
+ LOCAL_PROPRIETARY_MODULE := true
+ LOCAL_MODULE_RELATIVE_PATH := binfmt_misc
+ LOCAL_SRC_FILES := prebuilts/etc/binfmt_misc/arm64_dyn
+-LOCAL_POST_INSTALL_CMD := ln -sf /vendor/etc/binfmt_misc $(TARGET_OUT)/etc/binfmt_misc
+ include $(BUILD_PREBUILT)
+ 
+ include $(CLEAR_VARS)
+diff --git a/houdini.mk b/houdini.mk
+index 8938743..ceb2e67 100644
+--- a/houdini.mk
++++ b/houdini.mk
+@@ -5,8 +5,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
+     ro.dalvik.vm.isa.arm=x86 \
+     ro.enable.native.bridge.exec=1 \
+     ro.dalvik.vm.isa.arm64=x86_64 \
+-    ro.enable.native.bridge.exec64=1 \
+-    ro.dalvik.vm.native.bridge=libhoudini.so
++    ro.enable.native.bridge.exec64=1
+ 
+ PRODUCT_PACKAGES += \
+             houdini \
+diff --git a/prebuilts/etc/init/houdini.rc b/prebuilts/etc/init/houdini.rc
+index 1edd573..25b447c 100644
+--- a/prebuilts/etc/init/houdini.rc
++++ b/prebuilts/etc/init/houdini.rc
+@@ -2,10 +2,10 @@
+ on early-init
+     mount binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+ 
+-on property:ro.enable.native.bridge.exec=1
++on property:ro.enable.native.bridge.exec=1 && property:ro.dalvik.vm.native.bridge=libhoudini.so
+     copy /vendor/etc/binfmt_misc/arm_exe /proc/sys/fs/binfmt_misc/register
+     copy /vendor/etc/binfmt_misc/arm_dyn /proc/sys/fs/binfmt_misc/register
+ 
+-on property:ro.enable.native.bridge.exec64=1
++on property:ro.enable.native.bridge.exec64=1 && property:ro.dalvik.vm.native.bridge=libhoudini.so
+     copy /vendor/etc/binfmt_misc/arm64_exe /proc/sys/fs/binfmt_misc/register
+     copy /vendor/etc/binfmt_misc/arm64_dyn /proc/sys/fs/binfmt_misc/register
+diff --git a/sepolicy/property_contexts b/sepolicy/property_contexts
+index 66b98e4..83d574f 100644
+--- a/sepolicy/property_contexts
++++ b/sepolicy/property_contexts
+@@ -1,2 +1 @@
+ ro.enable.native.bridge.    u:object_r:vendor_houdini_prop:s0
+-ro.dalvik.vm.isa.   u:object_r:exported_dalvik_prop:s0
+diff --git a/sepolicy/system_server.te b/sepolicy/system_server.te
+index 87d93ad..e69de29 100644
+--- a/sepolicy/system_server.te
++++ b/sepolicy/system_server.te
+@@ -1 +0,0 @@
+-set_prop(system_server, exported_dalvik_prop)
+diff --git a/sepolicy/vendor_init.te b/sepolicy/vendor_init.te
+index c78330a..800d536 100644
+--- a/sepolicy/vendor_init.te
++++ b/sepolicy/vendor_init.te
+@@ -1,5 +1,4 @@
+ set_prop(vendor_init, vendor_houdini_prop)
+-set_prop(vendor_init, exported_dalvik_prop)
+ 
+ allow vendor_init binfmt_miscfs:file write;
+ allow vendor_init binfmt_miscfs:chr_file { create setattr unlink rw_file_perms };
+-- 
+2.43.0
+

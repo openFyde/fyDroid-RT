@@ -1,0 +1,611 @@
+From 4e84a32261feb7cacc643fc399de1ccd869425ac Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 16 Sep 2026 12:52:50 +0800
+Subject: [PATCH 5/5] fydroid-rt: add a Game rendering quality slider to
+ Display settings
+
+fydroid runs on everything from an RK3588 tablet to a box with a discrete
+GPU, so the board's game render target is a starting point rather than an
+answer. The slider covers 30%-100% of the panel in the steps AOSP's
+app-compat DOWNSCALE changes actually provide, writes the render height
+that percentage works out to into Settings.Secure (read by
+ArcAppService), and confirms first, because applying one restarts every
+running game.
+
+The value line needs its own layout: Settings' seekbar layout has no
+@android:id/summary view, so setSummary() is silently dropped.
+
+Localized into the top 10 UI languages (en, zh-CN, zh-TW, ja, ko, es, fr,
+de, pt/pt-BR, ru).
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I85cbb0ec2ab25260aee16fafab1f2b50c6f08617
+---
+ ...preference_widget_seekbar_with_summary.xml |  80 ++++++
+ res/values-de/strings.xml                     |   6 +
+ res/values-es/strings.xml                     |   6 +
+ res/values-fr/strings.xml                     |   6 +
+ res/values-ja/strings.xml                     |   6 +
+ res/values-ko/strings.xml                     |   6 +
+ res/values-pt-rBR/strings.xml                 |   6 +
+ res/values-pt/strings.xml                     |   6 +
+ res/values-ru/strings.xml                     |   6 +
+ res/values-zh-rCN/strings.xml                 |   6 +
+ res/values-zh-rTW/strings.xml                 |   6 +
+ res/values/strings.xml                        |  15 +
+ res/xml/display_settings.xml                  |  10 +
+ ...GameRenderQualityPreferenceController.java | 271 ++++++++++++++++++
+ 14 files changed, 436 insertions(+)
+ create mode 100644 res/layout/fydroid_preference_widget_seekbar_with_summary.xml
+ create mode 100644 src/com/android/settings/display/GameRenderQualityPreferenceController.java
+
+diff --git a/res/layout/fydroid_preference_widget_seekbar_with_summary.xml b/res/layout/fydroid_preference_widget_seekbar_with_summary.xml
+new file mode 100644
+index 00000000000..860d046ec75
+--- /dev/null
++++ b/res/layout/fydroid_preference_widget_seekbar_with_summary.xml
+@@ -0,0 +1,80 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Copyright (C) 2026 FydeOS
++
++     Licensed under the Apache License, Version 2.0 (the "License");
++     you may not use this file except in compliance with the License.
++     You may obtain a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++     Unless required by applicable law or agreed to in writing, software
++     distributed under the License is distributed on an "AS IS" BASIS,
++     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++     See the License for the specific language governing permissions and
++     limitations under the License.
++-->
++
++<!-- fydroid: preference_widget_seekbar_settings plus a summary line. The stock
++     Settings seekbar layout has no @android:id/summary view at all, so a slider
++     cannot say what its current value means; the game rendering quality slider
++     needs to show the percentage and the pixel height it works out to. -->
++<LinearLayout
++    xmlns:android="http://schemas.android.com/apk/res/android"
++    android:layout_width="match_parent"
++    android:layout_height="wrap_content"
++    android:gravity="center_vertical"
++    android:minHeight="?android:attr/listPreferredItemHeightSmall"
++    android:paddingStart="?android:attr/listPreferredItemPaddingStart"
++    android:paddingEnd="?android:attr/listPreferredItemPaddingEnd"
++    android:clickable="false"
++    android:orientation="horizontal">
++
++    <include layout="@layout/settingslib_icon_frame"/>
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="vertical"
++        android:paddingTop="16dp">
++
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content">
++            <TextView
++                android:id="@android:id/title"
++                android:layout_width="0dp"
++                android:layout_height="wrap_content"
++                android:layout_weight="1"
++                android:singleLine="true"
++                android:textAppearance="?android:attr/textAppearanceListItem"
++                android:textColor="?android:attr/textColorPrimary"
++                android:ellipsize="marquee"
++                android:fadingEdge="horizontal"/>
++            <!-- Preference should place its actual preference widget here. -->
++            <LinearLayout
++                android:id="@android:id/widget_frame"
++                android:layout_width="wrap_content"
++                android:layout_height="match_parent"
++                android:gravity="end|center_vertical"
++                android:paddingStart="12dp"
++                android:orientation="vertical"/>
++        </LinearLayout>
++
++        <TextView
++            android:id="@android:id/summary"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:textAppearance="?android:attr/textAppearanceSmall"
++            android:textColor="?android:attr/textColorSecondary"
++            android:maxLines="2"/>
++
++        <SeekBar
++            android:id="@*android:id/seekbar"
++            android:layout_gravity="center_vertical"
++            android:layout_width="match_parent"
++            android:paddingStart="12dp"
++            android:paddingEnd="12dp"
++            android:layout_height="48dp"/>
++    </LinearLayout>
++
++</LinearLayout>
+diff --git a/res/values-de/strings.xml b/res/values-de/strings.xml
+index 770d4018b1f..bef9c8759a5 100644
+--- a/res/values-de/strings.xml
++++ b/res/values-de/strings.xml
+@@ -5966,4 +5966,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"Das Format des QR-Codes ist ungültig"</string>
+     <string name="game_category_title">Mit Spielsteuerungs-Panel öffnen</string>
+     <string name="game_category_summary">Diese App als Spiel ausführen: Spielsteuerungs-Panel anzeigen und Maus und Tastatur auf Touch abbilden</string>
++    <string name="game_render_quality_title">Rendering-Qualität für Spiele</string>
++    <string name="game_render_quality_summary">Spiele werden mit %1$d%% der Bildschirmauflösung gerendert (%2$dp)</string>
++    <string name="game_render_quality_summary_full">Spiele werden mit der vollen Bildschirmauflösung gerendert</string>
++    <string name="game_render_quality_dialog_title">Rendering-Qualität für Spiele ändern?</string>
++    <string name="game_render_quality_dialog_message">Geöffnete Spiele werden geschlossen und neu gestartet, damit sie mit %1$d%% der Bildschirmauflösung (%2$dp) gerendert werden.</string>
++    <string name="game_render_quality_dialog_message_full">Geöffnete Spiele werden geschlossen und neu gestartet, damit sie mit der vollen Bildschirmauflösung gerendert werden.</string>
+ </resources>
+diff --git a/res/values-es/strings.xml b/res/values-es/strings.xml
+index 596d307707a..dd31e888c99 100644
+--- a/res/values-es/strings.xml
++++ b/res/values-es/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"El código QR no tiene un formato válido"</string>
+     <string name="game_category_title">Abrir con el panel de control de juego</string>
+     <string name="game_category_summary">Ejecuta esta aplicación como un juego: muestra el panel de control de juego y asigna el ratón y el teclado al toque</string>
++    <string name="game_render_quality_title">Calidad de renderizado de los juegos</string>
++    <string name="game_render_quality_summary">Los juegos se renderizan al %1$d%% de la resolución de la pantalla (%2$dp)</string>
++    <string name="game_render_quality_summary_full">Los juegos se renderizan a la resolución completa de la pantalla</string>
++    <string name="game_render_quality_dialog_title">¿Cambiar la calidad de renderizado de los juegos?</string>
++    <string name="game_render_quality_dialog_message">Los juegos abiertos se cerrarán y volverán a abrirse para renderizarse al %1$d%% de la resolución de la pantalla (%2$dp).</string>
++    <string name="game_render_quality_dialog_message_full">Los juegos abiertos se cerrarán y volverán a abrirse para renderizarse a la resolución completa de la pantalla.</string>
+ </resources>
+diff --git a/res/values-fr/strings.xml b/res/values-fr/strings.xml
+index b772976da87..1b0802f7dbf 100644
+--- a/res/values-fr/strings.xml
++++ b/res/values-fr/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"Le format de code QR n\'est pas valide"</string>
+     <string name="game_category_title">Ouvrir avec le panneau de contrôle de jeu</string>
+     <string name="game_category_summary">Exécuter cette appli comme un jeu : afficher le panneau de contrôle de jeu et associer la souris et le clavier au toucher</string>
++    <string name="game_render_quality_title">Qualité de rendu des jeux</string>
++    <string name="game_render_quality_summary">Les jeux sont rendus à %1$d%% de la résolution de l\'écran (%2$dp)</string>
++    <string name="game_render_quality_summary_full">Les jeux sont rendus à la résolution complète de l\'écran</string>
++    <string name="game_render_quality_dialog_title">Modifier la qualité de rendu des jeux ?</string>
++    <string name="game_render_quality_dialog_message">Les jeux ouverts vont se fermer et se rouvrir pour être rendus à %1$d%% de la résolution de l\'écran (%2$dp).</string>
++    <string name="game_render_quality_dialog_message_full">Les jeux ouverts vont se fermer et se rouvrir pour être rendus à la résolution complète de l\'écran.</string>
+ </resources>
+diff --git a/res/values-ja/strings.xml b/res/values-ja/strings.xml
+index 120e0b1b783..acf96e86e09 100644
+--- a/res/values-ja/strings.xml
++++ b/res/values-ja/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"QR コードの形式が無効です"</string>
+     <string name="game_category_title">ゲーム コントロール パネルで開く</string>
+     <string name="game_category_summary">このアプリをゲームとして実行します。ゲーム コントロール パネルを表示し、マウスとキーボードをタップ操作に割り当てます</string>
++    <string name="game_render_quality_title">ゲームのレンダリング品質</string>
++    <string name="game_render_quality_summary">ゲームは画面解像度の %1$d%%（%2$dp）でレンダリングされます</string>
++    <string name="game_render_quality_summary_full">ゲームは画面の解像度そのままでレンダリングされます</string>
++    <string name="game_render_quality_dialog_title">ゲームのレンダリング品質を変更しますか？</string>
++    <string name="game_render_quality_dialog_message">開いているゲームは終了して再起動し、画面解像度の %1$d%%（%2$dp）でレンダリングされます。</string>
++    <string name="game_render_quality_dialog_message_full">開いているゲームは終了して再起動し、画面の解像度そのままでレンダリングされます。</string>
+ </resources>
+diff --git a/res/values-ko/strings.xml b/res/values-ko/strings.xml
+index ef48fd03711..fa8089f285f 100644
+--- a/res/values-ko/strings.xml
++++ b/res/values-ko/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"QR 코드가 유효한 형식이 아닙니다."</string>
+     <string name="game_category_title">게임 컨트롤 패널로 열기</string>
+     <string name="game_category_summary">이 앱을 게임으로 실행합니다. 게임 컨트롤 패널을 표시하고 마우스와 키보드를 터치에 매핑합니다</string>
++    <string name="game_render_quality_title">게임 렌더링 품질</string>
++    <string name="game_render_quality_summary">게임이 화면 해상도의 %1$d%%(%2$dp)로 렌더링됩니다</string>
++    <string name="game_render_quality_summary_full">게임이 화면 해상도 그대로 렌더링됩니다</string>
++    <string name="game_render_quality_dialog_title">게임 렌더링 품질을 변경할까요?</string>
++    <string name="game_render_quality_dialog_message">실행 중인 게임이 종료되었다가 다시 열려 화면 해상도의 %1$d%%(%2$dp)로 렌더링됩니다.</string>
++    <string name="game_render_quality_dialog_message_full">실행 중인 게임이 종료되었다가 다시 열려 화면 해상도 그대로 렌더링됩니다.</string>
+ </resources>
+diff --git a/res/values-pt-rBR/strings.xml b/res/values-pt-rBR/strings.xml
+index a2da2f2006e..b5f0117fc19 100644
+--- a/res/values-pt-rBR/strings.xml
++++ b/res/values-pt-rBR/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"O código QR não está em um formato válido"</string>
+     <string name="game_category_title">Abrir com o painel de controle de jogos</string>
+     <string name="game_category_summary">Executar este app como um jogo: mostrar o painel de controle de jogos e mapear o mouse e o teclado para o toque</string>
++    <string name="game_render_quality_title">Qualidade de renderização dos jogos</string>
++    <string name="game_render_quality_summary">Os jogos são renderizados a %1$d%% da resolução da tela (%2$dp)</string>
++    <string name="game_render_quality_summary_full">Os jogos são renderizados na resolução total da tela</string>
++    <string name="game_render_quality_dialog_title">Alterar a qualidade de renderização dos jogos?</string>
++    <string name="game_render_quality_dialog_message">Os jogos abertos serão fechados e abertos novamente para serem renderizados a %1$d%% da resolução da tela (%2$dp).</string>
++    <string name="game_render_quality_dialog_message_full">Os jogos abertos serão fechados e abertos novamente para serem renderizados na resolução total da tela.</string>
+ </resources>
+diff --git a/res/values-pt/strings.xml b/res/values-pt/strings.xml
+index 04413f6f94d..771993c20a7 100644
+--- a/res/values-pt/strings.xml
++++ b/res/values-pt/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"O código QR não está em um formato válido"</string>
+     <string name="game_category_title">Abrir com o painel de controlo de jogos</string>
+     <string name="game_category_summary">Executar esta app como um jogo: mostrar o painel de controlo de jogos e mapear o rato e o teclado para o toque</string>
++    <string name="game_render_quality_title">Qualidade de renderização dos jogos</string>
++    <string name="game_render_quality_summary">Os jogos são renderizados a %1$d%% da resolução do ecrã (%2$dp)</string>
++    <string name="game_render_quality_summary_full">Os jogos são renderizados na resolução total do ecrã</string>
++    <string name="game_render_quality_dialog_title">Alterar a qualidade de renderização dos jogos?</string>
++    <string name="game_render_quality_dialog_message">Os jogos abertos vão fechar e voltar a abrir para serem renderizados a %1$d%% da resolução do ecrã (%2$dp).</string>
++    <string name="game_render_quality_dialog_message_full">Os jogos abertos vão fechar e voltar a abrir para serem renderizados na resolução total do ecrã.</string>
+ </resources>
+diff --git a/res/values-ru/strings.xml b/res/values-ru/strings.xml
+index 3baa2781d5b..94100af3562 100644
+--- a/res/values-ru/strings.xml
++++ b/res/values-ru/strings.xml
+@@ -6141,4 +6141,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"Недопустимый формат QR-кода."</string>
+     <string name="game_category_title">Открыть с панелью управления игрой</string>
+     <string name="game_category_summary">Запускать это приложение как игру: показывать панель управления игрой и сопоставлять мышь и клавиатуру с касанием</string>
++    <string name="game_render_quality_title">Качество отрисовки игр</string>
++    <string name="game_render_quality_summary">Игры отрисовываются с %1$d%% разрешения экрана (%2$dp)</string>
++    <string name="game_render_quality_summary_full">Игры отрисовываются в полном разрешении экрана</string>
++    <string name="game_render_quality_dialog_title">Изменить качество отрисовки игр?</string>
++    <string name="game_render_quality_dialog_message">Открытые игры закроются и запустятся снова, чтобы отрисовываться с %1$d%% разрешения экрана (%2$dp).</string>
++    <string name="game_render_quality_dialog_message_full">Открытые игры закроются и запустятся снова, чтобы отрисовываться в полном разрешении экрана.</string>
+ </resources>
+diff --git a/res/values-zh-rCN/strings.xml b/res/values-zh-rCN/strings.xml
+index 287bb3488d6..5697a651d19 100644
+--- a/res/values-zh-rCN/strings.xml
++++ b/res/values-zh-rCN/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"二维码的格式无效"</string>
+     <string name="game_category_title">使用游戏控制面板打开</string>
+     <string name="game_category_summary">将此应用作为游戏运行：显示游戏控制面板，并将鼠标和键盘映射为触摸操作</string>
++    <string name="game_render_quality_title">游戏渲染质量</string>
++    <string name="game_render_quality_summary">游戏以屏幕分辨率的 %1$d%%（%2$dp）渲染</string>
++    <string name="game_render_quality_summary_full">游戏以屏幕的完整分辨率渲染</string>
++    <string name="game_render_quality_dialog_title">更改游戏渲染质量？</string>
++    <string name="game_render_quality_dialog_message">已打开的游戏将关闭并重新打开，以便以屏幕分辨率的 %1$d%%（%2$dp）渲染。</string>
++    <string name="game_render_quality_dialog_message_full">已打开的游戏将关闭并重新打开，以便以屏幕的完整分辨率渲染。</string>
+ </resources>
+diff --git a/res/values-zh-rTW/strings.xml b/res/values-zh-rTW/strings.xml
+index 4752cad353b..53d8767b024 100644
+--- a/res/values-zh-rTW/strings.xml
++++ b/res/values-zh-rTW/strings.xml
+@@ -5965,4 +5965,10 @@
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"QR 圖碼格式無效"</string>
+     <string name="game_category_title">使用遊戲控制面板開啟</string>
+     <string name="game_category_summary">將此應用程式作為遊戲執行：顯示遊戲控制面板，並將滑鼠和鍵盤對應為觸控操作</string>
++    <string name="game_render_quality_title">遊戲算繪品質</string>
++    <string name="game_render_quality_summary">遊戲會以螢幕解析度的 %1$d%%（%2$dp）算繪</string>
++    <string name="game_render_quality_summary_full">遊戲會以螢幕的完整解析度算繪</string>
++    <string name="game_render_quality_dialog_title">要變更遊戲算繪品質嗎？</string>
++    <string name="game_render_quality_dialog_message">已開啟的遊戲將會關閉並重新開啟，以便以螢幕解析度的 %1$d%%（%2$dp）算繪。</string>
++    <string name="game_render_quality_dialog_message_full">已開啟的遊戲將會關閉並重新開啟，以便以螢幕的完整解析度算繪。</string>
+ </resources>
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index f08b6ec05e8..94a9fb3f543 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -3163,6 +3163,19 @@
+     <!-- Accessibility summary text for auto rotate [CHAR LIMIT=60] -->
+     <string name="auto_rotate_summary_a11y">When you move your phone between portrait and landscape</string>
+ 
++    <!-- fydroid: Display settings screen, title of the slider that sets how much of the screen resolution games render at [CHAR LIMIT=40] -->
++    <string name="game_render_quality_title">Game rendering quality</string>
++    <!-- fydroid: Display settings screen, summary under the game rendering quality slider [CHAR LIMIT=NONE] -->
++    <string name="game_render_quality_summary">Games render at <xliff:g id="percent" example="60">%1$d</xliff:g>%% of the screen resolution (<xliff:g id="height" example="720">%2$d</xliff:g>p)</string>
++    <!-- fydroid: Display settings screen, summary under the game rendering quality slider when no downscaling is used [CHAR LIMIT=NONE] -->
++    <string name="game_render_quality_summary_full">Games render at the full screen resolution</string>
++    <!-- fydroid: Display settings screen, title of the dialog confirming a new game rendering quality [CHAR LIMIT=60] -->
++    <string name="game_render_quality_dialog_title">Change game rendering quality?</string>
++    <!-- fydroid: Display settings screen, message of the dialog confirming a new game rendering quality [CHAR LIMIT=NONE] -->
++    <string name="game_render_quality_dialog_message">Games that are open will close and reopen so they can render at <xliff:g id="percent" example="60">%1$d</xliff:g>%% of the screen resolution (<xliff:g id="height" example="720">%2$d</xliff:g>p).</string>
++    <!-- fydroid: Display settings screen, message of the confirmation dialog when no downscaling is used [CHAR LIMIT=NONE] -->
++    <string name="game_render_quality_dialog_message_full">Games that are open will close and reopen so they can render at the full screen resolution.</string>
++
+     <!-- Display settings screen, screen resolution settings title [CHAR LIMIT=30] -->
+     <string name="screen_resolution_title">Screen resolution</string>
+     <!-- Display settings screen, screen resolution option for "FHD+" [CHAR LIMIT=45] -->
+@@ -8694,6 +8707,8 @@
+     <string name="keywords_color_mode">vibrant, RGB, sRGB, color, natural, standard</string>
+     <!-- Search keyword for "screen resolution" settings [CHAR_LIMIT=NONE]-->
+     <string name="keywords_screen_resolution">FHD, QHD, resolution, 1080p, 1440p</string>
++    <!-- fydroid: Search keyword for the "game rendering quality" slider [CHAR_LIMIT=NONE]-->
++    <string name="keywords_game_render_quality">game, games, performance, frame rate, fps, resolution, graphics, quality, downscale</string>
+     <string name="keywords_color_temperature">color, temperature, D65, D73, white, yellow, blue, warm, cool</string>
+     <string name="keywords_lockscreen">slide to unlock, password, pattern, PIN</string>
+     <!-- Search keyword for App pinning Settings [CHAR LIMIT=NONE] -->
+diff --git a/res/xml/display_settings.xml b/res/xml/display_settings.xml
+index ad5236ecbd3..1e133c00e91 100644
+--- a/res/xml/display_settings.xml
++++ b/res/xml/display_settings.xml
+@@ -125,6 +125,16 @@
+             settings:keywords="@string/keywords_screen_resolution"
+             settings:controller="com.android.settings.display.ScreenResolutionController"/>
+ 
++        <!-- fydroid: how much of the screen resolution games render at -->
++        <com.android.settings.widget.SeekBarPreference
++            android:key="fydroid_game_render_quality"
++            android:persistent="false"
++            android:layout="@layout/fydroid_preference_widget_seekbar_with_summary"
++            android:title="@string/game_render_quality_title"
++            android:summary="@string/summary_placeholder"
++            settings:keywords="@string/keywords_game_render_quality"
++            settings:controller="com.android.settings.display.GameRenderQualityPreferenceController"/>
++
+         <SwitchPreference
+             android:key="display_white_balance"
+             android:title="@string/display_white_balance_title"
+diff --git a/src/com/android/settings/display/GameRenderQualityPreferenceController.java b/src/com/android/settings/display/GameRenderQualityPreferenceController.java
+new file mode 100644
+index 00000000000..1a48035f1b5
+--- /dev/null
++++ b/src/com/android/settings/display/GameRenderQualityPreferenceController.java
+@@ -0,0 +1,271 @@
++/*
++ * Copyright (C) 2026 FydeOS
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.display;
++
++import android.content.Context;
++import android.content.DialogInterface;
++import android.graphics.Rect;
++import android.hardware.display.DisplayManager;
++import android.os.SystemProperties;
++import android.provider.Settings;
++import android.view.Display;
++import android.view.WindowManager;
++
++import androidx.appcompat.app.AlertDialog;
++import androidx.preference.Preference;
++import androidx.preference.PreferenceScreen;
++
++import com.android.settings.R;
++import com.android.settings.core.SliderPreferenceController;
++import com.android.settings.widget.SeekBarPreference;
++
++/**
++ * fydroid: "Game rendering quality" slider on the Display settings page.
++ *
++ * fydroid runs on everything from an RK3588 tablet to a desktop with a discrete
++ * GPU, and games are usually GPU fill-rate bound at the panel's native
++ * resolution. The ARC bridge ({@code ArcAppService}) therefore makes every app
++ * that resolves to {@code CATEGORY_GAME} render into a smaller buffer and lets
++ * WindowManager upscale it (the app-compat {@code DOWNSCALED} +
++ * {@code DOWNSCALE_<pct>} changes). This slider is the user's control over how
++ * much of the screen resolution that buffer gets: 30% for the weakest hardware,
++ * 100% for a machine that can drive the panel natively.
++ *
++ * <p>The value written out is a <em>render height</em> in pixels, not the
++ * percentage, because the bridge's policy is a target height along the panel's
++ * short side (see {@code ArcAppService.gameRenderHeight()}): what a GPU pays for
++ * is pixels, so the setting keeps its meaning when the panel changes rather than
++ * silently asking a 4K monitor for four times the work. The percentage is simply
++ * how that height reads on the display in front of the user right now.
++ *
++ * <p>Unset means "whatever the board ships" —
++ * {@code persist.fydroid.game_render_height}, else
++ * {@code ro.fydroid.game_render_height}, else 720p — so the slider opens on the
++ * board default and only pins a value once the user moves it.
++ */
++public class GameRenderQualityPreferenceController extends SliderPreferenceController {
++
++    // Must match ArcAppService.GAME_RENDER_HEIGHT_SECURE_KEY in the arc-services
++    // bridge, which reads this and re-applies the compat overrides on change.
++    static final String SECURE_KEY = "fydroid_game_render_height";
++
++    private static final String PROP_PERSIST = "persist.fydroid.game_render_height";
++    private static final String PROP_RO = "ro.fydroid.game_render_height";
++    private static final int DEFAULT_HEIGHT = 720;
++
++    // Slider stops, ascending. These are exactly the DOWNSCALE_<pct> app-compat
++    // changes that AOSP defines (5% apart, 30% floor, no 95%), plus 100% for
++    // "don't downscale at all", so every position the user can pick is one the
++    // bridge can apply exactly.
++    static final int[] PERCENTS = {30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 100};
++    private static final int FULL_PERCENT = 100;
++
++    private SeekBarPreference mPreference;
++
++    public GameRenderQualityPreferenceController(Context context, String key) {
++        super(context, key);
++    }
++
++    @Override
++    public int getAvailabilityStatus() {
++        return AVAILABLE;
++    }
++
++    @Override
++    public int getSliceHighlightMenuRes() {
++        return R.string.menu_key_display;
++    }
++
++    @Override
++    public void displayPreference(PreferenceScreen screen) {
++        super.displayPreference(screen);
++        mPreference = screen.findPreference(getPreferenceKey());
++        if (mPreference == null) {
++            return;
++        }
++        mPreference.setMax(getMax());
++        mPreference.setMin(getMin());
++        mPreference.setHapticFeedbackMode(SeekBarPreference.HAPTIC_FEEDBACK_MODE_ON_ENDS);
++        // Deliberately NOT continuous: every write restarts the running games
++        // (the render buffer size is fixed when a window is created), so the
++        // value lands once the user lets go of the thumb.
++        mPreference.setContinuousUpdates(false);
++        updateState(mPreference);
++    }
++
++    @Override
++    public void updateState(Preference preference) {
++        super.updateState(preference);
++        final int percent = currentPercent();
++        preference.setSummary(summaryFor(percent));
++    }
++
++    /**
++     * Confirm before the value lands: applying it re-writes the app-compat
++     * overrides, and that force-stops every game that is running, because a
++     * window's render buffer size is fixed when the window is created. The
++     * thumb stays where the user dropped it while the dialog is up and goes
++     * back if they decide against it.
++     */
++    @Override
++    public boolean onPreferenceChange(Preference preference, Object newValue) {
++        final int position = (int) newValue;
++        final int previous = getSliderPosition();
++        if (position == previous) {
++            return true;
++        }
++        final int percent = percentForIndex(position);
++        final DialogInterface.OnClickListener revert =
++                (dialog, which) -> setSliderPositionQuietly(previous);
++        new AlertDialog.Builder(mContext)
++                .setTitle(R.string.game_render_quality_dialog_title)
++                .setMessage(messageFor(percent))
++                .setPositiveButton(R.string.okay,
++                        (dialog, which) -> setSliderPosition(position))
++                .setNegativeButton(R.string.cancel, revert)
++                .setOnCancelListener(dialog -> setSliderPositionQuietly(previous))
++                .show();
++        return true;
++    }
++
++    @Override
++    public int getSliderPosition() {
++        return indexForPercent(currentPercent());
++    }
++
++    @Override
++    public boolean setSliderPosition(int position) {
++        final int percent = percentForIndex(position);
++        final int shortSide = displayShortSide();
++        // 100% and an unknown panel size both mean "no downscaling": the bridge
++        // reads 0 as "render at full resolution".
++        final int height = (percent >= FULL_PERCENT || shortSide <= 0)
++                ? 0 : shortSide * percent / 100;
++        final boolean done = Settings.Secure.putInt(
++                mContext.getContentResolver(), SECURE_KEY, height);
++        if (done && mPreference != null) {
++            mPreference.setSummary(summaryFor(percent));
++        }
++        return done;
++    }
++
++    @Override
++    public int getMax() {
++        return PERCENTS.length - 1;
++    }
++
++    @Override
++    public int getMin() {
++        return 0;
++    }
++
++    /**
++     * How the effective render height reads as a percentage of this display:
++     * the smallest stop that still renders at least that height, which is the
++     * rule {@code ArcAppService.scalePercentFor()} applies.
++     */
++    private int currentPercent() {
++        final int shortSide = displayShortSide();
++        final int height = effectiveHeight();
++        if (height <= 0 || shortSide <= 0) {
++            return FULL_PERCENT;
++        }
++        for (int percent : PERCENTS) {
++            if ((long) shortSide * percent >= (long) height * 100) {
++                return percent;
++            }
++        }
++        return FULL_PERCENT;
++    }
++
++    /** Target render height in force now, in pixels; 0 means full resolution. */
++    private int effectiveHeight() {
++        int height = Settings.Secure.getInt(
++                mContext.getContentResolver(), SECURE_KEY, -1);
++        if (height < 0) {
++            height = SystemProperties.getInt(PROP_PERSIST, -1);
++        }
++        if (height < 0) {
++            height = SystemProperties.getInt(PROP_RO, DEFAULT_HEIGHT);
++        }
++        return height;
++    }
++
++    /**
++     * Short side of the default display in pixels, or 0 if it is not known.
++     * Games are scaled against display 0 by the bridge, so read that display
++     * rather than whatever display this Settings window happens to sit on.
++     */
++    private int displayShortSide() {
++        final DisplayManager displayManager = mContext.getSystemService(DisplayManager.class);
++        final Display display = displayManager != null
++                ? displayManager.getDisplay(Display.DEFAULT_DISPLAY) : null;
++        if (display == null) {
++            return 0;
++        }
++        final WindowManager windowManager = mContext.createDisplayContext(display)
++                .getSystemService(WindowManager.class);
++        if (windowManager == null) {
++            return 0;
++        }
++        final Rect bounds = windowManager.getMaximumWindowMetrics().getBounds();
++        return Math.min(bounds.width(), bounds.height());
++    }
++
++    /** Move the thumb without writing anything — the user backed out. */
++    private void setSliderPositionQuietly(int position) {
++        if (mPreference != null) {
++            mPreference.setProgress(position);
++        }
++    }
++
++    private CharSequence messageFor(int percent) {
++        if (percent >= FULL_PERCENT) {
++            return mContext.getString(R.string.game_render_quality_dialog_message_full);
++        }
++        final int height = displayShortSide() * percent / 100;
++        return mContext.getString(
++                R.string.game_render_quality_dialog_message, percent, height);
++    }
++
++    private CharSequence summaryFor(int percent) {
++        if (percent >= FULL_PERCENT) {
++            return mContext.getString(R.string.game_render_quality_summary_full);
++        }
++        final int height = displayShortSide() * percent / 100;
++        return mContext.getString(R.string.game_render_quality_summary, percent, height);
++    }
++
++    private static int indexForPercent(int percent) {
++        for (int i = 0; i < PERCENTS.length; i++) {
++            if (PERCENTS[i] >= percent) {
++                return i;
++            }
++        }
++        return PERCENTS.length - 1;
++    }
++
++    private static int percentForIndex(int index) {
++        if (index < 0) {
++            return PERCENTS[0];
++        }
++        if (index >= PERCENTS.length) {
++            return FULL_PERCENT;
++        }
++        return PERCENTS[index];
++    }
++}
+-- 
+2.43.0
+
