@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Keep AOSP EthernetService off ARC-owned interfaces.
+
+         The ARC container's uplink is owned end-to-end by ArcNetworkService /
+         ArcNetworkAgent, which relies on the IPv4 address patchpanel already
+         assigned to eth0 (100.115.92.22/30) and only brings the link up.
+
+         AOSP's EthernetTracker matches any interface against this regex
+         (default "eth\d"), grabs eth0 in CLIENT mode, and its IpClient
+         (defaulting to IpAssignment.DHCP) flushes patchpanel's address, runs
+         DHCP against a bridge with no server, and never restores it. That
+         leaves eth0 UP at L2 with no IPv4 address and an empty routing table
+         while ConnectivityService still advertises the stale ArcNetworkAgent
+         network as ETHERNET/VALIDATED — apps route into a dead interface.
+
+         Only bites VM hosts (apple/VMware/vmware), where Chrome exposes the
+         host network to ARC as Ethernet (eth0). Real machines get wlan0, which
+         "eth\d" never matched, so clearing the regex is safe everywhere:
+         ArcNetworkService is the sole owner of eth0/wlan0. See
+         docs/arc-eth0-network-ownership-race-vm.md. -->
+    <string translatable="false" name="config_ethernet_iface_regex"></string>
+</resources>

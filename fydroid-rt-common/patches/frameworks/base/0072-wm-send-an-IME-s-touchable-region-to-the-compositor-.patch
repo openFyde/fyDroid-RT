@@ -1,0 +1,108 @@
+From aecb87e3d50216c6fde98134350937d746d39c20 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 12 Oct 2026 13:59:47 +0800
+Subject: [PATCH 72/75] wm: send an IME's touchable region to the compositor so
+ Gboard's side toolbar takes clicks
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: Id6e8dc0e00e65c871b59c3c10dcf63edf24b8b23
+---
+ core/java/android/view/SurfaceControl.java    |  6 +++
+ .../server/wm/WindowManagerService.java       | 47 +++++++++++++++++--
+ 2 files changed, 49 insertions(+), 4 deletions(-)
+
+diff --git a/core/java/android/view/SurfaceControl.java b/core/java/android/view/SurfaceControl.java
+index 93faceaea1bf..848c90d691b3 100644
+--- a/core/java/android/view/SurfaceControl.java
++++ b/core/java/android/view/SurfaceControl.java
+@@ -835,6 +835,12 @@ public final class SurfaceControl implements Parcelable {
+      * id's value, so sharing 13 with METADATA_IS_FLOATING_ACTIVITY published
+      * this int as IsFloatingActivity too and made the compositor register the
+      * keyboard as a modal window.
++     *
++     * Payload: one int (the content top, or {@link #IME_CONTENT_TOP_NO_INPUT}).
++     * When the IME uses TOUCHABLE_INSETS_REGION with a non-empty region, WM
++     * appends that region: an int rect count, then left/top/right/bottom ints
++     * per rect, in window px. A reader that only takes the first int still
++     * sees the content top.
+      * @hide
+      */
+     public static final int METADATA_IME_CONTENT_TOP = 14;
+diff --git a/services/core/java/com/android/server/wm/WindowManagerService.java b/services/core/java/com/android/server/wm/WindowManagerService.java
+index c674e4fcdaa6..4ceba092262d 100644
+--- a/services/core/java/com/android/server/wm/WindowManagerService.java
++++ b/services/core/java/com/android/server/wm/WindowManagerService.java
+@@ -186,6 +186,7 @@ import android.graphics.Point;
+ import android.graphics.PointF;
+ import android.graphics.Rect;
+ import android.graphics.Region;
++import android.graphics.RegionIterator;
+ import android.hardware.configstore.V1_0.OptionalBool;
+ import android.hardware.configstore.V1_1.ISurfaceFlingerConfigs;
+ import android.hardware.display.DisplayManager;
+@@ -2215,6 +2216,11 @@ public class WindowManagerService extends IWindowManager.Stub
+      * swallowed by an invisible surface. Send the sentinel instead, and the
+      * compositor gives the surface an empty input region.
+      */
++    // Upper bound on the touchable-region rects appended to
++    // METADATA_IME_CONTENT_TOP; must match kImeTouchRegionMaxRects in
++    // wayland_service. Real IMEs report one or two.
++    private static final int IME_TOUCH_REGION_MAX_RECTS = 16;
++
+     private void stampImeContentTopIfNeeded(WindowState w) {
+         if (w.mAttrs.type != TYPE_INPUT_METHOD) {
+             return;
+@@ -2224,13 +2230,46 @@ public class WindowManagerService extends IWindowManager.Stub
+         if (sc == null || !sc.isValid()) {
+             return;
+         }
+-        final boolean takesNoTouch = w.mTouchableInsets == TOUCHABLE_INSETS_REGION
+-                && w.mGivenTouchableRegion.isEmpty();
++        final boolean usesRegion = w.mTouchableInsets == TOUCHABLE_INSETS_REGION;
++        final boolean takesNoTouch = usesRegion && w.mGivenTouchableRegion.isEmpty();
+         final int contentTop = takesNoTouch
+                 ? SurfaceControl.IME_CONTENT_TOP_NO_INPUT
+                 : w.mGivenContentInsets.top;
+-        w.getPendingTransaction().setMetadata(
+-                sc, SurfaceControl.METADATA_IME_CONTENT_TOP, contentTop);
++        if (!usesRegion || takesNoTouch) {
++            w.getPendingTransaction().setMetadata(
++                    sc, SurfaceControl.METADATA_IME_CONTENT_TOP, contentTop);
++            return;
++        }
++        // The IME named exactly where it takes touch, and that need not be
++        // below a content top: Gboard with a hardware keyboard draws only a
++        // small toolbar at the side of an otherwise transparent full-display
++        // window and reports contentTop == the window height. Append the
++        // region's rects (window px) so the compositor can use them as the
++        // input region; see SurfaceControl.METADATA_IME_CONTENT_TOP.
++        final Parcel parcel = Parcel.obtain();
++        try {
++            parcel.writeInt(contentTop);
++            final int countPos = parcel.dataPosition();
++            parcel.writeInt(0);
++            int count = 0;
++            final RegionIterator it = new RegionIterator(w.mGivenTouchableRegion);
++            final Rect r = new Rect();
++            while (count < IME_TOUCH_REGION_MAX_RECTS && it.next(r)) {
++                parcel.writeInt(r.left);
++                parcel.writeInt(r.top);
++                parcel.writeInt(r.right);
++                parcel.writeInt(r.bottom);
++                count++;
++            }
++            final int end = parcel.dataPosition();
++            parcel.setDataPosition(countPos);
++            parcel.writeInt(count);
++            parcel.setDataPosition(end);
++            w.getPendingTransaction().setMetadata(
++                    sc, SurfaceControl.METADATA_IME_CONTENT_TOP, parcel);
++        } finally {
++            parcel.recycle();
++        }
+     }
+ 
+     void setInsetsWindow(Session session, IWindow client, int touchableInsets, Rect contentInsets,
+-- 
+2.43.0
+

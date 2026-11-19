@@ -1,0 +1,156 @@
+From bc39b808e003ce55bdb45d16ed20fb2a14bd4486 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 17:59:41 +0800
+Subject: [PATCH 17/75] fydroid-rt: fix services.core AOSP-13 build errors
+ (validation pass)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+'m services.core' surfaced 11 errors across the applied frameworks/base patches;
+all fixed and services.core now compiles clean on AOSP 13:
+- 0011: AttributeCache moved com.android.server -> com.android.internal.policy;
+  ACTIVITY_TYPE_HOME needs static import (android.app.WindowConfiguration).
+- 0006: setTaskWindowsVisible — MATCH_TASK_IN_STACKS_ONLY -> MATCH_ATTACHED_TASK_ONLY;
+  merged its binder onTransact into 13's native onTransact (was a duplicate);
+  STUBBED the showLw/hideLw body (removed in 13's WM visibility refactor) with a
+  TODO — re-express desk-management show/hide against 13's visibility API.
+- 0004: reverted ActiveServices to stock 13 — its auto-merge produced broken
+  hybrid 11/13 code (proc.execServicesFg vs psr.shouldExecServicesFg, missing
+  SERVICE_START_FOREGROUND_TIMEOUT); defer the ArcAnr ANR-reporting hook there.
+framework.jar (SurfaceControl metadata 9/10..12, Build.IS_CONTAINER) compiled clean.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ib612a839016a4228394396d8225eed17815b4962
+---
+ .../com/android/server/am/ActiveServices.java |  9 ++---
+ .../server/wm/ActivityTaskManagerService.java | 39 ++++++++-----------
+ .../core/java/com/android/server/wm/Task.java |  3 +-
+ 3 files changed, 22 insertions(+), 29 deletions(-)
+
+diff --git a/services/core/java/com/android/server/am/ActiveServices.java b/services/core/java/com/android/server/am/ActiveServices.java
+index 1eaf57c2f854..c36e0700c723 100644
+--- a/services/core/java/com/android/server/am/ActiveServices.java
++++ b/services/core/java/com/android/server/am/ActiveServices.java
+@@ -5772,8 +5772,7 @@ public final class ActiveServices {
+                 anrMessage = "executing service " + timeout.shortInstanceName;
+             } else {
+                 Message msg = mAm.mHandler.obtainMessage(
+-                        ActivityManagerService.SERVICE_TIMEOUT_MSG, 0,
+-                        proc.execServicesFg ? SERVICE_TIMEOUT : SERVICE_BACKGROUND_TIMEOUT);
++                        ActivityManagerService.SERVICE_TIMEOUT_MSG);
+                 msg.obj = proc;
+                 mAm.mHandler.sendMessageAtTime(msg, psr.shouldExecServicesFg()
+                         ? (nextTime+SERVICE_TIMEOUT) : (nextTime + SERVICE_BACKGROUND_TIMEOUT));
+@@ -5854,8 +5853,7 @@ public final class ActiveServices {
+             return;
+         }
+         Message msg = mAm.mHandler.obtainMessage(
+-                ActivityManagerService.SERVICE_TIMEOUT_MSG, 0,
+-                proc.execServicesFg ? SERVICE_TIMEOUT : SERVICE_BACKGROUND_TIMEOUT);
++                ActivityManagerService.SERVICE_TIMEOUT_MSG);
+         msg.obj = proc;
+         mAm.mHandler.sendMessageDelayed(msg, proc.mServices.shouldExecServicesFg()
+                 ? SERVICE_TIMEOUT : SERVICE_BACKGROUND_TIMEOUT);
+@@ -5866,8 +5864,7 @@ public final class ActiveServices {
+             return;
+         }
+         Message msg = mAm.mHandler.obtainMessage(
+-                ActivityManagerService.SERVICE_FOREGROUND_TIMEOUT_MSG, 0,
+-                SERVICE_START_FOREGROUND_TIMEOUT);
++                ActivityManagerService.SERVICE_FOREGROUND_TIMEOUT_MSG);
+         msg.obj = r;
+         r.fgWaiting = true;
+         mAm.mHandler.sendMessageDelayed(msg, mAm.mConstants.mServiceStartForegroundTimeoutMs);
+diff --git a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+index 1d776061e52a..662a612d20df 100644
+--- a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
++++ b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+@@ -837,20 +837,6 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+     // to hide/show Android task windows when Chrome OS desks are switched.
+     private static final int TRANSACTION_setTaskWindowsVisible = 156;
+ 
+-    @Override
+-    public boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply,
+-            int flags) throws android.os.RemoteException {
+-        if (code == TRANSACTION_setTaskWindowsVisible) {
+-            data.enforceInterface("android.app.IActivityTaskManager");
+-            int taskId = data.readInt();
+-            boolean visible = data.readInt() != 0;
+-            setTaskWindowsVisible(taskId, visible);
+-            reply.writeNoException();
+-            return true;
+-        }
+-        return super.onTransact(code, data, reply, flags);
+-    }
+-
+     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+     public ActivityTaskManagerService(Context context) {
+         mContext = context;
+@@ -2889,18 +2875,18 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+         try {
+             synchronized (mGlobalLock) {
+                 final Task task = mRootWindowContainer.anyTaskForId(taskId,
+-                        MATCH_TASK_IN_STACKS_ONLY);
++                        MATCH_ATTACHED_TASK_ONLY);
+                 if (task == null) {
+                     Slog.w(TAG, "setTaskWindowsVisible: taskId=" + taskId + " not found");
+                     return;
+                 }
+-                task.forAllWindows(w -> {
+-                    if (visible) {
+-                        w.showLw(false /* doAnimation */, false /* requestAnim */);
+-                    } else {
+-                        w.hideLw(false /* doAnimation */, false /* requestAnim */);
+-                    }
+-                }, true /* traverseTopToBottom */);
++                // fydroid-rt TODO(AOSP-13 WM port): WindowState.showLw/hideLw were removed
++                // in the AOSP 12/13 visibility refactor (window visibility is now policy-
++                // computed). Re-express this desk-management show/hide against the 13 WM
++                // visibility API (e.g. Task/ActivityRecord setVisibility / forceHidden).
++                // Stubbed to a no-op for now so the binder hook compiles and is callable.
++                Slog.i(TAG, "setTaskWindowsVisible(taskId=" + taskId + ", visible=" + visible
++                        + "): no-op pending AOSP-13 WM visibility port");
+                 mWindowManager.mWindowPlacerLocked.performSurfacePlacement();
+             }
+         } finally {
+@@ -5374,6 +5360,15 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+     @Override
+     public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+             throws RemoteException {
++        // fydroid-rt: manual binder transaction for setTaskWindowsVisible (not in the AIDL).
++        if (code == TRANSACTION_setTaskWindowsVisible) {
++            data.enforceInterface("android.app.IActivityTaskManager");
++            int taskId = data.readInt();
++            boolean visible = data.readInt() != 0;
++            setTaskWindowsVisible(taskId, visible);
++            reply.writeNoException();
++            return true;
++        }
+         try {
+             return super.onTransact(code, data, reply, flags);
+         } catch (RuntimeException e) {
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 3d80c9ae0af6..9f96ae403bd2 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -20,6 +20,7 @@ import static android.app.ActivityTaskManager.INVALID_TASK_ID;
+ import static android.app.ActivityTaskManager.RESIZE_MODE_FORCED;
+ import static android.app.ActivityTaskManager.RESIZE_MODE_SYSTEM_SCREEN_ROTATION;
+ import static android.app.ITaskStackListener.FORCED_RESIZEABLE_REASON_SPLIT_SCREEN;
++import static android.app.WindowConfiguration.ACTIVITY_TYPE_HOME;
+ import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
+ import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
+@@ -199,7 +200,7 @@ import com.android.internal.util.XmlUtils;
+ import com.android.internal.util.function.pooled.PooledConsumer;
+ import com.android.internal.util.function.pooled.PooledLambda;
+ import com.android.internal.util.function.pooled.PooledPredicate;
+-import com.android.server.AttributeCache;
++import com.android.internal.policy.AttributeCache;
+ import com.android.server.Watchdog;
+ import com.android.server.am.ActivityManagerService;
+ import com.android.server.am.AppTimeTracker;
+-- 
+2.43.0
+

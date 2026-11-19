@@ -1,0 +1,13 @@
+// Stub for media.stable.mojom.NativePixmapHandle — used by arc/protected_buffer_manager.mojom.
+module media.stable.mojom;
+
+struct NativePixmapPlane {
+  uint32 stride;
+  uint64 offset;
+  uint64 size;
+};
+
+struct NativePixmapHandle {
+  array<NativePixmapPlane> planes;
+  uint64 modifier;
+};

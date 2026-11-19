@@ -1,0 +1,33 @@
+From 431d2aed9d9c3d178598100f06ea908ea0f902d6 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 16:46:37 +0800
+Subject: [PATCH 1/6] audio: add oem_5000 group to audio HAL service for CRAS
+ socket access
+
+The CRAS socket at /var/run/cras/.cras_socket is owned by
+vendor_cras:vendor_cras (uid/gid 5000) -> Android group oem_5000.
+Without it the audio HAL cannot connect to CRAS in the Chrome OS
+container.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: If9a8875d2a4d7046c74cd86fa89c34c8808d20f2
+---
+ .../default/service/android.hardware.audio.service.rc           | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/audio/common/all-versions/default/service/android.hardware.audio.service.rc b/audio/common/all-versions/default/service/android.hardware.audio.service.rc
+index 0de4eea373..f09f082b3c 100644
+--- a/audio/common/all-versions/default/service/android.hardware.audio.service.rc
++++ b/audio/common/all-versions/default/service/android.hardware.audio.service.rc
+@@ -2,7 +2,7 @@ service vendor.audio-hal /vendor/bin/hw/android.hardware.audio.service
+     class hal
+     user audioserver
+     # media gid needed for /dev/fm (radio) and for /data/misc/media (tee)
+-    group audio camera drmrpc inet media mediadrm net_bt net_bt_admin net_bw_acct wakelock context_hub
++    group audio camera drmrpc inet media mediadrm net_bt net_bt_admin net_bw_acct wakelock context_hub oem_5000
+     capabilities BLOCK_SUSPEND SYS_NICE
+     # setting RLIMIT_RTPRIO allows binder RT priority inheritance
+     rlimit rtprio 10 10
+-- 
+2.43.0
+

@@ -1,0 +1,109 @@
+From afa049a4b78d5c9b17f1479ecc9e97b06a6bcf71 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 16 Jun 2026 13:58:23 +0800
+Subject: [PATCH 25/40] SF: stop ARC notification VD state-machine warning spam
+ (ARC)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The ARC notification VD presents each notification as its own Wayland
+surface and intentionally skips its unused SF output composition —
+RenderSurface::queueBuffer() skips advanceFrame() for it. But
+onPresentDisplayCompleted() still called onFrameCommitted() every frame,
+finding the VirtualDisplaySurface debug state in Prepared (it never reaches
+Hwc), which logged "Unexpected onFrameCommitted in Prepared state" every
+frame (and tried to queue the unused dummy sink).
+
+Add a default-no-op DisplaySurface::onFrameSkipped(), overridden in
+VirtualDisplaySurface to reset the per-frame debug state to Idle.
+RenderSurface::onPresentDisplayCompleted() calls onFrameSkipped() for the
+notification VD instead of onFrameCommitted(), so the state machine cycles
+Idle->Begun->Prepared->Idle cleanly with no warning (and no "Unexpected
+beginFrame in Prepared state" on the following frame either).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I84a0e65397035259a1275e745a01031160e12b51
+---
+ .../include/compositionengine/DisplaySurface.h        |  8 ++++++++
+ .../CompositionEngine/src/RenderSurface.cpp           | 11 +++++++++++
+ .../DisplayHardware/VirtualDisplaySurface.cpp         |  9 +++++++++
+ .../DisplayHardware/VirtualDisplaySurface.h           |  1 +
+ 4 files changed, 29 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplaySurface.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplaySurface.h
+index ca86f4c604..410f307003 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplaySurface.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/DisplaySurface.h
+@@ -67,6 +67,14 @@ public:
+     // frame's buffer.
+     virtual void onFrameCommitted() = 0;
+ 
++    // fydroid: called instead of onFrameCommitted() for a display whose output
++    // frame was intentionally NOT advanced to HWC this cycle (e.g. the ARC
++    // notification VD, which presents its layers individually and skips its
++    // unused SF output). Lets the surface reset its per-frame state cleanly so
++    // the next beginFrame() starts from a known state, without the
++    // advanceFrame()/onFrameCommitted() bookkeeping. Default: no-op.
++    virtual void onFrameSkipped() {}
++
+     virtual void dumpAsString(String8& result) const = 0;
+ 
+     virtual void resizeBuffers(const ui::Size&) = 0;
+diff --git a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+index b6bbc3382c..d13b7230a0 100644
+--- a/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+@@ -258,6 +258,17 @@ void RenderSurface::queueBuffer(base::unique_fd readyFence) {
+ }
+ 
+ void RenderSurface::onPresentDisplayCompleted() {
++    // fydroid: the ARC notification VD skips advanceFrame() (see queueBuffer
++    // above), so its VirtualDisplaySurface never advances to the Hwc state.
++    // Calling onFrameCommitted() here would (1) warn "Unexpected
++    // onFrameCommitted in Prepared state" every frame and (2) try to queue the
++    // unused dummy sink buffer. Use onFrameSkipped() instead, which just resets
++    // the per-frame state to Idle — so the next beginFrame() starts cleanly and
++    // doesn't warn "Unexpected beginFrame in Prepared state" either.
++    if (mDisplay.isVirtual() && mDisplay.getName() == "ArcNotificationVirtualDisplay") {
++        mDisplaySurface->onFrameSkipped();
++        return;
++    }
+     mDisplaySurface->onFrameCommitted();
+ }
+ 
+diff --git a/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp b/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp
+index 3803a78670..396f2632af 100644
+--- a/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp
++++ b/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp
+@@ -223,6 +223,15 @@ status_t VirtualDisplaySurface::advanceFrame() {
+     return result;
+ }
+ 
++// fydroid: the frame's output was intentionally not advanced to HWC this
++// cycle (advanceFrame() was skipped by RenderSurface for the ARC notification
++// VD). Just reset the per-frame debug state so the next beginFrame() starts
++// from Idle — without warning about the never-reached Hwc state and without
++// touching the unused output sink.
++void VirtualDisplaySurface::onFrameSkipped() {
++    mDebugState = DebugState::Idle;
++}
++
+ void VirtualDisplaySurface::onFrameCommitted() {
+     const auto halDisplayId = HalVirtualDisplayId::tryCast(mDisplayId);
+     if (!halDisplayId) {
+diff --git a/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h b/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h
+index e21095aa88..e49836bd11 100644
+--- a/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h
++++ b/services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h
+@@ -86,6 +86,7 @@ public:
+     virtual status_t prepareFrame(CompositionType);
+     virtual status_t advanceFrame();
+     virtual void onFrameCommitted();
++    void onFrameSkipped() override;
+     virtual void dumpAsString(String8& result) const;
+     virtual void resizeBuffers(const ui::Size&) override;
+     virtual const sp<Fence>& getClientTargetAcquireFence() const override;
+-- 
+2.43.0
+

@@ -1,0 +1,42 @@
+fyDroid-RT
+Copyright Fyde Innovations
+
+This project is licensed under the Apache License, Version 2.0. See LICENSE.
+
+Parts of this repository are derived from other open-source projects and
+remain under their original licenses, as stated in each file's header:
+
+- Files whose header says "governed by a BSD-style license that can be found
+  in the LICENSE file" or "in the LICENSE.BSD file" (code derived from
+  Chromium and ChromiumOS, including
+  the Mojo interface definitions under
+  fydroid-rt-common/frameworks/native/libs/arcbridge/mojom and the CRAS audio
+  client under fydroid-rt-common/external/libcras) are licensed under the
+  3-clause BSD license in LICENSE.BSD.
+
+- The Java sources under
+  fydroid-rt-common/frameworks/arc/org.chromium.arc.mojom are Mojo bindings
+  for Chromium's interface definitions. They are Copyright The Chromium
+  Authors and licensed under the same 3-clause BSD license.
+
+- fydroid-rt-common/vendor/c2-service-mojo is derived from the Android
+  v4l2_codec2 project (Copyright The Chromium Authors) and stays under the
+  same 3-clause BSD license.
+
+- fydroid-rt-common/external/libcras/third_party/utlist is Copyright
+  Troy D. Hanson and licensed under the BSD license in its header.
+
+- Wayland protocol descriptions under
+  fydroid-rt-common/external/wayland-protocols carry their own copyright and
+  permission notices (MIT-style) in each file.
+
+- Patch files under fydroid-rt-common/patches, fydroid-rt-common/external and
+  fydroid-rt-common/vendor/patches modify third-party projects (the Android
+  Open Source Project, libdrm, minigbm, Mesa and others). Each patch is
+  offered under the license of the file it modifies; some of those files are
+  licensed under the GNU General Public License, version 2.
+
+Not included: the native bridge binaries (Intel Houdini, Google
+ndk_translation) and the F-Droid packages are not part of this repository and
+are not covered by its license. The build scripts download them from third
+parties; each is subject to its own license terms.

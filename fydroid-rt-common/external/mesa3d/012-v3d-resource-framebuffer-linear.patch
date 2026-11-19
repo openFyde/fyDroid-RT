@@ -1,0 +1,15 @@
+diff --git a/src/gallium/drivers/v3d/v3d_resource.c b/src/gallium/drivers/v3d/v3d_resource.c
+index 33df0d07be5..c682832b769 100644
+--- a/src/gallium/drivers/v3d/v3d_resource.c
++++ b/src/gallium/drivers/v3d/v3d_resource.c
+@@ -964,6 +964,10 @@ v3d_resource_from_handle(struct pipe_screen *pscreen,
+                 rsc->bo = v3d_bo_open_name(screen, whandle->handle);
+                 break;
+         case WINSYS_HANDLE_TYPE_FD:
++                if (usage == PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE) {
++                        whandle->modifier = DRM_FORMAT_MOD_LINEAR;
++                        rsc->tiled = false;
++                }
+                 rsc->bo = v3d_bo_open_dmabuf(screen, whandle->handle);
+                 break;
+         default:

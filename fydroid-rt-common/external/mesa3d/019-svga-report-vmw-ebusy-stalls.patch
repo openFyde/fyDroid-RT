@@ -1,0 +1,201 @@
+diff --git a/src/gallium/winsys/svga/drm/vmw_screen_ioctl.c b/src/gallium/winsys/svga/drm/vmw_screen_ioctl.c
+index 21c06b29506..7e2e105715c 100644
+--- a/src/gallium/winsys/svga/drm/vmw_screen_ioctl.c
++++ b/src/gallium/winsys/svga/drm/vmw_screen_ioctl.c
+@@ -29,6 +29,9 @@
+ #include "svga3d_reg.h"
+ 
+ #include "util/os_mman.h"
++#include "util/os_time.h"
++#include "util/u_atomic.h"
++#include "util/log.h"
+ 
+ #include <errno.h>
+ #include <unistd.h>
+@@ -36,6 +39,61 @@
+ #define VMW_MAX_DEFAULT_TEXTURE_SIZE   (128 * 1024 * 1024)
+ #define VMW_FENCE_TIMEOUT_SECONDS 3600UL
+ 
++/*
++ * fydroid-rt: knobs for the bounded -EBUSY retry in vmw_ioctl_command() below.
++ *
++ * Mesa's os_get_option() falls back to Android system properties, so on ARC
++ * these are reachable without touching SurfaceFlinger's environment:
++ *
++ *    setprop mesa.svga.execbuf.timeout.ms 60000
++ *    setprop mesa.svga.execbuf.force.busy 3
++ *
++ * Use the BARE key -- not the debug./vendor. prefixed forms os_get_option()
++ * also searches. It builds the key in a PROPERTY_KEY_MAX (32) byte buffer with
++ * strlcpy/strlcat, and "debug." + "mesa.svga.execbuf.force.busy" is 34 bytes,
++ * so the prefixed lookups are silently truncated to 31 bytes and can never
++ * match. Only the 28-byte bare key survives. A prefixed setprop reads back fine
++ * with getprop, which makes this look plumbed when it is not.
++ *
++ * Options are read once per process (DEBUG_GET_ONCE_*), so set the property
++ * first and then start a fresh GL process -- launching an app is enough, it
++ * exercises the app process and SurfaceFlinger both. Do NOT `kill -9
++ * surfaceflinger` to force a re-read: SF's death restarts the whole container,
++ * which wipes the properties you just set.
++ *
++ * SVGA_EXECBUF_TIMEOUT_MS is an opt-in ceiling on a -EBUSY wait, in ms.
++ * 0 (the default) means never give up, which is upstream behaviour. Setting it
++ * is a decision to trade a wedged display for a SurfaceFlinger abort and a
++ * container restart -- see the analysis in vmw_ioctl_command() before doing so,
++ * and pick the number from the "still waiting" heartbeats, not from taste.
++ *
++ * SVGA_EXECBUF_FORCE_BUSY fakes the next N submissions as -EBUSY so the
++ * deadline can be exercised on demand -- shrinking the timeout only shortens a
++ * storm already under way, it cannot start one, so without this a "no hang
++ * observed" result says nothing. DEBUG ONLY: reaching the deadline aborts, by
++ * design, so this will take SurfaceFlinger down and restart the container.
++  */
++DEBUG_GET_ONCE_NUM_OPTION(svga_execbuf_timeout_ms, "SVGA_EXECBUF_TIMEOUT_MS", 0)
++DEBUG_GET_ONCE_NUM_OPTION(svga_execbuf_force_busy, "SVGA_EXECBUF_FORCE_BUSY", 0)
++
++/**
++ * Claim one of the SVGA_EXECBUF_FORCE_BUSY fault injections, if any are left.
++ *
++ * Returns true at most SVGA_EXECBUF_FORCE_BUSY times over the life of the
++ * process, so the injection cannot latch and wedge submission permanently.
++ */
++static bool
++vmw_execbuf_claim_forced_busy(void)
++{
++   static uint32_t claimed = 0;
++   const int64_t budget = debug_get_option_svga_execbuf_force_busy();
++
++   if (likely(budget <= 0) || p_atomic_read(&claimed) >= budget)
++      return false;
++
++   return p_atomic_inc_return(&claimed) <= budget;
++}
++
+ #define SVGA3D_FLAGS_64(upper32, lower32) (((uint64_t)upper32 << 32) | lower32)
+ #define SVGA3D_FLAGS_UPPER_32(svga3d_flags) (svga3d_flags >> 32)
+ #define SVGA3D_FLAGS_LOWER_32(svga3d_flags) \
+@@ -536,11 +594,98 @@ vmw_ioctl_command(struct vmw_winsys_screen *vws, int32_t cid,
+     */
+    argsize = vws->ioctl.drm_execbuf_version > 1 ? sizeof(arg) :
+                 offsetof(struct drm_vmw_execbuf_arg, context_handle);
+-   do {
+-       ret = drmCommandWrite(vws->ioctl.drm_fd, DRM_VMW_EXECBUF, &arg, argsize);
+-       if (ret == -EBUSY)
+-          usleep(1000);
+-   } while (ret == -ERESTART || ret == -EBUSY);
++   /* fydroid-rt: make an -EBUSY stall visible, and allow it to be bounded.
++    *
++    * The kernel returns -EBUSY from vmw_resource_validate() when it is out of
++    * device resources and nothing on the LRU may be evicted. Upstream spins
++    * here in 1 ms sleeps with no deadline, no exit path and no output, so a
++    * guest that reaches that state wedges whoever is submitting -- on ARC that
++    * is SurfaceFlinger's main thread -- and says nothing at all about why. The
++    * board stays alive with a black screen: apps have windows with
++    * mHasSurface=true, `dumpsys SurfaceFlinger` times out, and nothing is ever
++    * composited again.
++    *
++    * What ships here is the diagnosis, not a cure: the wait is unchanged, but
++    * it now reports itself every 5 s and reports how long it took to clear.
++    * SVGA_EXECBUF_TIMEOUT_MS adds an opt-in ceiling and defaults to 0, meaning
++    * never give up -- i.e. upstream behaviour exactly.
++    *
++    * That default is deliberate and was earned. Bounding this loop is NOT a
++    * safe default, because giving up does not recover: a command buffer is a
++    * hole in a stateful stream, not a skipped frame. The host never sees the
++    * state those commands set, so the next submission fails too. Measured on
++    * device, twice: abandoning the buffer and carrying on renders nothing at all
++    * while SurfaceFlinger looks healthy (one -EINVAL per frame, forever), and
++    * abandoning it and letting the existing abort() fire kills SurfaceFlinger.
++    * A 2 s ceiling then cut off healthy waits and started a cascade -- each
++    * crash leaked device resources, which made the next -EBUSY longer, which
++    * tripped the ceiling again. On an undegraded board the same H265 software
++    * decode never waits even 1 s, so there is no measured basis for any ceiling
++    * yet. Get one from the heartbeats below before setting this in a product.
++    *
++    * -ERESTART keeps retrying unbounded: that is a signal-interrupted syscall
++    * being restarted, which makes forward progress and is not the hang here.
++    *
++    * The diagnostics go through mesa_loge() rather than this file's usual
++    * vmw_error(), which is a bare fprintf(stderr). init gives an ARC service's
++    * stderr /dev/null, so a vmw_error() here is written precisely nowhere --
++    * which is why this stall has never been observed directly, only inferred.
++    */
++   {
++      const int64_t timeout_ms = debug_get_option_svga_execbuf_timeout_ms();
++      const bool force_busy = vmw_execbuf_claim_forced_busy();
++
++      const int64_t started = os_time_get();
++      int64_t next_report_us = 5 * 1000 * 1000;   /* first heartbeat at 5 s */
++      int64_t waited_us = 0;
++
++      for (;;) {
++         ret = force_busy ? -EBUSY :
++            drmCommandWrite(vws->ioctl.drm_fd, DRM_VMW_EXECBUF, &arg, argsize);
++
++         if (ret != -ERESTART && ret != -EBUSY)
++            break;
++
++         if (ret == -EBUSY) {
++            waited_us = os_time_get() - started;
++            if (timeout_ms > 0 && waited_us >= timeout_ms * 1000) {
++               mesa_loge("%s: no progress for %d ms of %s. Giving up; the "
++                         "submission is abandoned and this process will abort.",
++                         __func__, (int)timeout_ms, strerror(EBUSY));
++               break;
++            }
++            if (waited_us >= next_report_us) {
++               mesa_loge("%s: still waiting on %s after %d ms.", __func__,
++                         strerror(EBUSY), (int)(waited_us / 1000));
++               next_report_us += 5 * 1000 * 1000;
++            }
++            usleep(1000);
++         }
++      }
++
++      /* A -EBUSY that clears is normal here: the kernel is waiting for an
++       * eviction, and on this board a software-decoded video routinely blocks
++       * for seconds at a time. Report only the long ones, so the deadline can
++       * be tuned against real numbers instead of guesses -- an over-eager
++       * deadline is far more damaging than the hang it replaces. */
++      if (!ret && waited_us >= 1000 * 1000)
++         mesa_loge("%s: recovered after %d ms of %s.", __func__,
++                   (int)(waited_us / 1000), strerror(EBUSY));
++   }
++
++   /* Upstream behaviour, deliberately unchanged -- including for the bounded
++    * -EBUSY above, which simply reaches this point instead of never reaching
++    * it. Do NOT turn this into a "drop the frame and carry on": a command
++    * buffer is a hole in a stateful stream, not a skipped frame. The host never
++    * sees the state those commands set, so the next submission fails too, and
++    * the process either aborts here anyway or -- if this path is widened to
++    * swallow that error as well -- renders nothing at all while looking
++    * healthy. Both were measured on device; the blank window is much the worse of
++    * the two, because nothing in the log says the display is finished.
++    *
++    * Aborting is not a regression against the hang it replaces: init restarts
++    * SurfaceFlinger, the container comes back, and ARC recovers on its own. The
++    * unbounded wait recovers only via a manual reboot. */
+    if (ret) {
+       vmw_error("%s error %s.\n", __func__, strerror(-ret));
+       abort();
+@@ -722,6 +867,20 @@ vmw_ioctl_syncforcpu(struct vmw_region *region,
+    if (allow_cs)
+       arg.flags |= drm_vmw_synccpu_allow_cs;
+ 
++   /* fydroid-rt: deliberately NOT bounded, unlike the execbuf loop above.
++    *
++    * This one looks like the same bug and is not. Its only caller is
++    * vmw_dma_buffer_map(), which turns any error into a NULL map -- a path the
++    * driver essentially never takes upstream, because this loop only exits on
++    * success. Giving it a deadline hands the svga driver an unmapped buffer, it
++    * builds a command buffer around contents that were never written, and the
++    * kernel then rejects the submission: measured on device as -EBUSY give-ups in
++    * vmw_ioctl_command followed by -EINVAL and a SurfaceFlinger abort, with
++    * ARC windows drawing nothing in between. Worse, the failure is silent --
++    * the vmw_error below goes to an ARC service's /dev/null stderr.
++    *
++    * The stall bound is for the execbuf loop only. Leave this at upstream behaviour.
++    */
+    do {
+       ret = drmCommandWrite(region->drm_fd, DRM_VMW_SYNCCPU, &arg, sizeof(arg));
+       if (ret == -EBUSY)

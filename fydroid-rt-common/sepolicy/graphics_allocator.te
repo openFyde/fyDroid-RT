@@ -1,0 +1,20 @@
+# SELinux rules for the minigbm gralloc4 allocator
+# (android.hardware.graphics.allocator@4.0-service.minigbm -> hal_graphics_allocator_default)
+
+# --- CMA dma-buf heap (v3d / Raspberry Pi) ---
+# The v3d minigbm backend allocates shared/scanout/CPU-visible buffers from the
+# CMA dma-buf heap and imports the dma-buf into v3d via PRIME, instead of
+# borrowing a CMA BO from vc4. The heap node is the board's CMA area, e.g.
+# /dev/dma_heap/linux,cma on bcm2712, which AOSP's file_contexts labels with the
+# catch-all `dmabuf_heap_device` (only /dev/dma_heap/system* get the
+# dmabuf_system_heap_device label that is granted by default).
+#
+# r_file_perms is enough: v3d_open_cma_heap() opens the heap O_RDONLY and
+# DMA_HEAP_IOCTL_ALLOC needs no more than that (same as libdmabufheap).
+#
+# Only the allocator gets this. coredomain (surfaceflinger, system_server, apps)
+# has a neverallow on non-system heaps (system/sepolicy/private/coredomain.te),
+# so the gralloc *mapper* copy of the backend, which is dlopen()ed into those
+# processes, deliberately runs with no heap fd — it never allocates, and it
+# maps heap-backed buffers through the PRIME/V3D_MMAP_BO path instead.
+allow hal_graphics_allocator_default dmabuf_heap_device:chr_file r_file_perms;

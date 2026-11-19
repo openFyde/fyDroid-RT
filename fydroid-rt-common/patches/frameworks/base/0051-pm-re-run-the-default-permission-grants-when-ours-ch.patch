@@ -1,0 +1,102 @@
+From e3bdf1337d8bb28a9755ac7732111975221c95c5 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 5 Aug 2026 19:07:35 +0800
+Subject: [PATCH 51/75] pm: re-run the default-permission grants when ours
+ change
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+GmsCore ships with every one of its dangerous permissions denied on any
+device whose profile already existed, even though we ship the grants in
+/system/etc/default-permissions/default-permissions-fydroid-gms.xml. On
+device that is 33 of 33 runtime permissions granted=false, which crash-loops
+gms.persistent —
+
+  java.lang.SecurityException: Need android.permission.BLUETOOTH_CONNECT
+    permission for AttributionSource@b645bfc6: getAddress
+    at android.bluetooth.BluetoothAdapter.getAddress(BluetoothAdapter.java:1534)
+    at ...auth.proximity.firstparty.CryptauthDevicesSyncedIntentOperation
+
+— and leaves location dead for every app that goes through Play services.
+
+The file is never read. grantDefaultPermissionExceptions(), the only code
+that parses /etc/default-permissions/, is reachable solely from
+DefaultPermissionGrantPolicy.grantDefaultPermissions(userId), which
+PackageManagerService calls at boot only for a user where
+Settings.isPermissionUpgradeNeeded() holds — that is, where
+
+  PackagePartitions.FINGERPRINT + "?pc_version=" + <PermissionController>
+
+differs from the epoch stored per user in the permission apex data
+(/data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml).
+PackagePartitions.FINGERPRINT digests the ro.*.build.fingerprint props, and
+ours is pinned to fyde/fydroid_rt/<device> by BUILD_FINGERPRINT_* so that
+ro.build.fingerprint stays inside the 91-char cap legacy
+__system_property_get() enforces (WeChat). Pinning it also froze the epoch:
+it no longer moves when the ARC image is rebuilt, the grant pass never runs
+again, and a default-permissions file added after a profile was provisioned
+is dead weight. Fresh profiles are fine, which is why this went unnoticed.
+
+Mix an epoch of our own into that fingerprint, bumped whenever the
+default-permission content we ship changes, so the next boot runs exactly
+one more grant pass per user.
+
+pm grant is not a substitute. Nine of the permissions are restricted
+(SMS, call log, ACCESS_BACKGROUND_LOCATION, WRITE_EXTERNAL_STORAGE — the
+ones flagged APPLY_RESTRICTION); a shell grant on those silently no-ops,
+while the exceptions path passes whitelistRestrictedPermissions=true and
+allowlists them as part of the grant.
+
+Verified on device (amd64): after the next boot the stored epoch reads
+5f18b3cc...?pc_version=330000000?fydroid_default_permissions=1, and
+com.google.android.gms goes from 33/33 runtime permissions denied to every
+declared one granted with GRANTED_BY_DEFAULT — the nine restricted ones
+carrying RESTRICTION_SYSTEM_EXEMPT|RESTRICTION_UPGRADE_EXEMPT, which a
+shell grant cannot produce. gms.persistent stopped crash-looping.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Change-Id: I177b707c8393f99192c2fc6611f432945a26536a
+---
+ .../java/com/android/server/pm/Settings.java   | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/pm/Settings.java b/services/core/java/com/android/server/pm/Settings.java
+index cfd029346340..57fdfec89fbb 100644
+--- a/services/core/java/com/android/server/pm/Settings.java
++++ b/services/core/java/com/android/server/pm/Settings.java
+@@ -5427,6 +5427,21 @@ public final class Settings implements Watchable, Snappable {
+         private static final int UPGRADE_VERSION = -1;
+         private static final int INITIAL_VERSION = 0;
+ 
++        // fydroid: extra epoch mixed into the permission-upgrade fingerprint below.
++        //
++        // ro.build.fingerprint is pinned to fyde/fydroid_rt/<device> (see
++        // BUILD_FINGERPRINT_* in BoardConfigCommon.mk — it has to stay under the
++        // 91-char cap legacy __system_property_get() enforces), so
++        // PackagePartitions.FINGERPRINT no longer moves when the ARC image is
++        // rebuilt. That froze the epoch, and with it DefaultPermissionGrantPolicy:
++        // an already-provisioned profile never re-reads /etc/default-permissions/,
++        // so grants added there after the profile was created stay denied forever
++        // — GmsCore shipped with none of its dangerous permissions granted.
++        //
++        // Bump this whenever the default-permission content we ship changes; that
++        // makes the next boot run exactly one more grant pass per user.
++        private static final int FYDROID_DEFAULT_PERMISSIONS_EPOCH = 1;
++
+         private static final Random sRandom = new Random();
+ 
+         private String mExtendedFingerprint;
+@@ -5527,7 +5542,8 @@ public final class Settings implements Watchable, Snappable {
+         }
+ 
+         private String getExtendedFingerprint(long version) {
+-            return PackagePartitions.FINGERPRINT + "?pc_version=" + version;
++            return PackagePartitions.FINGERPRINT + "?pc_version=" + version
++                    + "?fydroid_default_permissions=" + FYDROID_DEFAULT_PERMISSIONS_EPOCH;
+         }
+ 
+         private static long uniformRandom(double low, double high) {
+-- 
+2.43.0
+

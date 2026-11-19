@@ -1,0 +1,24 @@
+diff --git a/android/Android.mk b/android/Android.mk
+index aaddb17a8a4..944ceb5b129 100644
+--- a/android/Android.mk
++++ b/android/Android.mk
+@@ -52,6 +52,10 @@ MESA_VK_LIB_SUFFIX_panfrost := panfrost
+ MESA_VK_LIB_SUFFIX_virtio := virtio
+ MESA_VK_LIB_SUFFIX_swrast := lvp
+ 
++# Allow overriding the installed vulkan HAL module name
++# e.g. BOARD_MESA3D_VULKAN_MODULE_NAME := cheets -> vulkan.cheets.so
++MESA_VK_INSTALL_SUFFIX = $(if $(BOARD_MESA3D_VULKAN_MODULE_NAME),$(BOARD_MESA3D_VULKAN_MODULE_NAME),$(MESA_VK_LIB_SUFFIX_$(1)))
++
+ include $(CLEAR_VARS)
+ 
+ LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware
+@@ -201,7 +205,7 @@ endif
+ 
+ # Modules 'vulkan.{driver_name}', produces '/vendor/lib{64}/hw/vulkan.{driver_name}.so' HAL
+ $(foreach driver,$(BOARD_MESA3D_VULKAN_DRIVERS), \
+-    $(eval $(call mesa3d-lib,vulkan.$(MESA_VK_LIB_SUFFIX_$(driver)),hw,MESA3D_VULKAN_$(driver)_BIN)))
++    $(eval $(call mesa3d-lib,vulkan.$(call MESA_VK_INSTALL_SUFFIX,$(driver)),hw,MESA3D_VULKAN_$(driver)_BIN)))
+ 
+ ifneq ($(filter true, $(BOARD_MESA3D_BUILD_LIBGBM)),)
+ # Modules 'libgbm', produces '/vendor/lib{64}/libgbm.so'

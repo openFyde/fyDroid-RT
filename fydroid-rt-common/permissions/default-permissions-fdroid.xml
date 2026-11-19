@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default runtime permission grants for the bundled F-Droid store.
+
+  F-Droid ships as a priv-app, so its install-time permissions are granted at
+  scan time, and its privileged install path runs through the Privileged
+  Extension (see privapp-permissions-fdroid.xml). Its *runtime* (dangerous)
+  permissions are a separate matter and start denied — verified on device, where
+  all nine of them read granted=false.
+
+  Only one of those nine is granted here.
+
+  POST_NOTIFICATIONS is the one that breaks the app's core job. F-Droid's
+  RepoUpdateWorker checks the configured repos on a schedule and reports what it
+  finds by posting a notification; with the permission denied it still runs, and
+  still finds updates, and the user is never told. A store that cannot say "there
+  is an update" is not doing the thing a store is for. The failure is also
+  invisible — nothing errors, the work just completes silently — so it is not
+  something a user could diagnose and fix in Settings themselves.
+
+  It is not self-healing either. F-Droid targets SDK 30, and for a legacy-target
+  app Android 13 shows the notification prompt when the app first creates a
+  notification channel rather than at a moment the user connects to updates, so
+  a dismissed prompt leaves updates permanently silent with no obvious way back.
+
+  DELIBERATELY NOT GRANTED — the other eight:
+
+    CAMERA                          add a repo by scanning its QR code
+    ACCESS_COARSE_LOCATION          )
+    BLUETOOTH_SCAN, _CONNECT        ) "nearby swap" peer-to-peer app sharing
+    READ_EXTERNAL_STORAGE           )
+    READ_MEDIA_IMAGES/AUDIO/VIDEO   ) local repos on removable media,
+                                      install-from-file
+
+  These back optional features, each of which prompts in-app at the point the
+  user actually invokes it, so denying them by default costs a prompt rather
+  than a broken feature. Camera, location and Bluetooth on a *preinstalled*
+  store are also exactly the grants a user would object to finding pre-made on
+  their behalf, and pre-granting them buys nothing until the feature is used.
+  If someone later wants nearby-swap to work without prompts, that is a
+  deliberate decision to add here, not an oversight to correct.
+
+  MECHANISM NOTES — see default-permissions-fydroid-gms.xml for the full write-up.
+  The one that bites:
+
+      Grants are applied when a user is first provisioned, not retroactively.
+      An existing profile only re-reads this directory when the
+      permission-upgrade epoch changes, and our build fingerprint is pinned, so
+      that no longer happens on its own. ADDING THIS FILE THEREFORE REQUIRES
+      BUMPING FYDROID_DEFAULT_PERMISSIONS_EPOCH in
+      frameworks/base/services/core/java/com/android/server/pm/Settings.java
+      (currently 1 -> 2, patch 0051), or already-provisioned devices keep the
+      old state and only freshly flashed profiles pick this up.
+
+  fixed="false" leaves the user free to revoke it in Settings. This is a
+  default, not a lock.
+-->
+<exceptions>
+  <exception package="org.fdroid.fdroid">
+    <permission name="android.permission.POST_NOTIFICATIONS" fixed="false"/>
+  </exception>
+</exceptions>

@@ -1,0 +1,19 @@
+# FIXME: vendor_arc_bridge (GID 5002) is defined in vendor passwd/group on device
+# but not in our AOSP build. Using numeric GID to pass host_init_verifier.
+# Add proper vendor passwd/group files to device tree later.
+#
+# class hal — the cheets container reliably runs class_start hal during
+# init, but class_start main races with our service registration and
+# the auto-start never fires. Other vendor HAL services in the same
+# container all use class hal, and that's been the path we know works.
+#
+# interface ... default — registers this service as the implementation
+# of the IArcBridgeService HIDL interface so hwservicemanager can also
+# bring it up via the lazy-HAL ctl.interface_start path (no longer
+# strictly necessary now that class hal autostarts, but keeps things
+# self-healing if the binary ever crashes).
+service vendor.google_arc.arcbridge-1-0 /vendor/bin/hw/vendor.google_arc.arcbridge@1.0-service
+    interface vendor.google_arc.arcbridge@1.0::IArcBridgeService default
+    class hal
+    user system
+    group 5002

@@ -1,0 +1,6 @@
+// Stub for ax.android.mojom.AccessibilityHelperInstance.
+// Referenced by arc_bridge.mojom OnAccessibilityHelperInstanceReady.
+module ax.android.mojom;
+
+interface AccessibilityHelperInstance {};
+interface AccessibilityHelperHost {};

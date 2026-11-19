@@ -1,0 +1,429 @@
+From a7f266d1c2a3418040919eed53ad4bae666ce4c5 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 8 Apr 2026 14:49:44 +0800
+Subject: [PATCH 14/40] Add NV12 GPU shader, notification metadata key, TaskId
+ propagation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- GLESRenderEngine: NV12/YCbCr_420_888 GPU composition via per-plane
+  EGL dmabuf import and custom Y+UV→RGBA shader. Enables camera preview
+  through WaylandTaskOutput's CLIENT composition path.
+- LayerMetadata: add METADATA_NOTIFICATION_KEY for notification surfaces
+- SurfaceFlinger: register notification metadata key in genericLayerMetadataKeyMap
+- Layer: propagate TaskId metadata to child layers so SurfaceView
+  descendants inherit the parent task's TaskId for per-task composition
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ieec807e1e4817eb7a8004a22bbf2e445b4f09a66
+---
+ libs/renderengine/Android.bp              |   4 +
+ libs/renderengine/gl/GLESRenderEngine.cpp | 290 ++++++++++++++++++++++
+ libs/renderengine/gl/GLESRenderEngine.h   |  16 ++
+ services/surfaceflinger/Layer.cpp         |  10 +
+ 4 files changed, 320 insertions(+)
+
+diff --git a/libs/renderengine/Android.bp b/libs/renderengine/Android.bp
+index cb92df388b..aba697bb0d 100644
+--- a/libs/renderengine/Android.bp
++++ b/libs/renderengine/Android.bp
+@@ -48,6 +48,10 @@ cc_defaults {
+     ],
+     local_include_dirs: ["include"],
+     export_include_dirs: ["include"],
++    include_dirs: [
++        "external/minigbm",
++        "external/libdrm/include/drm",
++    ],
+ }
+ 
+ filegroup {
+diff --git a/libs/renderengine/gl/GLESRenderEngine.cpp b/libs/renderengine/gl/GLESRenderEngine.cpp
+index 6dc01b916e..2b6509ce7a 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.cpp
++++ b/libs/renderengine/gl/GLESRenderEngine.cpp
+@@ -52,6 +52,13 @@
+ #include "ProgramCache.h"
+ #include "filters/BlurFilter.h"
+ 
++// fydroid-rt (NV12 cluster): cros-gralloc handle + DRM fourcc for direct NV12/YV12
++// dmabuf import in the GLES render engine.
++#include <cros_gralloc/cros_gralloc_handle.h>
++#include <drm_fourcc.h>
++
++extern "C" EGLAPI const char* eglQueryStringImplementationANDROID(EGLDisplay dpy, EGLint name);
++
+ bool checkGlError(const char* op, int lineNumber) {
+     bool errorFound = false;
+     GLint error = glGetError();
+@@ -485,6 +492,15 @@ GLESRenderEngine::~GLESRenderEngine() {
+     unbindFrameBuffer(mDrawingBuffer.get());
+     mDrawingBuffer = nullptr;
+     eglDestroyImageKHR(mEGLDisplay, mPlaceholderImage);
++    // Clean up NV12 converter resources
++    if (mNv12OutputEGLImage != EGL_NO_IMAGE_KHR) {
++        eglDestroyImageKHR(mEGLDisplay, mNv12OutputEGLImage);
++    }
++    if (mNv12Program) glDeleteProgram(mNv12Program);
++    if (mNv12FBO) glDeleteFramebuffers(1, &mNv12FBO);
++    if (mNv12VBO) glDeleteBuffers(1, &mNv12VBO);
++    GLuint nv12Textures[] = { mNv12YTex, mNv12UVTex, mNv12OutputTex };
++    glDeleteTextures(3, nv12Textures);
+     mImageCache.clear();
+     if (mStubSurface != EGL_NO_SURFACE) {
+         eglDestroySurface(mEGLDisplay, mStubSurface);
+@@ -670,6 +686,262 @@ void GLESRenderEngine::deleteTextures(size_t count, uint32_t const* names) {
+     glDeleteTextures(count, names);
+ }
+ 
++// ---------------------------------------------------------------------------
++// NV12/YCbCr → RGBA GPU shader conversion
++// ---------------------------------------------------------------------------
++
++static const char* kNv12VertexShader = R"(
++    attribute vec2 position;
++    varying vec2 vTexCoord;
++    void main() {
++        vTexCoord = position * 0.5 + 0.5;
++        gl_Position = vec4(position, 0.0, 1.0);
++    }
++)";
++
++static const char* kNv12FragmentShader = R"(
++    #extension GL_OES_EGL_image_external : require
++    precision mediump float;
++    varying vec2 vTexCoord;
++    uniform samplerExternalOES y_tex;
++    uniform samplerExternalOES uv_tex;
++    void main() {
++        vec3 yuv;
++        yuv.x = texture2D(y_tex, vTexCoord).r;
++        yuv.yz = texture2D(uv_tex, vTexCoord).rg - vec2(0.5, 0.5);
++        vec3 rgb = mat3(
++            1.0, 1.0, 1.0,
++            0.0, -0.344, 1.772,
++            1.403, -0.714, 0.0
++        ) * yuv;
++        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
++    }
++)";
++
++static GLuint compileShader(GLenum type, const char* source) {
++    GLuint shader = glCreateShader(type);
++    glShaderSource(shader, 1, &source, nullptr);
++    glCompileShader(shader);
++    GLint compiled = 0;
++    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
++    if (!compiled) {
++        GLint len = 0;
++        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
++        std::string log(len, '\0');
++        glGetShaderInfoLog(shader, len, nullptr, log.data());
++        ALOGE("NV12 shader compile failed: %s", log.c_str());
++        glDeleteShader(shader);
++        return 0;
++    }
++    return shader;
++}
++
++void GLESRenderEngine::initNv12Converter() {
++    if (mNv12ConverterInited) return;
++    mNv12ConverterInited = true;
++
++    GLuint vs = compileShader(GL_VERTEX_SHADER, kNv12VertexShader);
++    GLuint fs = compileShader(GL_FRAGMENT_SHADER, kNv12FragmentShader);
++    if (!vs || !fs) {
++        ALOGE("initNv12Converter: shader compilation failed");
++        if (vs) glDeleteShader(vs);
++        if (fs) glDeleteShader(fs);
++        return;
++    }
++
++    mNv12Program = glCreateProgram();
++    glAttachShader(mNv12Program, vs);
++    glAttachShader(mNv12Program, fs);
++    glLinkProgram(mNv12Program);
++    glDeleteShader(vs);
++    glDeleteShader(fs);
++
++    GLint linked = 0;
++    glGetProgramiv(mNv12Program, GL_LINK_STATUS, &linked);
++    if (!linked) {
++        ALOGE("initNv12Converter: program link failed");
++        glDeleteProgram(mNv12Program);
++        mNv12Program = 0;
++        return;
++    }
++
++    // Fullscreen quad VBO
++    static const GLfloat vertices[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++    glGenBuffers(1, &mNv12VBO);
++    glBindBuffer(GL_ARRAY_BUFFER, mNv12VBO);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    // FBO + textures
++    glGenFramebuffers(1, &mNv12FBO);
++    glGenTextures(1, &mNv12YTex);
++    glGenTextures(1, &mNv12UVTex);
++    glGenTextures(1, &mNv12OutputTex);
++
++    ALOGI("initNv12Converter: program=%u fbo=%u", mNv12Program, mNv12FBO);
++}
++
++bool GLESRenderEngine::convertNv12ViaShader(const sp<GraphicBuffer>& buffer,
++                                             uint32_t texName) {
++    if (!mNv12Program) return false;
++
++    // Validate cros_gralloc handle and check for NV12 format
++    const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
++    if (!h) return false;
++    // Validate magic: cros_gralloc_magic = 0xABCDDCBA
++    if (h->magic != 0xABCDDCBA) return false;
++    if (h->format != DRM_FORMAT_NV12) return false;
++
++    uint32_t w = buffer->getWidth();
++    uint32_t height = buffer->getHeight();
++    int fd = h->fds[0];
++    if (fd < 0) return false;
++
++    uint32_t yStride = h->strides[0];
++    uint32_t uvOffset = h->offsets[1];
++    uint32_t uvStride = h->strides[1] ? h->strides[1] : yStride;
++    if (uvOffset == 0) uvOffset = yStride * height;  // fallback
++
++    // Import Y plane via EGL_LINUX_DMA_BUF_EXT (DRM_FORMAT_R8)
++    EGLint yAttrs[] = {
++        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)DRM_FORMAT_R8,
++        EGL_WIDTH, (EGLint)w,
++        EGL_HEIGHT, (EGLint)height,
++        EGL_DMA_BUF_PLANE0_FD_EXT, fd,
++        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
++        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)yStride,
++        EGL_NONE
++    };
++    EGLImageKHR yImage = eglCreateImageKHR(mEGLDisplay, EGL_NO_CONTEXT,
++                                            EGL_LINUX_DMA_BUF_EXT, nullptr, yAttrs);
++    if (yImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("convertNv12: Y plane import failed: %#x", eglGetError());
++        return false;
++    }
++
++    // Import UV plane via EGL_LINUX_DMA_BUF_EXT (DRM_FORMAT_GR88)
++    EGLint uvAttrs[] = {
++        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)DRM_FORMAT_GR88,
++        EGL_WIDTH, (EGLint)(w / 2),
++        EGL_HEIGHT, (EGLint)(height / 2),
++        EGL_DMA_BUF_PLANE0_FD_EXT, fd,
++        EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)uvOffset,
++        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)uvStride,
++        EGL_NONE
++    };
++    EGLImageKHR uvImage = eglCreateImageKHR(mEGLDisplay, EGL_NO_CONTEXT,
++                                             EGL_LINUX_DMA_BUF_EXT, nullptr, uvAttrs);
++    if (uvImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("convertNv12: UV plane import failed: %#x", eglGetError());
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        return false;
++    }
++
++    // Bind Y texture (GL_TEXTURE_EXTERNAL_OES for dmabuf imports)
++    glActiveTexture(GL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mNv12YTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)yImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++
++    // Bind UV texture
++    glActiveTexture(GL_TEXTURE1);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mNv12UVTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)uvImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++
++    // Ensure output RGBA texture + FBO are the right size
++    if (mNv12OutputW != w || mNv12OutputH != height) {
++        // Destroy old output EGLImage
++        if (mNv12OutputEGLImage != EGL_NO_IMAGE_KHR) {
++            eglDestroyImageKHR(mEGLDisplay, mNv12OutputEGLImage);
++            mNv12OutputEGLImage = EGL_NO_IMAGE_KHR;
++        }
++
++        glBindTexture(GL_TEXTURE_2D, mNv12OutputTex);
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, height, 0,
++                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++
++        glBindFramebuffer(GL_FRAMEBUFFER, mNv12FBO);
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                               GL_TEXTURE_2D, mNv12OutputTex, 0);
++        GLenum fbStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++        if (fbStatus != GL_FRAMEBUFFER_COMPLETE) {
++            ALOGE("convertNv12: FBO incomplete: %#x", fbStatus);
++            eglDestroyImageKHR(mEGLDisplay, yImage);
++            eglDestroyImageKHR(mEGLDisplay, uvImage);
++            return false;
++        }
++
++        // Create EGLImage from output texture for external texture binding
++        mNv12OutputEGLImage = eglCreateImageKHR(mEGLDisplay, mEGLContext,
++                                                 EGL_GL_TEXTURE_2D_KHR,
++                                                 (EGLClientBuffer)(uintptr_t)mNv12OutputTex,
++                                                 nullptr);
++        if (mNv12OutputEGLImage == EGL_NO_IMAGE_KHR) {
++            ALOGE("convertNv12: output EGLImage creation failed: %#x", eglGetError());
++            eglDestroyImageKHR(mEGLDisplay, yImage);
++            eglDestroyImageKHR(mEGLDisplay, uvImage);
++            return false;
++        }
++
++        mNv12OutputW = w;
++        mNv12OutputH = height;
++        ALOGI("convertNv12: output %ux%u fbo=%u tex=%u", w, height, mNv12FBO, mNv12OutputTex);
++    }
++
++    // Save GL state
++    GLint prevFBO, prevProg, prevVp[4];
++    GLint prevActiveTex;
++    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
++    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
++    glGetIntegerv(GL_VIEWPORT, prevVp);
++    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
++
++    // Render YCbCr→RGB into output FBO
++    glBindFramebuffer(GL_FRAMEBUFFER, mNv12FBO);
++    glViewport(0, 0, w, height);
++    glUseProgram(mNv12Program);
++
++    glActiveTexture(GL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mNv12YTex);
++    glUniform1i(glGetUniformLocation(mNv12Program, "y_tex"), 0);
++
++    glActiveTexture(GL_TEXTURE1);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mNv12UVTex);
++    glUniform1i(glGetUniformLocation(mNv12Program, "uv_tex"), 1);
++
++    glBindBuffer(GL_ARRAY_BUFFER, mNv12VBO);
++    GLint posLoc = glGetAttribLocation(mNv12Program, "position");
++    glVertexAttribPointer(posLoc, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
++    glEnableVertexAttribArray(posLoc);
++    glDisable(GL_BLEND);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    glDisableVertexAttribArray(posLoc);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    // Restore GL state
++    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
++    glUseProgram(prevProg);
++    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
++    glActiveTexture(prevActiveTex);
++
++    // Bind the RGBA output to the target texture via EGLImage
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texName);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES,
++                                  (GLeglImageOES)mNv12OutputEGLImage);
++    mTextureView.insert_or_assign(texName, buffer->getId());
++
++    // Cleanup per-frame EGLImages (Y and UV planes)
++    eglDestroyImageKHR(mEGLDisplay, yImage);
++    eglDestroyImageKHR(mEGLDisplay, uvImage);
++
++    return true;
++}
++
+ void GLESRenderEngine::bindExternalTextureImage(uint32_t texName, const Image& image) {
+     ATRACE_CALL();
+     const GLImage& glImage = static_cast<const GLImage&>(image);
+@@ -685,6 +957,24 @@ void GLESRenderEngine::bindExternalTextureBuffer(uint32_t texName, const sp<Grap
+                                                  const sp<Fence>& bufferFence) {
+     ATRACE_CALL();
+ 
++    // NV12/YCbCr GPU shader path: per-plane dmabuf import + custom shader.
++    // Must check BEFORE the normal cache path since NV12 buffers change content
++    // each frame (same buffer ID, new pixel data).
++    {
++        const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
++        if (h && h->magic == 0xABCDDCBA && h->format == DRM_FORMAT_NV12) {
++            // Wait for buffer to be ready before reading
++            if (bufferFence != nullptr && bufferFence->isValid()) {
++                bufferFence->waitForever("RenderEngine::bindNV12");
++            }
++            initNv12Converter();
++            if (convertNv12ViaShader(buffer, texName)) {
++                return NO_ERROR;
++            }
++            ALOGW("NV12 GPU conversion failed, falling through to normal path");
++        }
++    }
++
+     bool found = false;
+     {
+         std::lock_guard<std::mutex> lock(mRenderingMutex);
+diff --git a/libs/renderengine/gl/GLESRenderEngine.h b/libs/renderengine/gl/GLESRenderEngine.h
+index 1d7c2cafb5..60ca1c7ca8 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.h
++++ b/libs/renderengine/gl/GLESRenderEngine.h
+@@ -272,6 +272,22 @@ private:
+     // fence that doesn't exist.
+     bool mPriorResourcesCleaned = true;
+ 
++    // NV12/YCbCr → RGBA GPU shader conversion.
++    // GPU can't sample NV12 directly on some platforms (Mesa/panfrost).
++    // Per-plane dmabuf import + custom shader converts to RGBA for composition.
++    bool mNv12ConverterInited = false;
++    GLuint mNv12Program = 0;
++    GLuint mNv12VBO = 0;
++    GLuint mNv12FBO = 0;
++    GLuint mNv12YTex = 0;
++    GLuint mNv12UVTex = 0;
++    GLuint mNv12OutputTex = 0;
++    EGLImageKHR mNv12OutputEGLImage = EGL_NO_IMAGE_KHR;
++    uint32_t mNv12OutputW = 0;
++    uint32_t mNv12OutputH = 0;
++    void initNv12Converter();
++    bool convertNv12ViaShader(const sp<GraphicBuffer>& buffer, uint32_t texName);
++
+     // Blur effect processor, only instantiated when a layer requests it.
+     BlurFilter* mBlurFilter = nullptr;
+ 
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index e0f25cfef9..9ab0918584 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1044,14 +1044,20 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+     if (data.has(METADATA_TASK_ID)) {
+         int32_t taskId = data.getInt32(METADATA_TASK_ID, 0);
+         if (taskId > 0) {
++            int propagated = 0;
+             mCurrentChildren.traverse([&](Layer* child) {
+                 if (!child->mDrawingState.metadata.has(METADATA_TASK_ID)) {
+                     child->mDrawingState.metadata.setInt32(METADATA_TASK_ID, taskId);
+                     child->mDrawingState.sequence++;
+                     child->mDrawingState.modified = true;
+                     child->setTransactionFlags(eTransactionNeeded);
++                    propagated++;
++                    ALOGI("TaskId propagation: %s → child '%s' taskId=%d",
++                          mName.c_str(), child->mName.c_str(), taskId);
+                 }
+             });
++            ALOGI("TaskId propagation: set on '%s' taskId=%d children_propagated=%d",
++                  mName.c_str(), taskId, propagated);
+         }
+     }
+     // Propagate IsDialog to descendants so HWC sees the flag on any
+@@ -1633,6 +1639,10 @@ void Layer::addChild(const sp<Layer>& layer) {
+                 break;
+             }
+         }
++        if (!layer->mDrawingState.metadata.has(METADATA_TASK_ID)) {
++            ALOGI("addChild: '%s' added to '%s' — no ancestor has TaskId",
++                  layer->mName.c_str(), mName.c_str());
++        }
+     }
+ #endif
+ }
+-- 
+2.43.0
+

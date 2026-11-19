@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- fydroid-rt system services replacing proprietary arc-services.jar.
+         ArcInputMethodManagerService is our real implementation; the rest are
+         stubs that will be implemented incrementally. -->
+    <string-array translatable="false" name="config_deviceSpecificSystemServices">
+        <item>com.android.server.arc.input_method_manager.ArcInputMethodManagerService$LifeCycle</item>
+        <item>com.android.server.arc.chrome_feature_flags.ArcChromeFeatureFlagsService$LifeCycle</item>
+        <item>com.android.server.arc.system_ui.ArcSystemUiService$LifeCycle</item>
+        <item>com.android.server.arc.app_visibility_handler.ArcAppVisibilityHandlerService$LifeCycle</item>
+        <item>com.android.server.arc.locale.ArcLocaleService$LifeCycle</item>
+        <item>com.android.server.arc.boot_phase_monitor.ArcBootPhaseMonitorService$LifeCycle</item>
+        <item>com.android.server.arc.disk_space.ArcDiskSpaceService$LifeCycle</item>
+        <item>com.android.server.arc.memory.ArcMemoryService$LifeCycle</item>
+        <item>com.android.server.arc.metrics.ArcMetricsService$LifeCycle</item>
+        <item>com.android.server.arc.mounter.ArcVolumeMounterService$LifeCycle</item>
+        <item>com.android.server.arc.oemlock.ArcOemLockService$LifeCycle</item>
+        <item>com.android.server.arc.packages_cache.ArcPackagesCacheService$LifeCycle</item>
+        <item>com.android.server.arc.power.ArcPowerHelperService$LifeCycle</item>
+        <item>com.android.server.arc.process.ArcProcessService$LifeCycle</item>
+        <item>com.android.server.arc.settings.ArcSettingsOverrideService</item>
+        <item>com.android.server.midi.ArcMidiManager$LifeCycle</item>
+        <item>com.android.server.screen_capture.ArcScreenCaptureService$Lifecycle</item>
+        <item>com.android.server.wm.ArcDragDropService</item>
+        <item>com.android.server.clipboard.ArcClipboardService</item>
+        <item>com.android.server.arc.data_device.ArcDataDeviceService</item>
+        <item>com.android.server.wm.ArcWindowManagerService$LifeCycle</item>
+        <item>com.android.server.arc.wm.ArcDisplayLayoutService</item>
+        <item>com.android.server.arc.app.ArcAppService$LifeCycle</item>
+        <item>com.android.server.arc.health.ArcSystemHealthService</item>
+        <item>com.android.server.arc.abimigration.ArcAbiMigrationService</item>
+        <item>com.android.server.arc.persistent_data_block.ArcPersistentDataBlockService</item>
+        <item>com.android.server.arc.usb.ArcUsbService$LifeCycle</item>
+        <item>com.android.server.arc.crash_collector.ArcCrashCollectorService$LifeCycle</item>
+        <item>com.android.server.arc.webapk.ArcWebApkService$LifeCycle</item>
+        <item>com.android.server.arc.media_session.ArcMediaSessionService$LifeCycle</item>
+        <item>com.android.server.arc.intent_helper.ArcIntentHelperService$LifeCycle</item>
+        <item>com.android.server.arc.tts.ArcTtsService$LifeCycle</item>
+        <item>com.android.server.arc.notification.ArcNotificationService$LifeCycle</item>
+        <item>com.android.server.arc.mounter.ArcAppFuseMounterService$LifeCycle</item>
+        <item>com.android.server.arc.mounter.ArcObbMounterService$LifeCycle</item>
+        <item>com.android.server.arc.auth.ArcAuthService$LifeCycle</item>
+        <item>com.android.server.arc.policy.ArcPolicyService$LifeCycle</item>
+    </string-array>
+
+    <!-- Use stock DevicePolicyManagerService instead of proprietary ArcDevicePolicyManagerWrapperService -->
+    <string translatable="false" name="config_deviceSpecificDevicePolicyManagerService"></string>
+
+    <!-- ArcAudioService extends AudioService with Mojo bridge for Chrome volume sync -->
+    <string translatable="false" name="config_deviceSpecificAudioService">com.android.server.audio.ArcAudioService</string>
+
+    <!-- Use stock WallpaperManagerService instead of proprietary ArcWallpaperManagerService -->
+    <string translatable="false" name="config_wallpaperManagerServiceName">com.android.server.wallpaper.WallpaperManagerService</string>
+
+    <!-- Disable ImageWallpaper — Chrome OS provides its own wallpaper.
+         Points to a non-existent class so WallpaperManagerService won't bind it.
+         (Cannot be empty: code uses mImageWallpaper.equals() which would NPE on null.) -->
+    <string translatable="false" name="image_wallpaper_component">com.android.systemui/com.android.systemui.DisabledWallpaper</string>
+
+    <!-- Don't wait for wallpaper during boot — Chrome OS provides its own wallpaper,
+         and our ImageWallpaper is disabled. Without this, WM waits 30 seconds for a
+         TYPE_WALLPAPER window that never appears, causing "BOOT TIMEOUT: forcing display enabled". -->
+    <bool name="config_checkWallpaperAtBoot">false</bool>
+
+    <!-- No lock screen in ARC++ container — Chrome OS handles screen lock -->
+    <bool name="config_disableLockscreenByDefault">true</bool>
+
+    <!-- Name GMS as the device configurator so it can hold WRITE_DEVICE_CONFIG.
+         The permission is signature|verifier|configurator, and the configurator
+         flag is granted only to the package named here (PermissionManagerService
+         → KnownPackages.PACKAGE_CONFIGURATOR). AOSP ships this string empty, so
+         nothing could ever hold it: GMS's PhenotypeConfigurationUpdateListener
+         called DeviceConfig.setProperties() on every Phenotype sync and took a
+         SecurityException each time, ~1670 log lines per boot. GMS devices set
+         this to com.google.android.gms; this matches. -->
+    <string translatable="false" name="config_deviceConfiguratorPackageName">com.google.android.gms</string>
+
+    <!-- Disable the ARC++ clipboard bridge (ArcClipboardFactory) which wraps the
+         standard ClipboardService with a Mojo-based proxy that no longer works.
+         Setting this to empty makes ClipboardService fall back to its own ClipboardImpl.
+         ArcClipboardService bridges clipboard via ArcDataDeviceService/Wayland instead. -->
+    <string translatable="false" name="clipboard_impl_factory_class_name"></string>
+
+    <!-- Add ETHERNET (type 9) to legacy networkAttributes so LegacyTypeTracker
+         registers TYPE_ETHERNET as a supported type. Required for VM hosts
+         (e.g. apple/VMware) where Chrome exposes the network as Ethernet rather
+         than WiFi. Without this, ArcNetworkAgent's setLegacyType(TYPE_ETHERNET)
+         is ignored and apps using ConnectivityManager.getNetworkInfo(TYPE_ETHERNET)
+         see "no connection" even though the modern callback API works. Mirrors
+         stock AOSP entries verbatim and appends ethernet. -->
+    <string-array translatable="false" name="networkAttributes">
+        <item>"wifi,1,1,1,-1,true"</item>
+        <item>"mobile,0,0,0,-1,true"</item>
+        <item>"mobile_mms,2,0,2,60000,true"</item>
+        <item>"mobile_supl,3,0,2,60000,true"</item>
+        <item>"mobile_dun,4,0,2,60000,true"</item>
+        <item>"mobile_hipri,5,0,3,60000,true"</item>
+        <item>"mobile_fota,10,0,2,60000,true"</item>
+        <item>"mobile_ims,11,0,2,60000,true"</item>
+        <item>"mobile_cbs,12,0,2,60000,true"</item>
+        <item>"wifi_p2p,13,1,0,-1,true"</item>
+        <item>"mobile_ia,14,0,2,-1,true"</item>
+        <item>"mobile_emergency,15,0,2,-1,true"</item>
+        <item>"ethernet,9,9,1,-1,true"</item>
+    </string-array>
+
+    <!-- Default ring/notification volume at the top of their 7-step scale
+         (AOSP ships 5). These two are the only stream defaults AudioService
+         takes from a resource rather than a ro.config.*_vol_default property
+         (AudioService.java:1144-1178); the property-based ones (media 15,
+         alarm 7, voice call 5) live in fydroid_rt_common.mk, which explains why
+         every stream is defaulted to its own maximum here.
+
+         Ring is the alias head for SYSTEM, NOTIFICATION, SYSTEM_ENFORCED and
+         DTMF, so this one value re-seeds all of them via updateDefaultVolumes().
+         config_audio_notif_vol_default only takes effect when notification is
+         un-aliased from ring (the SystemUI VOLUME_SEPARATE_NOTIFICATION
+         DeviceConfig flag); set it to match so the two stay consistent if it
+         ever flips. Values must stay <= the matching *_vol_steps (7 here) —
+         AudioService throws IllegalArgumentException on a default above max. -->
+    <integer name="config_audio_ring_vol_default">7</integer>
+    <integer name="config_audio_notif_vol_default">7</integer>
+</resources>

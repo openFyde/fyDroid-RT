@@ -1,0 +1,86 @@
+From d672cdff40c08fa239594fa1b084735bc9ee9fc5 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 17 Apr 2026 16:22:49 +0800
+Subject: [PATCH 30/75] fydroid: Support two-stage boot in zygote
+ initialization
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In ARC++ container boot, zygote starts in stage 1 before /data is mounted.
+Two fixes for this environment:
+
+1. ZygoteProcess.waitForConnectionToZygote: replace the 20s timeout +
+   Slog.wtf() with an infinite retry (1s interval). In stage 1
+   zygote_secondary may not be ready immediately; the wtf() would crash
+   system_server.
+
+2. ZygoteInit.prepareSystemServerProfile: skip when installd is not yet
+   available (stage 1 has no /data). AOSP-13 note: the AOSP-11 patch
+   guarded performSystemServerDexOpt(), which was removed in 12/13 — the
+   only remaining installd user in ZygoteInit is prepareSystemServerProfile
+   (debug/profiling-gated), so the installd-null guard is re-sited there.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I86db07598e97c9f87ee9774636a24c0d5baf3f05
+---
+ core/java/android/os/ZygoteProcess.java           | 14 +++++++-------
+ core/java/com/android/internal/os/ZygoteInit.java |  6 ++++++
+ 2 files changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/core/java/android/os/ZygoteProcess.java b/core/java/android/os/ZygoteProcess.java
+index bf2898137967..7fd1b6d4e619 100644
+--- a/core/java/android/os/ZygoteProcess.java
++++ b/core/java/android/os/ZygoteProcess.java
+@@ -1194,24 +1194,24 @@ public class ZygoteProcess {
+      * @param zygoteSocketAddress The name of the socket to connect to.
+      */
+     public static void waitForConnectionToZygote(LocalSocketAddress zygoteSocketAddress) {
+-        int numRetries = ZYGOTE_CONNECT_TIMEOUT_MS / ZYGOTE_CONNECT_RETRY_DELAY_MS;
+-        for (int n = numRetries; n >= 0; n--) {
++        for (int n = 0; ; n++) {
+             try {
+                 final ZygoteState zs =
+                         ZygoteState.connect(zygoteSocketAddress, null);
+                 zs.close();
+                 return;
+             } catch (IOException ioe) {
+-                Log.w(LOG_TAG,
+-                        "Got error connecting to zygote, retrying. msg= " + ioe.getMessage());
++                if (n % 20 == 0) {
++                    Log.w(LOG_TAG, "Waiting for zygote socket "
++                            + zygoteSocketAddress.getName()
++                            + ", retrying. msg= " + ioe.getMessage());
++                }
+             }
+ 
+             try {
+-                Thread.sleep(ZYGOTE_CONNECT_RETRY_DELAY_MS);
++                Thread.sleep(1000);
+             } catch (InterruptedException ignored) { }
+         }
+-        Slog.wtf(LOG_TAG, "Failed to connect to Zygote through socket "
+-                + zygoteSocketAddress.getName());
+     }
+ 
+     /**
+diff --git a/core/java/com/android/internal/os/ZygoteInit.java b/core/java/com/android/internal/os/ZygoteInit.java
+index ca1ae194cb12..94a958ae9082 100644
+--- a/core/java/com/android/internal/os/ZygoteInit.java
++++ b/core/java/com/android/internal/os/ZygoteInit.java
+@@ -612,6 +612,12 @@ public class ZygoteInit {
+ 
+         final IInstalld installd = IInstalld.Stub
+                 .asInterface(ServiceManager.getService("installd"));
++        if (installd == null) {
++            // installd not available yet (e.g. ARC++ stage 1 boot before /data).
++            // Skip system server profile prep; it runs lazily once /data is up.
++            Log.w(TAG, "installd not available, skipping system server profile prep");
++            return;
++        }
+ 
+         String systemServerPackageName = "android";
+         String systemServerProfileName = "primary.prof";
+-- 
+2.43.0
+

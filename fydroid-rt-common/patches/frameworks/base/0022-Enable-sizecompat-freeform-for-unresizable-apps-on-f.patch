@@ -1,0 +1,54 @@
+From f8a177f1a4bddfb535cce43ed32e3ab5a24f0961 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 14 Apr 2026 12:15:55 +0800
+Subject: [PATCH 22/75] Enable sizecompat freeform for unresizable apps on
+ freeform displays
+
+Launch unresizable apps in freeform mode when their preferred
+orientation doesn't match the display orientation, giving them a
+properly-sized window at their preferred aspect ratio instead of
+stretching to fill the display.
+
+- Default enable_sizecompat_freeform to 1 (was 0)
+- Add shouldLaunchUnresizableAppInFreeformInFreeformDisplay() check
+  in TaskLaunchParamsModifier STEP 2.3
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I267ffef52d185253d3a07cb56abef9a8750b06f3
+---
+ .../com/android/server/wm/ActivityTaskManagerService.java     | 4 ++++
+ .../java/com/android/server/wm/TaskLaunchParamsModifier.java  | 3 +++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+index 662a612d20df..359d8377f386 100644
+--- a/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
++++ b/services/core/java/com/android/server/wm/ActivityTaskManagerService.java
+@@ -912,6 +912,10 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
+                 com.android.internal.R.dimen.config_minPercentageMultiWindowSupportWidth);
+         final int largeScreenSmallestScreenWidthDp = mContext.getResources().getInteger(
+                 com.android.internal.R.integer.config_largeScreenSmallestScreenWidthDp);
++        // fydroid-rt (AOSP-13 port of patch 0008): the DEVELOPMENT_ENABLE_SIZECOMPAT_FREEFORM
++        // developer setting and its mSizeCompatFreeform field were removed in Android 12.
++        // The behavior is gated directly on Build.IS_CONTAINER in TaskLaunchParamsModifier
++        // instead (always-on in the ARC container, which is what the toggle defaulted to).
+ 
+         // Transfer any global setting for forcing RTL layout, into a System Property
+         DisplayProperties.debug_force_rtl(forceRtl);
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index b0e80c75b70a..ac733c39924c 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -286,6 +286,9 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             if (launchMode == WINDOWING_MODE_PINNED) {
+                 if (DEBUG) appendLog("picture-in-picture");
+             } else if (!root.isResizeable()) {
++                // fydroid-rt: patch 0008's unresizable-orientation-mismatch->freeform behavior
++                // is native in Android 12+ (shouldLaunchUnresizableAppInFreeform already checks
++                // display vs activity orientation on a freeform display); use it directly.
+                 if (shouldLaunchUnresizableAppInFreeform(root, suggestedDisplayArea, options)) {
+                     launchMode = WINDOWING_MODE_FREEFORM;
+                     if (outParams.mBounds.isEmpty()) {
+-- 
+2.43.0
+

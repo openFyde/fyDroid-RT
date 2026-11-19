@@ -1,0 +1,61 @@
+From 094db1b81d5e9ac7c594da01c40fa2aafea00207 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 28 Apr 2026 16:22:45 +0800
+Subject: [PATCH 11/75] Disable PackageInstaller AlertDialog window animations
+ and elevation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The AlertDialogActivity dialog (used for install/uninstall prompts)
+flashes visually when rendered through the Wayland compositor — the
+default DeviceDefault dialog theme uses a fade-in animation and an
+elevation shadow that produce stale frames at the wrong size in the
+ARC++ container.
+
+Disable both via android:windowAnimationStyle=@null and
+android:windowElevation=0dp so the dialog renders cleanly.
+
+Change-Id: I9b2eb67ff36efd0733545e227551718d04ba971a
+---
+ packages/PackageInstaller/res/values-night/themes.xml | 5 ++++-
+ packages/PackageInstaller/res/values/themes.xml       | 8 +++++++-
+ 2 files changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/packages/PackageInstaller/res/values-night/themes.xml b/packages/PackageInstaller/res/values-night/themes.xml
+index 483b0cf18c56..1c43743730ab 100644
+--- a/packages/PackageInstaller/res/values-night/themes.xml
++++ b/packages/PackageInstaller/res/values-night/themes.xml
+@@ -18,6 +18,9 @@
+ <resources>
+ 
+     <style name="Theme.AlertDialogActivity"
+-            parent="@android:style/Theme.DeviceDefault.Dialog.Alert" />
++            parent="@android:style/Theme.DeviceDefault.Dialog.Alert">
++        <item name="android:windowAnimationStyle">@null</item>
++        <item name="android:windowElevation">0dp</item>
++    </style>
+ 
+ </resources>
+diff --git a/packages/PackageInstaller/res/values/themes.xml b/packages/PackageInstaller/res/values/themes.xml
+index eecf9a1950ac..03c41edbbf52 100644
+--- a/packages/PackageInstaller/res/values/themes.xml
++++ b/packages/PackageInstaller/res/values/themes.xml
+@@ -23,7 +23,13 @@
+     </style>
+ 
+     <style name="Theme.AlertDialogActivity"
+-            parent="@android:style/Theme.DeviceDefault.Light.Dialog.Alert" />
++            parent="@android:style/Theme.DeviceDefault.Light.Dialog.Alert">
++        <!-- Disable window animations and elevation shadow to prevent
++             visual flashing during activity transitions when rendered
++             through the Wayland compositor. -->
++        <item name="android:windowAnimationStyle">@null</item>
++        <item name="android:windowElevation">0dp</item>
++    </style>
+ 
+     <style name="Theme.AlertDialogActivity.NoActionBar">
+         <item name="android:windowActionBar">false</item>
+-- 
+2.43.0
+

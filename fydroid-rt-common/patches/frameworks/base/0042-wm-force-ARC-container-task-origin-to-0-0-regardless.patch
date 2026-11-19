@@ -1,0 +1,75 @@
+From 83bfc9b5c2fb464588555d288359f59efe9bb219 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 24 Jun 2026 12:49:01 +0800
+Subject: [PATCH 42/75] wm: force ARC container task origin to (0,0) regardless
+ of bounds source
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A dialog/modal ARC task (e.g. SystemUI's WifiDebuggingActivity) rendered
+with the wrong on-screen location and an input offset (taps landed off the
+card; VRI logged "updatePointerIcon ... position out of bounds"). Root cause:
+the task's WMS frame had a non-zero origin (160,0) instead of the (0,0,W,H)
+required in ARC container mode, where HWC/Wayland (Chrome) owns the on-screen
+position and the InputDispatcher frame must match the task-local coords SF
+emits.
+
+LaunchParamsUtil.centerBounds already forces (0,0,W,H) for freshly-centered
+windows (the AOSP-13 port of patch 0027 / the IS_CONTAINER branch), but two
+paths bypass it:
+  - bounds RESTORED from LaunchParamsPersister (currentParams.mBounds, the
+    "inherit-bounds" branch in STEP 2.2), and
+  - the freeform conflict-avoidance cascade (adjustBoundsToAvoidConflict...).
+A normal app gets its origin re-zeroed by Chrome's geometry reposition, but a
+dialog/modal task receives no such reposition, so the bad origin sticks AND is
+re-persisted — a self-perpetuating persist->restore->re-save loop. (Confirmed
+on device: deleting the stale launch_params file made the next launch compute
+(0,0) and the "position out of bounds" spam stopped.)
+
+Force the origin to (0,0) for every container task at the end of calculate(),
+preserving the resolved size, regardless of how the bounds were derived. This
+also heals already-persisted bad origins on the next launch.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I82395ad46487bf48465d04e3df54dedd7d2b665f
+---
+ .../server/wm/TaskLaunchParamsModifier.java   | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index dcd830da1b8b..65aa9083f770 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -416,6 +416,28 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             applyArcAspectRatio(root, display, outParams);
+         }
+ 
++        // fydroid-rt: In ARC container mode the task's on-screen position is
++        // owned by HWC/Wayland (Chrome), never by Android WM — the WMS frame
++        // must stay at origin (0,0) so the InputDispatcher frame matches the
++        // task-local coords SF emits (see the IS_CONTAINER branch in
++        // LaunchParamsUtil.centerBounds). centerBounds enforces this only for
++        // freshly-centered windows; bounds RESTORED from LaunchParamsPersister
++        // (currentParams.mBounds — the "inherit-bounds" path above) or shifted
++        // by the freeform conflict-avoidance cascade bypass it and can carry a
++        // non-zero origin. For a dialog/modal task that origin never gets
++        // corrected (the modal path receives no Chrome geometry reposition), so
++        // the input frame ends up offset from the centered card the compositor
++        // draws — taps land off-card and VRI logs "updatePointerIcon ... position
++        // out of bounds". Worse, the bad origin is then re-persisted, so it
++        // self-perpetuates across launches. Force the origin to (0,0) for every
++        // container task, preserving the resolved size, regardless of how the
++        // bounds were derived.
++        if (android.os.Build.IS_CONTAINER && !outParams.mBounds.isEmpty()
++                && (outParams.mBounds.left != 0 || outParams.mBounds.top != 0)) {
++            if (DEBUG) appendLog("container-zero-origin: was=" + outParams.mBounds);
++            outParams.mBounds.offsetTo(0, 0);
++        }
++
+         return RESULT_CONTINUE;
+     }
+ 
+-- 
+2.43.0
+

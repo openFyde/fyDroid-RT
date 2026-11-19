@@ -1,0 +1,60 @@
+From f25ab6935cd91e70b6886b81cd87c479bddec230 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 17 Jun 2026 10:46:50 +0800
+Subject: [PATCH 26/40] SF: anchor floating-activity input frame at screen
+ origin (ARC)
+
+A floating-activity modal (IS_FLOATING_ACTIVITY, e.g. GrantPermissions) is
+composited as a standalone Wayland window whose visible window is centered on
+the display independently of the WMS layout. WMS still lays the activity out at
+a centered frame on display 0, so Layer::fillInputFrameInfo computed the input
+frame at that WMS position while the surface-relative Wayland touch is anchored
+at the standalone window's origin -> taps missed.
+
+For an IS_FLOATING_ACTIVITY layer, strip only the translation from layerToScreen
+(keep the app's rotation/scale): transform the cropped inset bounds to screen
+space and prepend a -left/-top translation, so the input frame and the
+display->input transform are computed at the screen origin. Input then becomes
+position-independent (touch is surface-relative), letting the composer center
+the visible window freely.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Id16036e0808a4715db824cf322992855ef8d7039
+---
+ services/surfaceflinger/Layer.cpp | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index b7f39b0081..399548767f 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -2397,7 +2397,25 @@ void Layer::fillInputFrameInfo(WindowInfo& info, const ui::Transform& screenToDi
+     // Crop the input bounds to ensure it is within the parent's bounds.
+     const FloatRect croppedInsetBoundsInLayer = mBounds.intersect(insetBoundsInLayer);
+ 
+-    const ui::Transform layerToScreen = getInputTransform();
++    ui::Transform layerToScreen = getInputTransform();
++
++    // ARC: a floating-activity modal (e.g. GrantPermissions) is composited as a
++    // standalone Wayland window whose buffer sits at the VD origin and whose
++    // visible window is placed at the display origin (0,0) by the composer.
++    // WMS still lays the activity out at a centered frame on display 0, so the
++    // stock input frame lands there while the surface-relative Wayland touch is
++    // anchored at origin -> taps miss. Strip ONLY the translation from
++    // layerToScreen (keep the app's rotation/scale) so the input frame and the
++    // display->input transform are computed at screen origin, matching the
++    // standalone window's on-screen and buffer origin.
++    if (mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++        const Rect screenRect{layerToScreen.transform(croppedInsetBoundsInLayer)};
++        ui::Transform originShift;
++        originShift.set(static_cast<float>(-screenRect.left),
++                        static_cast<float>(-screenRect.top));
++        layerToScreen = originShift * layerToScreen;
++    }
++
+     const ui::Transform layerToDisplay = screenToDisplay * layerToScreen;
+ 
+     const Rect roundedFrameInDisplay{layerToDisplay.transform(croppedInsetBoundsInLayer)};
+-- 
+2.43.0
+

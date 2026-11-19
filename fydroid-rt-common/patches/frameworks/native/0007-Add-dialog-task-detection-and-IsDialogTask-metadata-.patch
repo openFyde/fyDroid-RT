@@ -1,0 +1,310 @@
+From ed1a5eace1749b1c98d97affa82e9d2cc222598a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 23 Mar 2026 16:08:46 +0800
+Subject: [PATCH 07/40] Add dialog task detection and IsDialogTask metadata for
+ modal windows
+
+SurfaceFlinger detects dialog tasks by scanning for
+TYPE_APPLICATION_ATTACHED_DIALOG (type=1003) and "Dim Layer for" named
+layers. When detected, the container displayFrame is shrunk to the
+content bounds, dim/container layers are excluded from client
+composition, and IsDialogTask metadata is sent to HWC so the Wayland
+side can create a modal Chrome window (CONTAINER_OVERLAY) instead of a
+normal app window.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I4281b7a86c46d8a8eee3c89d9ec60027915bc9b5
+---
+ .../include/compositionengine/impl/Output.h   |   1 +
+ .../impl/OutputLayerCompositionState.h        |   8 +
+ .../CompositionEngine/src/Output.cpp          | 168 ++++++++++++++++++
+ .../CompositionEngine/src/OutputLayer.cpp     |  21 +++
+ 4 files changed, 198 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
+index 428c19fe02..67bcd172f0 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
+@@ -155,6 +155,7 @@ protected:
+     bool mustRecompose() const;
+ 
+ private:
++    void detectAndAdjustDialogTasks();
+     void dirtyEntireOutput();
+     compositionengine::OutputLayer* findLayerRequestingBackgroundComposition() const;
+     void finishPrepareFrame();
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h
+index 2b383c1dfe..1592e7224b 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayerCompositionState.h
+@@ -78,6 +78,14 @@ struct OutputLayerCompositionState {
+     // If true, when doing client composition, the target may need to be cleared
+     bool clearClientTarget{false};
+ 
++    // If true, skip this layer during client (GPU) composition.
++    // Set by dialog detection to exclude dim layers from the client target.
++    bool skipClientComposition{false};
++
++    // If true, this is the container layer of a detected dialog task.
++    // Sent to HWC as IsDialogTask metadata so HWC creates a modal window.
++    bool isDialogContainer{false};
++
+     // The display frame for this layer on this output
+     Rect displayFrame;
+ 
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index d0c5803d42..bf4b20af3c 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -744,6 +744,7 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
+     mLayerRequestingBackgroundBlur = findLayerRequestingBackgroundComposition();
+     bool forceClientComposition = mLayerRequestingBackgroundBlur != nullptr;
+ 
++    // Phase 1: Update all layers' composition state
+     for (auto* layer : getOutputLayersOrderedByZ()) {
+         layer->updateCompositionState(refreshArgs.updatingGeometryThisFrame,
+                                       refreshArgs.devOptForceClientComposition ||
+@@ -754,6 +755,14 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
+             forceClientComposition = false;
+         }
+     }
++    // fydroid-rt (dialog cluster 0005): detect dialog tasks + adjust geometry/dim
++    // layers before writeCompositionState() pushes state to HWC. AOSP-13 split the
++    // old updateAndWriteCompositionState into updateCompositionState (this) +
++    // writeCompositionState, so the 11 patch's Phase-3 writeStateToHWC loop is
++    // unnecessary here (writeCompositionState does it).
++    if (refreshArgs.updatingGeometryThisFrame) {
++        detectAndAdjustDialogTasks();
++    }
+ }
+ 
+ void Output::planComposition() {
+@@ -833,6 +842,157 @@ void Output::writeCompositionState(const compositionengine::CompositionRefreshAr
+     editState().outputLayerHash = outputLayerHash;
+ }
+ 
++void Output::detectAndAdjustDialogTasks() {
++    // Android window type constants (from WindowManager.LayoutParams)
++    static constexpr int TYPE_APPLICATION_ATTACHED_DIALOG = 1003;
++    // Collect layers into a vector for indexed access
++    std::vector<compositionengine::OutputLayer*> layers;
++    for (auto* layer : getOutputLayersOrderedByZ()) {
++        // Reset dialog flag each geometry pass
++        layer->editState().isDialogContainer = false;
++
++        layers.push_back(layer);
++    }
++
++    // --- Method 1: Detect by TYPE_APPLICATION_ATTACHED_DIALOG window type ---
++    //
++    // Anchor on the content layer (type=1003), then walk backwards to find
++    // [container(SOLID_COLOR), dim?(SOLID_COLOR), content(type=1003)].
++    for (size_t i = 0; i < layers.size(); i++) {
++        const auto* feState = layers[i]->getLayerFE().getCompositionState();
++        if (!feState || feState->type != TYPE_APPLICATION_ATTACHED_DIALOG) continue;
++
++        const Rect contentFrame = layers[i]->getState().displayFrame;
++        if (contentFrame.isEmpty()) continue;
++
++        // Walk backwards through SOLID_COLOR layers that contain the content.
++        // First hit = dim or container; second hit with same frame = container.
++        compositionengine::OutputLayer* firstSolid = nullptr;
++        compositionengine::OutputLayer* secondSolid = nullptr;
++        Rect outerFrame;
++
++        for (size_t j = i; j > 0; ) {
++            --j;
++            const auto* jFeState = layers[j]->getLayerFE().getCompositionState();
++            if (!jFeState) continue;
++            if (jFeState->compositionType != Composition::SOLID_COLOR) break;
++
++            const Rect& jFrame = layers[j]->getState().displayFrame;
++            if (jFrame.isEmpty()) continue;
++            // Must strictly contain the content frame
++            if (jFrame.left > contentFrame.left || jFrame.top > contentFrame.top ||
++                jFrame.right < contentFrame.right || jFrame.bottom < contentFrame.bottom) break;
++            if (jFrame == contentFrame) continue;
++
++            if (!firstSolid) {
++                firstSolid = layers[j];
++                outerFrame = jFrame;
++            } else if (jFrame == outerFrame) {
++                secondSolid = layers[j];
++                break;
++            } else {
++                break;
++            }
++        }
++
++        if (!firstSolid) continue;
++
++        // Skip if container is much larger than content — this is an in-task
++        // dialog within a parent task, not a standalone dialog task.
++        {
++            int32_t outerW = outerFrame.right - outerFrame.left;
++            int32_t outerH = outerFrame.bottom - outerFrame.top;
++            int32_t cntW = contentFrame.right - contentFrame.left;
++            int32_t cntH = contentFrame.bottom - contentFrame.top;
++            if (cntW > 0 && cntH > 0 &&
++                (outerW > cntW * 3 / 2 || outerH > cntH * 3 / 2)) {
++                ALOGI("Skipping in-task dialog (type=1003): container %dx%d vs content %dx%d",
++                      outerW, outerH, cntW, cntH);
++                continue;
++            }
++        }
++
++        if (secondSolid) {
++            // [secondSolid=container, firstSolid=dim, content]
++            firstSolid->editState().skipClientComposition = true;
++            secondSolid->editState().skipClientComposition = true;
++            secondSolid->editState().displayFrame = contentFrame;
++            secondSolid->editState().isDialogContainer = true;
++            ALOGI("Dialog detected (type=1003): content='%s' container=[%d,%d,%d,%d] "
++                  "content=[%d,%d,%d,%d]",
++                  layers[i]->getLayerFE().getDebugName(),
++                  outerFrame.left, outerFrame.top, outerFrame.right, outerFrame.bottom,
++                  contentFrame.left, contentFrame.top, contentFrame.right, contentFrame.bottom);
++        } else {
++            // [firstSolid=container, content] — no dim layer
++            firstSolid->editState().skipClientComposition = true;
++            firstSolid->editState().displayFrame = contentFrame;
++            firstSolid->editState().isDialogContainer = true;
++            ALOGI("Dialog detected (type=1003, no dim): content='%s' container=[%d,%d,%d,%d] "
++                  "content=[%d,%d,%d,%d]",
++                  layers[i]->getLayerFE().getDebugName(),
++                  outerFrame.left, outerFrame.top, outerFrame.right, outerFrame.bottom,
++                  contentFrame.left, contentFrame.top, contentFrame.right, contentFrame.bottom);
++        }
++    }
++
++    // --- Method 2: Detect by "Dim Layer for" name (fallback) ---
++    //
++    // Catches dialog-themed Activities (type=1, not 1003) that still use
++    // FLAG_DIM_BEHIND. Skips layers already handled by Method 1.
++    for (size_t i = 0; i < layers.size(); i++) {
++        auto& layerFE = layers[i]->getLayerFE();
++        const char* name = layerFE.getDebugName();
++
++        if (strncmp(name, "Dim Layer for", 13) != 0) continue;
++
++        const Rect dimFrame = layers[i]->getState().displayFrame;
++        if (dimFrame.isEmpty()) continue;
++
++        // Container = SOLID_COLOR layer below with same frame
++        if (i == 0) continue;
++        auto* containerLayer = layers[i - 1];
++        // Skip if already handled by Method 1
++        if (containerLayer->getState().skipClientComposition) continue;
++        const auto* containerFEState = containerLayer->getLayerFE().getCompositionState();
++        if (!containerFEState) continue;
++        if (containerFEState->compositionType != Composition::SOLID_COLOR) continue;
++        if (containerLayer->getState().displayFrame != dimFrame) continue;
++
++        // Content = layers above dim with smaller contained frame
++        Rect contentFrame;
++        bool hasContent = false;
++        for (size_t j = i + 1; j < layers.size(); j++) {
++            const Rect& frame = layers[j]->getState().displayFrame;
++            if (frame.isEmpty()) continue;
++            if (frame.left < dimFrame.left || frame.top < dimFrame.top ||
++                frame.right > dimFrame.right || frame.bottom > dimFrame.bottom) break;
++            if (frame == dimFrame) continue;
++            if (!hasContent) {
++                contentFrame = frame;
++                hasContent = true;
++            } else {
++                contentFrame.left = std::min(contentFrame.left, frame.left);
++                contentFrame.top = std::min(contentFrame.top, frame.top);
++                contentFrame.right = std::max(contentFrame.right, frame.right);
++                contentFrame.bottom = std::max(contentFrame.bottom, frame.bottom);
++            }
++        }
++
++        if (!hasContent || contentFrame.isEmpty()) continue;
++
++        ALOGI("Dialog detected (dim name): dim='%s' container=[%d,%d,%d,%d] "
++              "content=[%d,%d,%d,%d]",
++              name, dimFrame.left, dimFrame.top, dimFrame.right, dimFrame.bottom,
++              contentFrame.left, contentFrame.top, contentFrame.right, contentFrame.bottom);
++
++        layers[i]->editState().skipClientComposition = true;
++        containerLayer->editState().skipClientComposition = true;
++        containerLayer->editState().displayFrame = contentFrame;
++        containerLayer->editState().isDialogContainer = true;
++    }
++}
++
+ compositionengine::OutputLayer* Output::findLayerRequestingBackgroundComposition() const {
+     compositionengine::OutputLayer* layerRequestingBgComposition = nullptr;
+     for (auto* layer : getOutputLayersOrderedByZ()) {
+@@ -1336,6 +1496,14 @@ std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
+             continue;
+         }
+ 
++        // fydroid-rt (dialog cluster): exclude dim/container layers that dialog
++        // detection marked, so the modal window composites only the real content.
++        if (layer->getState().skipClientComposition) {
++            ALOGV("  Skipping dialog dim layer: %s", layerFE.getDebugName());
++            firstLayer = false;
++            continue;
++        }
++
+         disableBlurs |= layerFEState->sidebandStream != nullptr;
+ 
+         const bool clientComposition = layer->requiresClientComposition();
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index 1bb9d0eb63..d379df7e52 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -15,6 +15,8 @@
+  */
+ 
+ #include <DisplayHardware/Hal.h>
++#include <cstring>
++
+ #include <android-base/stringprintf.h>
+ #include <compositionengine/DisplayColorProfile.h>
+ #include <compositionengine/LayerFECompositionState.h>
+@@ -301,6 +303,9 @@ void OutputLayer::updateCompositionState(
+         // go away otherwise.
+         state.forceClientComposition = false;
+ 
++        // Reset dialog detection flag — re-evaluated each geometry pass.
++        state.skipClientComposition = false;
++
+         state.displayFrame = calculateOutputDisplayFrame();
+         state.sourceCrop = calculateOutputSourceCrop(internalDisplayRotationFlags);
+         state.bufferTransform = static_cast<Hwc2::Transform>(
+@@ -390,6 +395,21 @@ void OutputLayer::writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t
+         writeOutputDependentGeometryStateToHWC(hwcLayer.get(), requestedCompositionType, z);
+         writeOutputIndependentGeometryStateToHWC(hwcLayer.get(), *outputIndependentState,
+                                                  skipLayer);
++
++        // fydroid-rt (dialog cluster): send IsDialogTask metadata when dialog
++        // detection marks a container, so WaylandHwc2Composer routes the task to a
++        // frameless modal window.
++        {
++            int32_t isDialog = state.isDialogContainer ? 1 : 0;
++            std::vector<uint8_t> val(sizeof(int32_t));
++            memcpy(val.data(), &isDialog, sizeof(int32_t));
++            auto error = hwcLayer->setLayerGenericMetadata(
++                    "org.chromium.arc.V1_0.IsDialogTask", false, val);
++            if (error != hal::Error::NONE) {
++                ALOGV("[%s] Failed to set IsDialogTask metadata",
++                      getLayerFE().getDebugName());
++            }
++        }
+     }
+ 
+     writeOutputDependentPerFrameStateToHWC(hwcLayer.get());
+@@ -490,6 +510,7 @@ void OutputLayer::writeOutputIndependentGeometryStateToHWC(
+                   name.c_str(), to_string(error).c_str(), static_cast<int32_t>(error));
+         }
+     }
++
+ }
+ 
+ void OutputLayer::writeOutputDependentPerFrameStateToHWC(HWC2::Layer* hwcLayer) {
+-- 
+2.43.0
+

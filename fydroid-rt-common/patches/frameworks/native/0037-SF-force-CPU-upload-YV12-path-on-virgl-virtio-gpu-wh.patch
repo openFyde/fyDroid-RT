@@ -1,0 +1,103 @@
+From dacd51ea913d71ddf180e2e69d6eaaae8aacf066 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 1 Sep 2026 11:25:09 +0800
+Subject: [PATCH 37/40] SF: force CPU-upload YV12 path on virgl (virtio-gpu)
+ where the multi-plane dmabuf import mis-samples
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Change-Id: If6901913f495c0648bc0ee3e484aff3e04cb0eab
+---
+ libs/renderengine/gl/GLESRenderEngine.cpp | 49 ++++++++++++++++++-----
+ libs/renderengine/gl/GLESRenderEngine.h   |  7 ++++
+ 2 files changed, 46 insertions(+), 10 deletions(-)
+
+diff --git a/libs/renderengine/gl/GLESRenderEngine.cpp b/libs/renderengine/gl/GLESRenderEngine.cpp
+index ff70542173..73b3b9bdea 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.cpp
++++ b/libs/renderengine/gl/GLESRenderEngine.cpp
+@@ -461,6 +461,27 @@ GLESRenderEngine::GLESRenderEngine(const RenderEngineCreationArgs& args, EGLDisp
+         mFlushTracer = std::make_unique<FlushTracer>(this);
+     }
+ 
++    // Decide once whether to skip the direct/shader dmabuf YUV import paths. virgl
++    // (virtio-gpu under QEMU, forwarding to a host ANGLE/Metal stack) accepts those
++    // imports without error but samples the multi-plane image wrong, so bindYv12's
++    // probe would lock onto a broken direct import and video renders green and
++    // sheared. Force CPU_UPLOAD there. VMware svga is unaffected: its dmabuf YUV
++    // import genuinely errors out (so it already reaches the CPU path) and its
++    // GL_RENDERER is not "virgl". Override for testing with
++    // debug.renderengine.yuv_cpu_upload (1/t = force, 0/f = never).
++    property_get("debug.renderengine.yuv_cpu_upload", value, "");
++    const char* glRenderer = GLExtensions::getInstance().getRenderer();
++    if (value[0] == '1' || value[0] == 't') {
++        mYuvForceCpuUpload = true;
++    } else if (value[0] == '0' || value[0] == 'f') {
++        mYuvForceCpuUpload = false;
++    } else if (glRenderer && std::string(glRenderer).find("virgl") != std::string::npos) {
++        mYuvForceCpuUpload = true;
++    }
++    ALOGI("RenderEngine YUV dmabuf import: %s (GL_RENDERER=%s)",
++          mYuvForceCpuUpload ? "disabled, forcing CPU upload" : "enabled (probe first)",
++          glRenderer ? glRenderer : "?");
++
+     if (args.supportsBackgroundBlur) {
+         mBlurFilter = new BlurFilter(*this);
+         checkErrors("BlurFilter creation");
+@@ -1036,18 +1057,26 @@ bool GLESRenderEngine::bindYv12(const sp<GraphicBuffer>& buffer, uint32_t texNam
+     // CPU readback entirely so we try them first; on drivers that reject
+     // EGL_LINUX_DMA_BUF_EXT for YUV formats (Mesa SVGA on VMware) the third
+     // path locks the buffer and uploads each plane via glTexImage2D.
+-    if (bindYv12AsExternalImage(buffer, texName)) {
+-        ALOGI("bindYv12: using direct multi-plane dmabuf import");
+-        mYv12Path = YV12_PATH_DIRECT;
+-        return true;
+-    }
+-    if (bindYv12ViaShader(buffer, texName)) {
+-        ALOGI("bindYv12: direct import unsupported, using dmabuf shader fallback");
+-        mYv12Path = YV12_PATH_SHADER;
+-        return true;
++    //
++    // mYuvForceCpuUpload skips both dmabuf paths on drivers (virgl) that accept
++    // the import but sample it wrong -- those "succeed" here and would otherwise
++    // be locked in, rendering garbage. See the constructor for the rationale.
++    if (!mYuvForceCpuUpload) {
++        if (bindYv12AsExternalImage(buffer, texName)) {
++            ALOGI("bindYv12: using direct multi-plane dmabuf import");
++            mYv12Path = YV12_PATH_DIRECT;
++            return true;
++        }
++        if (bindYv12ViaShader(buffer, texName)) {
++            ALOGI("bindYv12: direct import unsupported, using dmabuf shader fallback");
++            mYv12Path = YV12_PATH_SHADER;
++            return true;
++        }
+     }
+     if (bindYv12ViaCpuUpload(buffer, texName)) {
+-        ALOGI("bindYv12: dmabuf import unsupported, using CPU-upload shader fallback");
++        ALOGI("bindYv12: %s, using CPU-upload shader fallback",
++              mYuvForceCpuUpload ? "dmabuf import disabled for this driver"
++                                 : "dmabuf import unsupported");
+         mYv12Path = YV12_PATH_CPU_UPLOAD;
+         return true;
+     }
+diff --git a/libs/renderengine/gl/GLESRenderEngine.h b/libs/renderengine/gl/GLESRenderEngine.h
+index fb3a1dea63..6e6b19f8da 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.h
++++ b/libs/renderengine/gl/GLESRenderEngine.h
+@@ -321,6 +321,13 @@ private:
+         YV12_PATH_FAILED,      // every variant rejected; stop retrying
+     };
+     Yv12Path mYv12Path = YV12_PATH_UNKNOWN;
++    // virgl (virtio-gpu forwarding to a host ANGLE/Metal stack under QEMU) accepts
++    // the direct/shader multi-plane YUV dmabuf imports without error but samples
++    // them wrong (green + sheared video), so the "first path that doesn't error"
++    // probe would lock onto a broken import. When true, bindYv12 skips the dmabuf
++    // paths and uses CPU_UPLOAD, which never depends on driver YUV dmabuf sampling.
++    // Set once from GL_RENDERER (+ debug.renderengine.yuv_cpu_upload) in the ctor.
++    bool mYuvForceCpuUpload = false;
+     bool bindYv12(const sp<GraphicBuffer>& buffer, uint32_t texName);
+     bool bindYv12AsExternalImage(const sp<GraphicBuffer>& buffer, uint32_t texName);
+     bool bindYv12ViaShader(const sp<GraphicBuffer>& buffer, uint32_t texName);
+-- 
+2.43.0
+

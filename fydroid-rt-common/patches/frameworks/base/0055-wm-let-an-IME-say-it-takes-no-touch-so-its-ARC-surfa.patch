@@ -1,0 +1,91 @@
+From 693a542000643d4e5180a97d8b0db6c70fa8142c Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 26 Aug 2026 12:10:13 +0800
+Subject: [PATCH 55/75] wm: let an IME say it takes no touch, so its ARC
+ surface stops swallowing desktop clicks
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Id757ad805a1c0ba46994bc919d6ad53e199b5e0e
+---
+ core/java/android/view/SurfaceControl.java    | 19 +++++++++++++++++++
+ .../server/wm/WindowManagerService.java       | 19 ++++++++++++++++++-
+ 2 files changed, 37 insertions(+), 1 deletion(-)
+
+diff --git a/core/java/android/view/SurfaceControl.java b/core/java/android/view/SurfaceControl.java
+index 2096772897d6..93faceaea1bf 100644
+--- a/core/java/android/view/SurfaceControl.java
++++ b/core/java/android/view/SurfaceControl.java
+@@ -839,6 +839,25 @@ public final class SurfaceControl implements Parcelable {
+      */
+     public static final int METADATA_IME_CONTENT_TOP = 14;
+ 
++    /**
++     * {@link #METADATA_IME_CONTENT_TOP} sentinel: this IME takes no touch
++     * anywhere in its window, so the compositor must give the Chrome OS
++     * input-method surface an EMPTY input region rather than derive one from a
++     * content top.
++     *
++     * fydroid-rt: FydroidIME's window draws nothing — it exists only to carry
++     * the app's IME inset while Chrome's own virtual keyboard, an ash window
++     * stacked above the ARC surface, takes the key presses. It says so with
++     * TOUCHABLE_INSETS_REGION + an empty touchable region, but a content top
++     * alone cannot express "no keys at all": it reports contentTop == the
++     * window height, which is indistinguishable from the degenerate value
++     * Google Voice Typing reports while it DOES draw a console. Reading it as
++     * degenerate made the compositor fall back to a bottom band and swallow
++     * every desktop click in it.
++     * @hide
++     */
++    public static final int IME_CONTENT_TOP_NO_INPUT = -1;
++
+     /**
+      * A wrapper around HardwareBuffer that contains extra information about how to
+      * interpret the screenshot HardwareBuffer.
+diff --git a/services/core/java/com/android/server/wm/WindowManagerService.java b/services/core/java/com/android/server/wm/WindowManagerService.java
+index 89c0b1faa2d9..78f73ebc460b 100644
+--- a/services/core/java/com/android/server/wm/WindowManagerService.java
++++ b/services/core/java/com/android/server/wm/WindowManagerService.java
+@@ -51,6 +51,7 @@ import static android.provider.Settings.Global.DEVELOPMENT_WM_DISPLAY_SETTINGS_P
+ import static android.view.ContentRecordingSession.RECORD_CONTENT_TASK;
+ import static android.view.Display.DEFAULT_DISPLAY;
+ import static android.view.Display.INVALID_DISPLAY;
++import static android.view.ViewTreeObserver.InternalInsetsInfo.TOUCHABLE_INSETS_REGION;
+ import static android.view.WindowManager.DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
+ import static android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL;
+ import static android.view.WindowManager.LayoutParams.FIRST_APPLICATION_WINDOW;
+@@ -2198,6 +2199,17 @@ public class WindowManagerService extends IWindowManager.Stub
+      * The IME itself is the only thing that knows where its keys begin, and it
+      * tells us here, so mirror it onto the window's surface as generic layer
+      * metadata (same channel as WindowType / TaskId).
++     *
++     * An IME that declares an explicitly EMPTY touchable region is a separate
++     * case, and a content top cannot carry it. FydroidIME's window draws
++     * nothing — Chrome's own virtual keyboard sits above the ARC surface and
++     * takes the key presses — so it asks for TOUCHABLE_INSETS_REGION with an
++     * empty region ("never eat a touch"). Its content top is then the whole
++     * window height, which is exactly what Google Voice Typing reports while it
++     * IS drawing a console; the compositor read that as a degenerate value and
++     * fell back to a bottom band, so every desktop click in that band was
++     * swallowed by an invisible surface. Send the sentinel instead, and the
++     * compositor gives the surface an empty input region.
+      */
+     private void stampImeContentTopIfNeeded(WindowState w) {
+         if (w.mAttrs.type != TYPE_INPUT_METHOD) {
+@@ -2208,8 +2220,13 @@ public class WindowManagerService extends IWindowManager.Stub
+         if (sc == null || !sc.isValid()) {
+             return;
+         }
++        final boolean takesNoTouch = w.mTouchableInsets == TOUCHABLE_INSETS_REGION
++                && w.mGivenTouchableRegion.isEmpty();
++        final int contentTop = takesNoTouch
++                ? SurfaceControl.IME_CONTENT_TOP_NO_INPUT
++                : w.mGivenContentInsets.top;
+         w.getPendingTransaction().setMetadata(
+-                sc, SurfaceControl.METADATA_IME_CONTENT_TOP, w.mGivenContentInsets.top);
++                sc, SurfaceControl.METADATA_IME_CONTENT_TOP, contentTop);
+     }
+ 
+     void setInsetsWindow(Session session, IWindow client, int touchableInsets, Rect contentInsets,
+-- 
+2.43.0
+

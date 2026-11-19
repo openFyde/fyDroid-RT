@@ -1,0 +1,64 @@
+From ae6f89f315b63ce41ee87bf8e956b03e278dbf03 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 19 May 2026 14:58:03 +0800
+Subject: [PATCH 26/75] WM: skip starting window for ARC freeform/multi-window
+ tasks
+
+The starting (splash) window attaches to the task's layer at the
+task's initial bounds and is the first surface Chrome OS Exo's
+ClientControlledShellSurface sees on a new launch. Its CommitWidget
+path (shell_surface_base.cc:2427) captures that bbox via
+CalculatePreferredSize and persists it as the window's restore
+bounds. After a close-while-fullscreen the saved restore bounds can
+be the splash placeholder size instead of the real activity size,
+and the next launch reopens at that placeholder size.
+
+Skip the starting window for ARC-style freeform / multi-window
+tasks so the activity's first surface is the real content at the
+real bounds.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Change-Id: I283a5b57c241a0208d313439a8a5253a362427be
+---
+ .../com/android/server/wm/ActivityRecord.java  | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index 8788b611b843..0c40512f5286 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -41,6 +41,7 @@ import static android.app.WindowConfiguration.ACTIVITY_TYPE_RECENTS;
+ import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
+ import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
+ import static android.app.WindowConfiguration.ROTATION_UNDEFINED;
++import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
+ import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
+@@ -2368,6 +2369,23 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+             return false;
+         }
+ 
++        // fydroid-rt: skip the starting (splash) window for ARC-style
++        // freeform / multi-window tasks. The starting window otherwise
++        // attaches to the task layer at the task's *initial* bounds and
++        // is the first surface Chrome OS Exo's ClientControlledShellSurface
++        // sees — its CommitWidget path (shell_surface_base.cc:2427) then
++        // captures that bbox as the persisted restore bounds. After a
++        // close-while-fullscreen the saved restore bounds can be the
++        // splash placeholder size rather than the real activity size,
++        // and the next launch reopens at that tiny size. Letting the
++        // real activity be the first surface avoids the trap.
++        if (task != null) {
++            final int wm = task.getWindowingMode();
++            if (wm == WINDOWING_MODE_FREEFORM || wm == WINDOWING_MODE_MULTI_WINDOW) {
++                return false;
++            }
++        }
++
+         final TaskSnapshot snapshot =
+                 mWmService.mTaskSnapshotController.getSnapshot(task.mTaskId, task.mUserId,
+                         false /* restoreFromDisk */, false /* isLowResolution */);
+-- 
+2.43.0
+

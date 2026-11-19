@@ -1,0 +1,56 @@
+From e1367830882afe3637355aa194a5719c4e6468d3 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 24 Jun 2026 16:14:45 +0800
+Subject: [PATCH 44/75] wm: launch ARC kiosk apps FULLSCREEN (ROBOT_ACCOUNT)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In an ARC kiosk session the single app must fill the screen, but the ARC
+display is in freeform windowing mode, so the kiosk app launched in a default
+(or LaunchParamsPersister-restored) freeform window instead of fullscreen.
+
+Force every container task FULLSCREEN when the session is a kiosk —
+ChromeAccountType.ROBOT_ACCOUNT (2), which ArcAuthService mirrors from the
+bridge AccountInfo.account_type into persist.sys.arc.main_acct_type. Done in
+the PHASE_WINDOWING_MODE step (before its return), clearing bounds so STEP 4
+resolves empty fullscreen bounds. Mirrors the dialog->fullscreen forcing added
+in the preceding change; pairs with the lock-task pinning in arc-services'
+ArcWindowManagerService.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I8ffa72741e4dde2da01b12d27ed35b8bbd25837c
+---
+ .../server/wm/TaskLaunchParamsModifier.java      | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index 00a3ff45c922..ed0dc3fbcc2e 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -341,6 +341,22 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             if (DEBUG) appendLog("container-dialog-fullscreen");
+         }
+ 
++        // fydroid-rt: ARC kiosk runs a single app that must fill the screen. The
++        // ARC display is in freeform windowing mode, so a kiosk app would
++        // otherwise launch in a default (or persisted) freeform window. Force
++        // every container task FULLSCREEN when the session is a kiosk
++        // (ChromeAccountType.ROBOT_ACCOUNT == 2, mirrored to the prop by
++        // ArcAuthService). MUST run before the PHASE_WINDOWING_MODE return below;
++        // bounds resolve empty for fullscreen in STEP 4.
++        if (android.os.Build.IS_CONTAINER
++                && android.os.SystemProperties.getInt(
++                        "persist.sys.arc.main_acct_type", 0) == 2) {
++            launchMode = WINDOWING_MODE_FULLSCREEN;
++            fullyResolvedCurrentParam = false;
++            outParams.mBounds.setEmpty();
++            if (DEBUG) appendLog("kiosk-fullscreen");
++        }
++
+         // If launch mode matches display windowing mode, let it inherit from display.
+         outParams.mWindowingMode = launchMode == suggestedDisplayArea.getWindowingMode()
+                 ? WINDOWING_MODE_UNDEFINED : launchMode;
+-- 
+2.43.0
+

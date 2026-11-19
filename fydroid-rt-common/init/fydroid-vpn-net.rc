@@ -1,0 +1,25 @@
+# fydroid-rt: bring up arc0 when an Android VPN app is active, so Chrome OS
+# can route host traffic through the arcbr0 <-> arc0 bridge once shill and
+# patchpanel register it as a system-level VPN (see ArcVpnMonitor.java,
+# which reports the VPN over the NetHost.androidVpn* mojo calls and sets
+# arc.vpn.active once it does).
+#
+# See fydroid-adb-net.rc for why arc0 starts down (patchpanel deliberately
+# leaves the guest end down -- ArcService::StartArcDeviceDatapath(),
+# "ARC is responsible to set the interface to be up to avoid race with netd
+# (b/144545910)") and why the pref-15000 ip rule is needed (arc0 belongs to
+# no netd network, so netd's own EXPLICIT_NETWORK rules never resolve its
+# subnet). Both triggers bring up the same interface; whichever fires first
+# wins, and neither brings it back down on its own "off" transition -- an
+# idle bridge interface costs nothing, and two independent triggers racing
+# to tear it down out from under each other is worse than that.
+#
+# arc.vpn.active is deliberately non-persistent: unlike the ADB debugging
+# toggle, VPN connection state is not a durable setting to resume across
+# reboots -- ArcVpnMonitor re-derives and re-sets it fresh each time a VPN
+# actually connects.
+
+on property:arc.vpn.active=1
+    exec u:r:su:s0 root root -- /system/bin/ip link set arc0 up
+    exec u:r:su:s0 root root -- /system/bin/ip rule del to 100.115.92.0/30 lookup main pref 15000
+    exec u:r:su:s0 root root -- /system/bin/ip rule add to 100.115.92.0/30 lookup main pref 15000

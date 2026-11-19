@@ -1,0 +1,60 @@
+From 7125bb2a14d7a35fbf97f05cc3d9e8473238b9e4 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 18:15:21 +0800
+Subject: [PATCH 21/75] fydroid-rt: fix 0027-0029 applyArcAspectRatio AOSP-13
+ build errors
+
+Adapt the freeform/aspect-ratio launch logic ported from AOSP-11
+patches 0028/0029 to the 13 ActivityRecord/WindowLayout API:
+  - minAspectRatio/maxAspectRatio fields -> getMinAspectRatio()/
+    getMaxAspectRatio()
+  - resolveOrientation() now takes a TaskDisplayArea, pass
+    display.getDefaultTaskDisplayArea()
+  - add DEFAULT_PORTRAIT_PHONE_WIDTH_DP (412dp) constant used by the
+    aspect-ratio snap path
+
+services.core compiles clean (m services.core, EXIT 0).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Id4322aeaf0a4e256a740d00404a90f6a0e6b0532
+---
+ .../com/android/server/wm/TaskLaunchParamsModifier.java  | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index d4a09e81ad66..b0e80c75b70a 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -81,6 +81,9 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+     // We always want to step by at least this.
+     private static final int MINIMAL_STEP = 1;
+ 
++    // fydroid-rt: phone-portrait default width (dp); moved to LaunchParamsUtil in 13.
++    private static final int DEFAULT_PORTRAIT_PHONE_WIDTH_DP = 412;
++
+     private final ActivityTaskSupervisor mSupervisor;
+     private final Rect mTmpBounds = new Rect();
+     private final Rect mTmpStableBounds = new Rect();
+@@ -422,8 +425,8 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             return;
+         }
+ 
+-        final float minAR = root.info.minAspectRatio;
+-        final float maxAR = root.info.maxAspectRatio;
++        final float minAR = root.info.getMinAspectRatio();
++        final float maxAR = root.info.getMaxAspectRatio();
+         if (minAR <= 0f && maxAR <= 0f) {
+             return;  // No constraint declared.
+         }
+@@ -476,7 +479,7 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+         // Decide whether the window should be portrait or landscape from
+         // the activity's preferred orientation, falling back to whatever
+         // orientation the current default bounds already chose.
+-        final int orientation = resolveOrientation(root, display, outParams.mBounds);
++        final int orientation = resolveOrientation(root, display.getDefaultTaskDisplayArea(), outParams.mBounds);
+         final boolean portrait = (orientation == SCREEN_ORIENTATION_PORTRAIT);
+ 
+         // Aspect ratios are long-side / short-side (always >= 1.0). Pick
+-- 
+2.43.0
+

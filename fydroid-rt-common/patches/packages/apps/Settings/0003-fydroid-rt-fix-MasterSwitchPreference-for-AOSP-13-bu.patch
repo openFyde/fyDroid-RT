@@ -1,0 +1,53 @@
+From b8758f64cd9d1c2b7e5b2e9cfa30b47a6e4b199e Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 18:15:35 +0800
+Subject: [PATCH 3/5] fydroid-rt: fix MasterSwitchPreference for AOSP-13 build
+
+ArcWirelessDebuggingPreferenceController referenced
+com.android.settings.widget.MasterSwitchPreference, which Android 12
+renamed/relocated to com.android.settingslib.PrimarySwitchPreference
+(stock WirelessDebuggingPreferenceController now uses it too). Swap the
+import + the two casts; setSwitchEnabled(boolean) is unchanged.
+
+m Settings (fydroid_rt_arm64) EXIT 0.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ib6479c39999d7f74ace9bb398ffcb2a006101385
+---
+ .../ArcWirelessDebuggingPreferenceController.java           | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java b/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
+index 969af3537a2..aa9cfebeeb9 100644
+--- a/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
++++ b/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
+@@ -22,7 +22,7 @@ import androidx.preference.PreferenceScreen;
+ 
+ import com.android.settings.R;
+ import com.android.settings.development.WirelessDebuggingPreferenceController;
+-import com.android.settings.widget.MasterSwitchPreference;
++import com.android.settingslib.PrimarySwitchPreference;
+ import com.android.settingslib.core.lifecycle.Lifecycle;
+ 
+ /**
+@@ -53,7 +53,7 @@ public class ArcWirelessDebuggingPreferenceController
+             super.updateState(preference);
+         } else {
+             mPreference.setEnabled(false);
+-            ((MasterSwitchPreference) preference).setSwitchEnabled(false);
++            ((PrimarySwitchPreference) preference).setSwitchEnabled(false);
+         }
+     }
+ 
+@@ -73,7 +73,7 @@ public class ArcWirelessDebuggingPreferenceController
+             super.onDeveloperOptionsSwitchEnabled();
+         } else {
+             mPreference.setEnabled(false);
+-            ((MasterSwitchPreference) mPreference).setSwitchEnabled(false);
++            ((PrimarySwitchPreference) mPreference).setSwitchEnabled(false);
+         }
+     }
+ 
+-- 
+2.43.0
+

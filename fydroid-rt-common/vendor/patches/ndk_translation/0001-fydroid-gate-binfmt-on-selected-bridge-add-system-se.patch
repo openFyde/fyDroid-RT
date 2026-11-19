@@ -1,0 +1,85 @@
+From 8bafed45e1eeafac297f00175fe7b377927fa541 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 1 Jul 2026 19:03:34 +0800
+Subject: [PATCH] fydroid: gate binfmt on selected bridge + add /system
+ sepolicy
+
+Fydroid ships ndk_translation alongside houdini and selects one by CPU at boot.
+- ndk_translation.rc: gate the binfmt_misc registration on
+  ro.dalvik.vm.native.bridge=libndk_translation.so so it only registers when ndk
+  is the chosen bridge (houdini claims the same ARM/ARM64 ELF magic; only one
+  may register).
+- sepolicy/: ndk_translation's payload lives under /system (unlike houdini under
+  /vendor), so add file_contexts to label the translator libs/runners/guest ARM
+  libs same_process_hal_file, plus app_zygote.te to execute/map them. Also
+  applied to the ndk_translation.squashfs at build time.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ prebuilts/etc/init/ndk_translation.rc |  7 +++++--
+ sepolicy/app_zygote.te                |  6 ++++++
+ sepolicy/file_contexts                | 19 +++++++++++++++++++
+ 3 files changed, 30 insertions(+), 2 deletions(-)
+ create mode 100644 sepolicy/app_zygote.te
+ create mode 100644 sepolicy/file_contexts
+
+diff --git a/prebuilts/etc/init/ndk_translation.rc b/prebuilts/etc/init/ndk_translation.rc
+index d7435f7..a32c770 100644
+--- a/prebuilts/etc/init/ndk_translation.rc
++++ b/prebuilts/etc/init/ndk_translation.rc
+@@ -2,10 +2,13 @@
+ on early-init && property:ro.enable.native.bridge.exec=1
+     mount binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+ 
+-on property:ro.enable.native.bridge.exec=1 && property:ro.dalvik.vm.isa.arm=x86
++# Gated on ro.dalvik.vm.native.bridge=libndk_translation.so so ndk_translation's
++# binfmt_misc entries register only when it is the selected native bridge
++# (houdini claims the same ARM/ARM64 ELF magic; only one may register).
++on property:ro.enable.native.bridge.exec=1 && property:ro.dalvik.vm.isa.arm=x86 && property:ro.dalvik.vm.native.bridge=libndk_translation.so
+     copy /system/etc/binfmt_misc/arm_exe /proc/sys/fs/binfmt_misc/register
+     copy /system/etc/binfmt_misc/arm_dyn /proc/sys/fs/binfmt_misc/register
+ 
+-on property:ro.enable.native.bridge.exec=1 && property:ro.dalvik.vm.isa.arm64=x86_64
++on property:ro.enable.native.bridge.exec=1 && property:ro.dalvik.vm.isa.arm64=x86_64 && property:ro.dalvik.vm.native.bridge=libndk_translation.so
+     copy /system/etc/binfmt_misc/arm64_exe /proc/sys/fs/binfmt_misc/register
+     copy /system/etc/binfmt_misc/arm64_dyn /proc/sys/fs/binfmt_misc/register
+diff --git a/sepolicy/app_zygote.te b/sepolicy/app_zygote.te
+new file mode 100644
+index 0000000..c84d8b4
+--- /dev/null
++++ b/sepolicy/app_zygote.te
+@@ -0,0 +1,6 @@
++# app_zygote must be able to load and execute the ndk_translation runtime, its
++# proxy libs and the guest ARM libraries (all labelled same_process_hal_file by
++# file_contexts). Mirrors houdini's app_zygote.te; duplicate allow rules across
++# sepolicy dirs are unioned, so this is safe even when both translators' policy
++# is present on the same board.
++allow app_zygote same_process_hal_file:file { execute read open getattr map };
+diff --git a/sepolicy/file_contexts b/sepolicy/file_contexts
+new file mode 100644
+index 0000000..9ff3ad5
+--- /dev/null
++++ b/sepolicy/file_contexts
+@@ -0,0 +1,19 @@
++# ndk_translation (ARM-on-x86) native-bridge files.
++#
++# Unlike houdini (which installs under /vendor and is labelled by
++# vendor/intel/proprietary/houdini/sepolicy), ndk_translation's payload lives
++# under /system (translator core, proxy libs, guest ARM lib sets, and the
++# binfmt_misc program runners). Without these entries those files fall through
++# to the default system_lib_file/system_file labels, which app_zygote may not
++# execute/map — so ARM translation fails. Mirror houdini's same_process_hal_file
++# scheme at the /system paths.
++#
++# These same paths are also applied to the ndk_translation.squashfs payload at
++# build time (mk_native_bridge_image.sh runs fs_config -S against this
++# file_contexts), so the mounted translator files carry the correct labels too.
++/system/lib(64)?/libndk_translation\.so                             u:object_r:same_process_hal_file:s0
++/system/lib(64)?/libndk_translation_.*\.so                          u:object_r:same_process_hal_file:s0
++/system/lib/arm(/.*)?                                               u:object_r:same_process_hal_file:s0
++/system/lib64/arm64(/.*)?                                           u:object_r:same_process_hal_file:s0
++/system/bin/arm(64)?(/.*)?                                          u:object_r:same_process_hal_file:s0
++/system/bin/ndk_translation_program_runner_binfmt_misc(_arm64)?     u:object_r:same_process_hal_file:s0
+-- 
+2.43.0
+

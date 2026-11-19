@@ -1,0 +1,51 @@
+From 6e9e89eb1b977c82abc7e1b28ba5b153cd8b0b6a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 8 May 2026 10:00:00 +0800
+Subject: [PATCH 4/6] Add storage and content provider permissions for
+ ArcVolumeProvider
+
+Adds MANAGE_EXTERNAL_STORAGE + the ARC data_device
+NOTIFY_CONTENT_PROVIDER_ACCESS permission, and broadens the
+notifyContentProviderAccess catch to RemoteException | SecurityException.
+
+(Hand-applied on AOSP-13: stock manifest now has POST_NOTIFICATIONS after
+QUERY_ALL_PACKAGES, so the original am 3-way base could not be
+reconstructed.)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I012f3fa416b614f377a84e8cc0b0203250cc3be4
+---
+ AndroidManifest.xml                                     | 2 ++
+ src/org/chromium/arc/file_system/ArcVolumeProvider.java | 2 +-
+ 2 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/AndroidManifest.xml b/AndroidManifest.xml
+index 0aa1d6153..6febad5fb 100644
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -32,7 +32,9 @@
+     <uses-permission android:name="android.permission.CHANGE_OVERLAY_PACKAGES" />
+     <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
+     <uses-permission android:name="android.permission.MODIFY_QUIET_MODE" />
++    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
++    <uses-permission android:name="org.chromium.arc.data_device.NOTIFY_CONTENT_PROVIDER_ACCESS" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+ 
+     <!-- Permissions required for reading and logging compat changes -->
+diff --git a/src/org/chromium/arc/file_system/ArcVolumeProvider.java b/src/org/chromium/arc/file_system/ArcVolumeProvider.java
+index 6cfaf3a95..0fbdf59c1 100644
+--- a/src/org/chromium/arc/file_system/ArcVolumeProvider.java
++++ b/src/org/chromium/arc/file_system/ArcVolumeProvider.java
+@@ -87,7 +87,7 @@ public class ArcVolumeProvider extends ContentProvider {
+             if (service != null) {
+                 service.notifyContentProviderAccess(uri.toString(), Binder.getCallingUid());
+             }
+-        } catch (RemoteException e) {
++        } catch (RemoteException | SecurityException e) {
+             Log.e(TAG, "Failed to call notifyContentProviderAccess", e);
+         }
+         try {
+-- 
+2.43.0
+

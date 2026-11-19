@@ -1,0 +1,12 @@
+diff --git a/meson.build b/meson.build
+index 5f19ef921a6..b8508eebb3a 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1049,7 +1049,6 @@ if with_platform_android
+     dep_android = [
+       dependency('cutils'),
+       dependency('hardware'),
+-      dependency('log'),
+       dependency('sync'),
+     ]
+     if with_libbacktrace and get_option('platform-sdk-version') < 34

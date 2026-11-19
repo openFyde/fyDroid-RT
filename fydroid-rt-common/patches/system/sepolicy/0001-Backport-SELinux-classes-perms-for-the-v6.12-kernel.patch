@@ -1,0 +1,137 @@
+From ac5ede60f3d0986ed2cceedad16f1a031d51bfad Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 17:19:00 +0800
+Subject: [PATCH] Backport SELinux classes/perms for the v6.12 kernel
+
+The fydroid v6.12 kernel exposes SELinux classes/perms newer than AOSP-13's
+policy, producing boot-time "Class/Permission not defined in policy" denials.
+Add the missing ones to private/ and the frozen 33.0 snapshot:
+- security_classes / access_vectors: classes mctp_socket (5.18+),
+  io_uring (6.1+, {sqpoll override_creds cmd}), user_namespace (6.4+, {create}).
+- capability2 perms bpf (5.8+) and checkpoint_restore (5.9+). bpf must precede
+  checkpoint_restore: cap2 perms are positional (CAP_BPF=39, CAP_CHECKPOINT_RESTORE=40).
+
+AOSP-13 deltas vs the AOSP-11 patch: anon_inode (6.0+), perfmon (5.8+),
+nlmsg_getneigh (5.10+) are ALREADY in AOSP-13, so they're dropped to avoid
+duplicate definitions. CAP_BPF was initially assumed present too, but the
+running kernel proved otherwise ("Permission bpf in class capability2 not
+defined in policy ... cap2_userns ... will be denied"), so it is added here.
+Mirrored into prebuilts/api/33.0/private (latest frozen platform sepolicy
+version on 13) instead of 30.0.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I4cf39f030a94fca12ec18bed3c605ca34fe10367
+---
+ prebuilts/api/33.0/private/access_vectors   | 19 +++++++++++++++++++
+ prebuilts/api/33.0/private/security_classes |  9 +++++++++
+ private/access_vectors                      | 19 +++++++++++++++++++
+ private/security_classes                    |  9 +++++++++
+ 4 files changed, 56 insertions(+)
+
+diff --git a/prebuilts/api/33.0/private/access_vectors b/prebuilts/api/33.0/private/access_vectors
+index 6cd8c4ee5..5705c91d0 100644
+--- a/prebuilts/api/33.0/private/access_vectors
++++ b/prebuilts/api/33.0/private/access_vectors
+@@ -139,6 +139,8 @@ common cap2
+ 	block_suspend
+ 	audit_read
+ 	perfmon
++	bpf	# fydroid-rt: CAP_BPF, kernel 5.8+ (positional: must precede checkpoint_restore)
++	checkpoint_restore	# fydroid-rt: kernel 5.9+ (v6.12 backport)
+ }
+ 
+ #
+@@ -789,3 +791,20 @@ class lockdown
+ 	integrity
+ 	confidentiality
+ }
++
++# fydroid-rt: backport SELinux class access vectors for the v6.12 kernel.
++# anon_inode (kernel 6.0+) is already defined in AOSP-13.
++class mctp_socket	# kernel 5.18+
++inherits socket
++
++class io_uring		# kernel 6.1+
++{
++	sqpoll
++	override_creds
++	cmd
++}
++
++class user_namespace	# kernel 6.4+
++{
++	create
++}
+diff --git a/prebuilts/api/33.0/private/security_classes b/prebuilts/api/33.0/private/security_classes
+index 0d3cc80ab..55285724f 100644
+--- a/prebuilts/api/33.0/private/security_classes
++++ b/prebuilts/api/33.0/private/security_classes
+@@ -167,4 +167,13 @@ class keystore2_key             # userspace
+ class diced                     # userspace
+ 
+ class drmservice                # userspace
++
++# fydroid-rt: backport SELinux classes for the v6.12 kernel (silences boot-time
++# "Class X not defined in policy" warnings). anon_inode (6.0+) is already in 13.
++# kernel 5.18+ - Management Component Transport Protocol
++class mctp_socket
++# kernel 6.1+ - io_uring SELinux support
++class io_uring
++# kernel 6.4+ - user namespace creation
++class user_namespace
+ # FLASK
+diff --git a/private/access_vectors b/private/access_vectors
+index 6cd8c4ee5..5705c91d0 100644
+--- a/private/access_vectors
++++ b/private/access_vectors
+@@ -139,6 +139,8 @@ common cap2
+ 	block_suspend
+ 	audit_read
+ 	perfmon
++	bpf	# fydroid-rt: CAP_BPF, kernel 5.8+ (positional: must precede checkpoint_restore)
++	checkpoint_restore	# fydroid-rt: kernel 5.9+ (v6.12 backport)
+ }
+ 
+ #
+@@ -789,3 +791,20 @@ class lockdown
+ 	integrity
+ 	confidentiality
+ }
++
++# fydroid-rt: backport SELinux class access vectors for the v6.12 kernel.
++# anon_inode (kernel 6.0+) is already defined in AOSP-13.
++class mctp_socket	# kernel 5.18+
++inherits socket
++
++class io_uring		# kernel 6.1+
++{
++	sqpoll
++	override_creds
++	cmd
++}
++
++class user_namespace	# kernel 6.4+
++{
++	create
++}
+diff --git a/private/security_classes b/private/security_classes
+index 0d3cc80ab..55285724f 100644
+--- a/private/security_classes
++++ b/private/security_classes
+@@ -167,4 +167,13 @@ class keystore2_key             # userspace
+ class diced                     # userspace
+ 
+ class drmservice                # userspace
++
++# fydroid-rt: backport SELinux classes for the v6.12 kernel (silences boot-time
++# "Class X not defined in policy" warnings). anon_inode (6.0+) is already in 13.
++# kernel 5.18+ - Management Component Transport Protocol
++class mctp_socket
++# kernel 6.1+ - io_uring SELinux support
++class io_uring
++# kernel 6.4+ - user namespace creation
++class user_namespace
+ # FLASK
+-- 
+2.43.0
+

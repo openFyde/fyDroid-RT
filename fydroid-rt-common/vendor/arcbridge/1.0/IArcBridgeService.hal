@@ -1,0 +1,6 @@
+package vendor.google_arc.arcbridge@1.0;
+
+interface IArcBridgeService {
+    getMojoBootstrapChannel(uint32_t version)
+        generates (MojoBootstrapChannel channel);
+};

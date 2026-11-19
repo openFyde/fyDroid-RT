@@ -1,0 +1,25 @@
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 08f1079f4c9..775941a4f9a 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1035,6 +1035,20 @@ zink_init_screen_caps(struct zink_screen *screen)
+ 
+    caps->mixed_framebuffer_sizes = true;
+ 
++   /* fydroid: Vulkan places no constraint on a colour attachment and a
++    * depth/stencil attachment having the same bit depth, so zink can mix them
++    * freely. Leaving this at the default (false) makes dri_fill_in_modes() pass
++    * color_depth_match=1 to driCreateConfigs(), which then only pairs a 16-bit
++    * colour format with a 16-bit depth/stencil (see
++    * src/gallium/frontends/dri/dri_screen.c). RGB565 therefore never gets a
++    * Z24S8 pairing and the driver publishes no RGB565 EGLConfig with a stencil
++    * buffer at all. Apps that ask eglChooseConfig for R5G6B5 + stencil8 and
++    * then require an exact colour-size match on the configs it returns
++    * (Asphalt 8) find nothing and silently fail to create their GL context.
++    * Every other gallium driver (radeonsi, iris, panfrost, v3d, freedreno,
++    * llvmpipe, ...) already sets this. */
++   caps->mixed_color_depth_bits = true;
++
+    caps->max_geometry_output_vertices =
+       screen->info.props.limits.maxGeometryOutputVertices;
+    caps->max_geometry_total_output_components =

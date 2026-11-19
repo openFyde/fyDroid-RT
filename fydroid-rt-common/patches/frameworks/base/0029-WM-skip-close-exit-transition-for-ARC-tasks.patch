@@ -1,0 +1,59 @@
+From 0fa660ce8fb355d7b937bd7f4bb13075566cef57 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 11:03:46 +0800
+Subject: [PATCH 29/75] WM: skip close/exit transition for ARC tasks
+
+AOSP-13 port of patch 0034: ActivityStack was removed in Android 12
+and its resumeTopActivityInnerLocked close-transition prep for a
+finishing `prev` was folded into the activity finish path. So the
+AOSP-11 patch's two hunks (ActivityRecord finish-transit +
+ActivityStack resume-close) collapse into one site:
+ActivityRecord.finishIfPossible's prepareAppTransition(TRANSIT_CLOSE).
+Gate it to TRANSIT_NONE when Build.IS_CONTAINER to avoid the black
+flash on close (no activity behind in the per-task virtual display);
+Chrome animates window removal externally.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ibdb8d8f7f9308218541cceb370e0928ff4fc0e11
+---
+ .../com/android/server/wm/ActivityRecord.java   | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index 0c40512f5286..e9bc63c2814c 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -121,6 +121,7 @@ import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_STARTING;
+ import static android.view.WindowManager.LayoutParams.TYPE_BASE_APPLICATION;
+ import static android.view.WindowManager.TRANSIT_CLOSE;
+ import static android.view.WindowManager.TRANSIT_FLAG_OPEN_BEHIND;
++import static android.view.WindowManager.TRANSIT_NONE;
+ import static android.view.WindowManager.TRANSIT_OLD_UNSET;
+ import static android.window.TransitionInfo.FLAG_IS_OCCLUDED;
+ import static android.window.TransitionInfo.FLAG_STARTING_WINDOW_TRANSFER_RECIPIENT;
+@@ -3511,7 +3512,21 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+                 if (DEBUG_VISIBILITY || DEBUG_TRANSITION) {
+                     Slog.v(TAG_TRANSITION, "Prepare close transition: finishing " + this);
+                 }
+-                mDisplayContent.prepareAppTransition(TRANSIT_CLOSE);
++                // fydroid (AOSP-13 port of patch 0034): skip Android's close/exit
++                // transition for ARC tasks. Every ARC window is a separate
++                // Chrome-managed window; the close animation (TRANSIT_CLOSE) plays
++                // over the per-task surface and, with no activity "behind" in the
++                // same per-task virtual display, the reveal composites black — a
++                // black flash as the window disappears. ARC tasks use several
++                // windowing modes (fullscreen for dialogs, freeform/multi-window
++                // for apps), so disable it unconditionally rather than per-mode;
++                // Chrome animates the window removal itself. In 12+ the legacy
++                // resumeTopActivity close-prep was folded into this finish path, so
++                // this single site covers both AOSP-11 hunks. (Shell transitions,
++                // if enabled, are requested above via requestCloseTransitionIfNeeded;
++                // ARC runs the legacy WM transition path that this gates.)
++                mDisplayContent.prepareAppTransition(
++                        android.os.Build.IS_CONTAINER ? TRANSIT_NONE : TRANSIT_CLOSE);
+ 
+                 // When finishing the activity preemptively take the snapshot before the app window
+                 // is marked as hidden and any configuration changes take place
+-- 
+2.43.0
+

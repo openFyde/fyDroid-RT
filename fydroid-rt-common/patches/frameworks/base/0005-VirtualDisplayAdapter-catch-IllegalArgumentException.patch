@@ -1,0 +1,46 @@
+From 47424006ab43b033fdb84a2ce90b5061409a5374 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 20 Apr 2026 12:28:13 +0800
+Subject: [PATCH 05/75] VirtualDisplayAdapter: catch IllegalArgumentException
+ in performTraversalLocked
+
+SurfaceTexture-backed virtual display surfaces may not support the async
+mode required by nativeSetDisplaySurface. This causes system_server to
+crash when display rotation is applied while a VirtualDisplay surface is
+still initializing (e.g., ArcNotificationVirtualDisplay created at boot
+phase 1000 with persisted user_rotation=1).
+
+Catch the exception and log a warning instead of crashing. The surface
+will be retried on the next traversal.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I3d032732e850ca7a6627b96e7f1fa226c4876ef9
+---
+ .../android/server/display/VirtualDisplayAdapter.java | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/display/VirtualDisplayAdapter.java b/services/core/java/com/android/server/display/VirtualDisplayAdapter.java
+index 479629eae7ac..c679854a7962 100644
+--- a/services/core/java/com/android/server/display/VirtualDisplayAdapter.java
++++ b/services/core/java/com/android/server/display/VirtualDisplayAdapter.java
+@@ -366,7 +366,16 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
+                 t.setDisplaySize(getDisplayTokenLocked(), mWidth, mHeight);
+             }
+             if ((mPendingChanges & PENDING_SURFACE_CHANGE) != 0) {
+-                setSurfaceLocked(t, mSurface);
++                try {
++                    setSurfaceLocked(t, mSurface);
++                } catch (IllegalArgumentException e) {
++                    // SurfaceTexture-backed surfaces may not support async mode
++                    // required by nativeSetDisplaySurface. This can happen when
++                    // display rotation is applied while the VirtualDisplay surface
++                    // is still initializing. Log and continue — the surface will
++                    // be retried on the next traversal.
++                    Slog.w(TAG, "setSurfaceLocked failed for " + mName + ": " + e.getMessage());
++                }
+             }
+             mPendingChanges = 0;
+         }
+-- 
+2.43.0
+

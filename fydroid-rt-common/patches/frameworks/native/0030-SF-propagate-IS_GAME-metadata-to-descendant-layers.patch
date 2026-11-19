@@ -1,0 +1,71 @@
+From c6117b8dfaac12b2fec60903fc5a2f648b59aa22 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 27 Jul 2026 15:29:24 +0800
+Subject: [PATCH 30/40] SF: propagate IS_GAME metadata to descendant layers
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+WindowManager stamps METADATA_IS_GAME on the task layer, but that layer
+carries no buffer and never reaches HWC — only its window descendants do.
+The flag therefore died on the task layer and the compositor never saw a
+single IsGame, so game classification (and everything gated on it) had
+never actually run.
+
+IS_DIALOG already solves exactly this with a down-propagation to current
+children plus an ancestor-inheritance in addChild for layers created
+later. Give IS_GAME the same treatment.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Ic36e0e90fb8d861964fea6e8e282ea796158b290
+---
+ services/surfaceflinger/Layer.cpp | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 141f1f2fb5..7560b549f0 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1096,6 +1096,21 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+         });
+         ALOGI("IsDialog propagation: set on '%s' isDialog=%d", mName.c_str(), isDialog);
+     }
++    // Same story for IsGame: WindowManager stamps it on the task layer, but the
++    // task layer carries no buffer and never reaches HWC — only its window
++    // descendants do. Without this the compositor never learns it is a game.
++    if (data.has(METADATA_IS_GAME)) {
++        int32_t isGame = data.getInt32(METADATA_IS_GAME, 0);
++        mCurrentChildren.traverse([&](Layer* child) {
++            if (!child->mDrawingState.metadata.has(METADATA_IS_GAME)) {
++                child->mDrawingState.metadata.setInt32(METADATA_IS_GAME, isGame);
++                child->mDrawingState.sequence++;
++                child->mDrawingState.modified = true;
++                child->setTransactionFlags(eTransactionNeeded);
++            }
++        });
++        ALOGI("IsGame propagation: set on '%s' isGame=%d", mName.c_str(), isGame);
++    }
+     // Propagate IsFloatingActivity to descendants so the compositor sees the
+     // flag on the activity's buffer-bearing window layer (the flag is set by WM
+     // on the activity's own surface). Covers the case where the flag is set
+@@ -1708,6 +1723,17 @@ void Layer::addChild(const sp<Layer>& layer) {
+                   layer->mName.c_str(), mName.c_str());
+         }
+     }
++    // Inherit IsGame from nearest ancestor that has it.
++    if (!layer->mDrawingState.metadata.has(METADATA_IS_GAME)) {
++        for (sp<Layer> ancestor = this; ancestor != nullptr;
++             ancestor = ancestor->mCurrentParent.promote()) {
++            if (ancestor->mDrawingState.metadata.has(METADATA_IS_GAME)) {
++                layer->mDrawingState.metadata.setInt32(METADATA_IS_GAME,
++                        ancestor->mDrawingState.metadata.getInt32(METADATA_IS_GAME, 0));
++                break;
++            }
++        }
++    }
+ #endif
+ }
+ 
+-- 
+2.43.0
+

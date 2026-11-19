@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">Pemasangan paket</string>
+    <string name="notification_channel_description">Progres pemasangan APK</string>
+    <string name="mode_user">[Pengguna]</string>
+    <string name="mode_policy">[Kebijakan]</string>
+    <string name="installing">%1$s Memasang: %2$s</string>
+    <string name="installed">%1$s Terpasang: %2$s</string>
+    <string name="install_failed">%1$s Pemasangan gagal: %2$s</string>
+</resources>

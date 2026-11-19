@@ -1,0 +1,56 @@
+From bf8975c1e12c9145b74dd7e136b5b9034c2aea9a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 27 Apr 2026 17:30:06 +0800
+Subject: [PATCH 11/40] Fix dialog detection logging and IsDialogTask metadata
+ sending
+
+- Output.cpp: reduce per-frame "Dialog detected" log from ALOGI to ALOGV
+  to prevent flooding the logcat buffer
+- OutputLayer.cpp: only send IsDialogTask=1 (not IsDialogTask=0) so the
+  heuristic doesn't overwrite framework-level METADATA_IS_DIALOG values
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I9629dcccdeeecd9581fc2bfbbffd43c7253e7831
+---
+ .../surfaceflinger/CompositionEngine/src/Output.cpp   |  2 +-
+ .../CompositionEngine/src/OutputLayer.cpp             | 11 ++++++-----
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index e6154c2882..a6f9b5e6a6 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -986,7 +986,7 @@ void Output::detectAndAdjustDialogTasks() {
+ 
+         if (!hasContent || contentFrame.isEmpty()) continue;
+ 
+-        ALOGI("Dialog detected (dim name): dim='%s' container=[%d,%d,%d,%d] "
++        ALOGV("Dialog detected (dim name): dim='%s' container=[%d,%d,%d,%d] "
+               "content=[%d,%d,%d,%d]",
+               name, dimFrame.left, dimFrame.top, dimFrame.right, dimFrame.bottom,
+               contentFrame.left, contentFrame.top, contentFrame.right, contentFrame.bottom);
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index 75dbd2b383..e5d100ec2d 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -397,11 +397,12 @@ void OutputLayer::writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t
+                                                  skipLayer);
+     }
+ 
+-    // fydroid-rt (dialog cluster 0009): send IsDialogTask metadata every frame (not
+-    // only on geometry updates) so the per-task virtual display always sees current
+-    // dialog state; WaylandHwc2Composer routes flagged containers to a modal window.
+-    {
+-        int32_t isDialog = state.isDialogContainer ? 1 : 0;
++    // fydroid-rt (dialog cluster 0009+0016): every frame, send IsDialogTask=1 ONLY
++    // when our heuristic detected a dialog container — never =0, which would
++    // overwrite the framework-level METADATA_IS_DIALOG that WindowManager set.
++    // WaylandHwc2Composer ORs positive signals, so only =1 matters.
++    if (state.isDialogContainer) {
++        int32_t isDialog = 1;
+         std::vector<uint8_t> val(sizeof(int32_t));
+         memcpy(val.data(), &isDialog, sizeof(int32_t));
+         auto error = hwcLayer->setLayerGenericMetadata(
+-- 
+2.43.0
+

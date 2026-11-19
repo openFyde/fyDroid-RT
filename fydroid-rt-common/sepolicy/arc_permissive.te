@@ -1,0 +1,17 @@
+# Mark ARC app domains permissive.
+# The ARC++ container on Chrome OS runs with permissive SELinux.
+permissive arc_apkcache_app;
+permissive arc_applauncher_app;
+permissive arc_intent_helper_app;
+permissive arc_print_spooler_app;
+permissive arc_testapp_input_app;
+
+# fydroid_imelangd reads Gboard's preferences file (app data, read-only via
+# CAP_DAC_READ_SEARCH) and publishes its current language as
+# arc.fydroid.gboard_entry, so arc-services can keep Settings > Physical
+# keyboard in step with Gboard's sidebar on Android 13. Core policy forbids
+# non-app domains from opening app data (neverallow), so this cannot be an allow
+# rule; like the ARC domains above it relies on permissive mode. If the
+# container ever runs enforcing, only that sync stops. See
+# docs/gboard-system-ime.plan, Phase 5.
+permissive arc_imelang;

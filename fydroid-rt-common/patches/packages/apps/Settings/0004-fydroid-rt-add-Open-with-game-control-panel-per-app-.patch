@@ -1,0 +1,301 @@
+From 66b10f61eb47fbf94e4d6de9b596263125a0ca92 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 8 Jul 2026 18:10:54 +0800
+Subject: [PATCH 4/5] fydroid-rt: add "Open with game control panel" per-app
+ toggle
+
+Add a SwitchPreference on the App info page that records the package in
+the Settings.Secure "fydroid_game_packages" list. The ARC bridge
+(ArcAppService.getAppCategory) reports those packages to ChromeOS as
+CATEGORY_GAME, letting sideloaded games -- which have
+ApplicationInfo.category == UNDEFINED because no Play Store ever called
+setApplicationCategoryHint() -- opt into the ChromeOS Game Dashboard, the
+Game Controls mouse/keyboard-to-touch overlay, and full-screen game
+efficiency (IsGame).
+
+Localized into the top 10 UI languages (en, zh-CN, zh-TW, ja, ko, es, fr,
+de, pt/pt-BR, ru).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I787b2247f1728049485ddda8b42aa503e6c1ad09
+---
+ res/values-de/strings.xml                     |   2 +
+ res/values-es/strings.xml                     |   2 +
+ res/values-fr/strings.xml                     |   2 +
+ res/values-ja/strings.xml                     |   2 +
+ res/values-ko/strings.xml                     |   2 +
+ res/values-pt-rBR/strings.xml                 |   2 +
+ res/values-pt/strings.xml                     |   2 +
+ res/values-ru/strings.xml                     |   2 +
+ res/values-zh-rCN/strings.xml                 |   2 +
+ res/values-zh-rTW/strings.xml                 |   2 +
+ res/values/strings.xml                        |   4 +
+ res/xml/app_info_settings.xml                 |   5 +
+ .../appinfo/AppInfoDashboardFragment.java     |   1 +
+ .../GameCategoryPreferenceController.java     | 101 ++++++++++++++++++
+ 14 files changed, 131 insertions(+)
+ create mode 100644 src/com/android/settings/applications/appinfo/GameCategoryPreferenceController.java
+
+diff --git a/res/values-de/strings.xml b/res/values-de/strings.xml
+index d7ed6b7e858..770d4018b1f 100644
+--- a/res/values-de/strings.xml
++++ b/res/values-de/strings.xml
+@@ -5964,4 +5964,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"Falsches Passwort"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"Scanne zum Anhören den QR-Code unten"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"Das Format des QR-Codes ist ungültig"</string>
++    <string name="game_category_title">Mit Spielsteuerungs-Panel öffnen</string>
++    <string name="game_category_summary">Diese App als Spiel ausführen: Spielsteuerungs-Panel anzeigen und Maus und Tastatur auf Touch abbilden</string>
+ </resources>
+diff --git a/res/values-es/strings.xml b/res/values-es/strings.xml
+index 40a23bd0374..596d307707a 100644
+--- a/res/values-es/strings.xml
++++ b/res/values-es/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"Contraseña incorrecta"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"Para empezar a escuchar, centra el código QR aquí abajo"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"El código QR no tiene un formato válido"</string>
++    <string name="game_category_title">Abrir con el panel de control de juego</string>
++    <string name="game_category_summary">Ejecuta esta aplicación como un juego: muestra el panel de control de juego y asigna el ratón y el teclado al toque</string>
+ </resources>
+diff --git a/res/values-fr/strings.xml b/res/values-fr/strings.xml
+index 29b8d60413a..b772976da87 100644
+--- a/res/values-fr/strings.xml
++++ b/res/values-fr/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"Mot de passe incorrect"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"Pour commencer à écouter, centrez le code QR ci-dessous"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"Le format de code QR n\'est pas valide"</string>
++    <string name="game_category_title">Ouvrir avec le panneau de contrôle de jeu</string>
++    <string name="game_category_summary">Exécuter cette appli comme un jeu : afficher le panneau de contrôle de jeu et associer la souris et le clavier au toucher</string>
+ </resources>
+diff --git a/res/values-ja/strings.xml b/res/values-ja/strings.xml
+index e9da3e40468..120e0b1b783 100644
+--- a/res/values-ja/strings.xml
++++ b/res/values-ja/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"パスワードが正しくありません"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"再生を開始するには、下の枠に QR コードを合わせてください"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"QR コードの形式が無効です"</string>
++    <string name="game_category_title">ゲーム コントロール パネルで開く</string>
++    <string name="game_category_summary">このアプリをゲームとして実行します。ゲーム コントロール パネルを表示し、マウスとキーボードをタップ操作に割り当てます</string>
+ </resources>
+diff --git a/res/values-ko/strings.xml b/res/values-ko/strings.xml
+index 3e8b9ca292a..ef48fd03711 100644
+--- a/res/values-ko/strings.xml
++++ b/res/values-ko/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"잘못된 비밀번호"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"오디오를 들으려면 아래의 QR 코드가 가운데에 오도록 스캔하세요"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"QR 코드가 유효한 형식이 아닙니다."</string>
++    <string name="game_category_title">게임 컨트롤 패널로 열기</string>
++    <string name="game_category_summary">이 앱을 게임으로 실행합니다. 게임 컨트롤 패널을 표시하고 마우스와 키보드를 터치에 매핑합니다</string>
+ </resources>
+diff --git a/res/values-pt-rBR/strings.xml b/res/values-pt-rBR/strings.xml
+index e8cfb530002..a2da2f2006e 100644
+--- a/res/values-pt-rBR/strings.xml
++++ b/res/values-pt-rBR/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"Senha incorreta"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"Para começar a ouvir, centralize o código QR abaixo"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"O código QR não está em um formato válido"</string>
++    <string name="game_category_title">Abrir com o painel de controle de jogos</string>
++    <string name="game_category_summary">Executar este app como um jogo: mostrar o painel de controle de jogos e mapear o mouse e o teclado para o toque</string>
+ </resources>
+diff --git a/res/values-pt/strings.xml b/res/values-pt/strings.xml
+index e8cfb530002..04413f6f94d 100644
+--- a/res/values-pt/strings.xml
++++ b/res/values-pt/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"Senha incorreta"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"Para começar a ouvir, centralize o código QR abaixo"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"O código QR não está em um formato válido"</string>
++    <string name="game_category_title">Abrir com o painel de controlo de jogos</string>
++    <string name="game_category_summary">Executar esta app como um jogo: mostrar o painel de controlo de jogos e mapear o rato e o teclado para o toque</string>
+ </resources>
+diff --git a/res/values-ru/strings.xml b/res/values-ru/strings.xml
+index 0c6eb5f51f0..3baa2781d5b 100644
+--- a/res/values-ru/strings.xml
++++ b/res/values-ru/strings.xml
+@@ -6139,4 +6139,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"Пароль указан неверно."</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"Чтобы прослушать аудио, поместите QR-код в центр."</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"Недопустимый формат QR-кода."</string>
++    <string name="game_category_title">Открыть с панелью управления игрой</string>
++    <string name="game_category_summary">Запускать это приложение как игру: показывать панель управления игрой и сопоставлять мышь и клавиатуру с касанием</string>
+ </resources>
+diff --git a/res/values-zh-rCN/strings.xml b/res/values-zh-rCN/strings.xml
+index eb52d2da4f1..287bb3488d6 100644
+--- a/res/values-zh-rCN/strings.xml
++++ b/res/values-zh-rCN/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"密码错误"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"将取景框对准下方的二维码，即可开始收听"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"二维码的格式无效"</string>
++    <string name="game_category_title">使用游戏控制面板打开</string>
++    <string name="game_category_summary">将此应用作为游戏运行：显示游戏控制面板，并将鼠标和键盘映射为触摸操作</string>
+ </resources>
+diff --git a/res/values-zh-rTW/strings.xml b/res/values-zh-rTW/strings.xml
+index 5dc4305340f..4752cad353b 100644
+--- a/res/values-zh-rTW/strings.xml
++++ b/res/values-zh-rTW/strings.xml
+@@ -5963,4 +5963,6 @@
+     <string name="find_broadcast_password_dialog_password_error" msgid="243855327674765">"密碼錯誤"</string>
+     <string name="bt_le_audio_scan_qr_code_scanner" msgid="7614569515419813053">"如要開始收聽，請將掃描器對準下方的 QR 圖碼"</string>
+     <string name="bt_le_audio_qr_code_is_not_valid_format" msgid="7821837654128137901">"QR 圖碼格式無效"</string>
++    <string name="game_category_title">使用遊戲控制面板開啟</string>
++    <string name="game_category_summary">將此應用程式作為遊戲執行：顯示遊戲控制面板，並將滑鼠和鍵盤對應為觸控操作</string>
+ </resources>
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index a6b9fd96659..f08b6ec05e8 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -5107,6 +5107,10 @@
+     <string name="app_install_details_title">App details</string>
+     <!-- Manage applications, individual application info screen, summary for the option which will trigger application info in it's installer [CHAR_LIMIT=50] -->
+     <string name="app_install_details_summary">App installed from <xliff:g id="app_store">%1$s</xliff:g></string>
++    <!-- fydroid: App info screen, title for the toggle that runs the app with the game control panel [CHAR_LIMIT=40] -->
++    <string name="game_category_title">Open with game control panel</string>
++    <!-- fydroid: App info screen, summary for the "Open with game control panel" toggle [CHAR_LIMIT=NONE] -->
++    <string name="game_category_summary">Run this app as a game: show the game control panel and map mouse and keyboard to touch</string>
+ 
+     <!-- Manage applications, individual application info screen, summary for the option which will trigger instant app info in it's installer [CHAR_LIMIT=50] -->
+     <string name="instant_app_details_summary">More info on <xliff:g id="app_store">%1$s</xliff:g></string>
+diff --git a/res/xml/app_info_settings.xml b/res/xml/app_info_settings.xml
+index 2bb05d000ae..58974d5915e 100644
+--- a/res/xml/app_info_settings.xml
++++ b/res/xml/app_info_settings.xml
+@@ -204,6 +204,11 @@
+ 
+     </PreferenceCategory>
+ 
++    <SwitchPreference
++        android:key="fydroid_is_game"
++        android:title="@string/game_category_title"
++        android:summary="@string/game_category_summary" />
++
+     <Preference
+         android:key="app_version"
+         android:selectable="false"
+diff --git a/src/com/android/settings/applications/appinfo/AppInfoDashboardFragment.java b/src/com/android/settings/applications/appinfo/AppInfoDashboardFragment.java
+index 54455d4f110..e9bb54b08a9 100755
+--- a/src/com/android/settings/applications/appinfo/AppInfoDashboardFragment.java
++++ b/src/com/android/settings/applications/appinfo/AppInfoDashboardFragment.java
+@@ -325,6 +325,7 @@ public class AppInfoDashboardFragment extends DashboardFragment
+         controllers.add(new DefaultPhoneShortcutPreferenceController(context, packageName));
+         controllers.add(new DefaultEmergencyShortcutPreferenceController(context, packageName));
+         controllers.add(new DefaultSmsShortcutPreferenceController(context, packageName));
++        controllers.add(new GameCategoryPreferenceController(context).setPackageName(packageName));
+ 
+         return controllers;
+     }
+diff --git a/src/com/android/settings/applications/appinfo/GameCategoryPreferenceController.java b/src/com/android/settings/applications/appinfo/GameCategoryPreferenceController.java
+new file mode 100644
+index 00000000000..865e4bfddc1
+--- /dev/null
++++ b/src/com/android/settings/applications/appinfo/GameCategoryPreferenceController.java
+@@ -0,0 +1,101 @@
++/*
++ * Copyright (C) 2026 Fyde Innovations
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.settings.applications.appinfo;
++
++import android.content.Context;
++import android.provider.Settings;
++import android.text.TextUtils;
++
++import com.android.settings.R;
++import com.android.settings.core.TogglePreferenceController;
++
++import java.util.Arrays;
++import java.util.LinkedHashSet;
++import java.util.Set;
++
++/**
++ * fydroid: per-app "Open with game control panel" toggle on the App info page.
++ *
++ * Sideloaded games carry {@code ApplicationInfo.category == CATEGORY_UNDEFINED}
++ * (no Play Store ever called {@code setApplicationCategoryHint()}), so ChromeOS
++ * never treats them as games and won't attach the Game Dashboard / Game Controls
++ * mouse-and-keyboard-to-touch overlay. Flagging a package here records it in a
++ * Settings.Secure package list that the ARC bridge (ArcAppService.getAppCategory)
++ * reports to Chrome as CATEGORY_GAME.
++ */
++public class GameCategoryPreferenceController extends TogglePreferenceController {
++
++    public static final String KEY = "fydroid_is_game";
++
++    // Must match ArcAppService.GAME_PKGS_SECURE_KEY in the arc-services bridge.
++    static final String SECURE_KEY = "fydroid_game_packages";
++    private static final String SEP = ":";
++
++    private String mPackageName;
++
++    public GameCategoryPreferenceController(Context context) {
++        super(context, KEY);
++    }
++
++    public GameCategoryPreferenceController setPackageName(String packageName) {
++        mPackageName = packageName;
++        return this;
++    }
++
++    @Override
++    public int getAvailabilityStatus() {
++        return TextUtils.isEmpty(mPackageName) ? CONDITIONALLY_UNAVAILABLE : AVAILABLE;
++    }
++
++    @Override
++    public boolean isChecked() {
++        return readGamePackages(mContext).contains(mPackageName);
++    }
++
++    @Override
++    public boolean setChecked(boolean isChecked) {
++        if (TextUtils.isEmpty(mPackageName)) {
++            return false;
++        }
++        final Set<String> set = readGamePackages(mContext);
++        final boolean changed = isChecked ? set.add(mPackageName) : set.remove(mPackageName);
++        if (changed) {
++            Settings.Secure.putString(mContext.getContentResolver(), SECURE_KEY,
++                    TextUtils.join(SEP, set));
++        }
++        return true;
++    }
++
++    @Override
++    public int getSliceHighlightMenuRes() {
++        return R.string.menu_key_apps;
++    }
++
++    private static Set<String> readGamePackages(Context context) {
++        final Set<String> set = new LinkedHashSet<>();
++        final String csv = Settings.Secure.getString(
++                context.getContentResolver(), SECURE_KEY);
++        if (!TextUtils.isEmpty(csv)) {
++            for (String p : Arrays.asList(csv.split(SEP))) {
++                if (!p.isEmpty()) {
++                    set.add(p);
++                }
++            }
++        }
++        return set;
++    }
++}
+-- 
+2.43.0
+

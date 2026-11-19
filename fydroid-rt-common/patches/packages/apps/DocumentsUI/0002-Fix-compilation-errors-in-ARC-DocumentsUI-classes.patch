@@ -1,0 +1,71 @@
+From b18a4c00c032dab11bd638e1555334c016e56a51 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 14 Apr 2026 16:50:57 +0800
+Subject: [PATCH 2/6] Fix compilation errors in ARC DocumentsUI classes
+
+- Pass String directly to ContentProviderHandler methods (not Uri)
+- Use ArcBridgeSupport.getInstance().runOnMojoThread() (instance method)
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I9949925c1b70a25c54ff4b17f1fd2ef2b468e362
+---
+ .../chromium/arc/file_system/FileSystemInstanceImpl.java  | 8 ++++----
+ src/org/chromium/arc/file_system/MojoAsyncTask.java       | 2 +-
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java b/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java
+index cc3ff4b68..25b3f0a2a 100644
+--- a/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java
++++ b/src/org/chromium/arc/file_system/FileSystemInstanceImpl.java
+@@ -168,7 +168,7 @@ class FileSystemInstanceImpl implements FileSystemInstance {
+     @Override
+     public void getFileSize(String url, GetFileSizeResponse callback) {
+         try {
+-            callback.call(mContentProviderHandler.getFileSize(Uri.parse(url)));
++            callback.call(mContentProviderHandler.getFileSize(url));
+         } catch (Throwable t) {
+             try {
+                 callback.call(-1L);
+@@ -182,7 +182,7 @@ class FileSystemInstanceImpl implements FileSystemInstance {
+     @Override
+     public void getMimeType(String url, GetMimeTypeResponse callback) {
+         try {
+-            callback.call(mContentProviderHandler.getMimeType(Uri.parse(url)));
++            callback.call(mContentProviderHandler.getMimeType(url));
+         } catch (Throwable t) {
+             try {
+                 callback.call(null);
+@@ -249,7 +249,7 @@ class FileSystemInstanceImpl implements FileSystemInstance {
+                 try {
+                     String urlStr = url.url;
+                     ParcelFileDescriptor pfd = mContentProviderHandler.openFileToWrite(
+-                            Uri.parse(urlStr));
++                            urlStr);
+                     if (pfd == null) {
+                         Log.e(TAG, "Failed to obtain fd for URL: " + urlStr);
+                         return null;
+@@ -289,7 +289,7 @@ class FileSystemInstanceImpl implements FileSystemInstance {
+                 try {
+                     String urlStr = url.url;
+                     ParcelFileDescriptor pfd = mContentProviderHandler.openFileToRead(
+-                            Uri.parse(urlStr));
++                            urlStr);
+                     if (pfd == null) {
+                         Log.e(TAG, "Failed to obtain fd for URL: " + urlStr);
+                         return null;
+diff --git a/src/org/chromium/arc/file_system/MojoAsyncTask.java b/src/org/chromium/arc/file_system/MojoAsyncTask.java
+index 8f4af502d..7b57e99cd 100644
+--- a/src/org/chromium/arc/file_system/MojoAsyncTask.java
++++ b/src/org/chromium/arc/file_system/MojoAsyncTask.java
+@@ -19,7 +19,7 @@ public abstract class MojoAsyncTask<Result> {
+         sExecutor.execute(() -> {
+             try {
+                 Result result = doInBackground();
+-                ArcBridgeSupport.runOnMojoThread(() -> onPostExecute(result));
++                ArcBridgeSupport.getInstance().runOnMojoThread(() -> onPostExecute(result));
+             } catch (Exception e) {
+                 Log.e(TAG, "Error in MojoAsyncTask", e);
+             }
+-- 
+2.43.0
+

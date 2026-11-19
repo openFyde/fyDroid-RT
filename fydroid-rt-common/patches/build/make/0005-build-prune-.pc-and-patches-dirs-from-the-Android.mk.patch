@@ -1,0 +1,41 @@
+From fcf4a2af8df71a36bed08d1a30d6d2e74e922611 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 11 Jun 2026 12:39:38 +0800
+Subject: [PATCH 5/7] build: prune .pc and patches dirs from the Android.mk
+ scan
+
+external/mesa3d is managed with quilt; its .pc/ working dir holds pre-patch backup
+copies of files (including a stale android/Android.mk) and the patches/ dir holds the
+patch series. kati's makefile scan picked up the backup Android.mk and failed:
+
+  external/mesa3d/.pc/9998-android-vulkan-cheets.patch/android/Android.mk:125:
+  error: .../mesa3d_cross.mk: No such file or directory
+
+Add .pc and patches to FIND_LEAVES_EXCLUDES so findleaves never descends into a
+quilt working dir.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I41bdb8d41dc811ad566429a0d831a4a022d5af44
+---
+ core/config.mk | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/core/config.mk b/core/config.mk
+index 7f0e98ef59..b7442a73a0 100644
+--- a/core/config.mk
++++ b/core/config.mk
+@@ -354,7 +354,10 @@ include $(BUILD_SYSTEM)/envsetup.mk
+ 
+ # Pruned directory options used when using findleaves.py
+ # See envsetup.mk for a description of SCAN_EXCLUDE_DIRS
+-FIND_LEAVES_EXCLUDES := $(addprefix --prune=, $(SCAN_EXCLUDE_DIRS) .repo .git)
++# .pc and patches are quilt working dirs (e.g. external/mesa3d); they hold
++# pre-patch backup copies of files (including Android.mk) that must not be
++# scanned as real build makefiles.
++FIND_LEAVES_EXCLUDES := $(addprefix --prune=, $(SCAN_EXCLUDE_DIRS) .repo .git .pc patches)
+ 
+ # The build system exposes several variables for where to find the kernel
+ # headers:
+-- 
+2.43.0
+

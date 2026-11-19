@@ -1,0 +1,227 @@
+From 8cb4fc28867d43808357affe68bb44e59cce585f Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 16:01:00 +0800
+Subject: [PATCH 33/75] frameworks/base: re-express 0004's deferred files on
+ AOSP-13
+
+The "Apply ARC++ services.jar changes" patch (0004) had 4 files deferred
+during the initial port; re-expressed here against 13. Builds clean
+(m services framework-minus-apex, EXIT 0).
+
+- WindowState.java -> core/java/android/view/WindowLayout.java: 13 moved
+  the fitToDisplay computation out of WindowState.applyGravityAndUpdateFrame
+  (removed) into the shared WindowLayout.computeFrames. Re-sited the
+  ARC-notification exclusion (type 2017 / org.chromium.arc.ArcNotificationService)
+  into its first clause (now !inMultiWindowMode), using attrs.* not mAttrs.*.
+
+- SystemServer.java: ARC service-class constants; cheets ArcPowerManagerService
+  swap (safe: mPowerManagerService is only assigned, never dereferenced in 13);
+  early ARC services (SystemHealth/AbiMigration); dev-mode
+  ArcPersistentDataBlockService; Wifi "&& !isArc" gate + ArcNetworkService;
+  cheets fuse/obb mounters. The !cheets mPowerManagerService.systemReady()
+  deferral is OMITTED -- that call no longer exists in 13 (PMS readiness moved
+  to SystemService boot phases). ARC classes are reflection-loaded via
+  startService(String), so no compile dependency.
+
+- WebViewUpdateServiceImpl.java: isLazyWebViewZygoteInitEnabled()
+  (ro.boot.arc.web_view_zygote.lazy_init) guards the eager startZygoteWhenReady.
+
+- BackgroundDexOptService.java: re-homed the dev.arc.boot_dexopt_complete
+  dev-signal into markPostBootUpdateCompleted (fires only for JOB_POST_BOOT_UPDATE).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Icdd2475d9a87100a9cfc7ec993f63eec34cfffae
+---
+ core/java/android/view/WindowLayout.java      |  7 ++-
+ .../server/pm/BackgroundDexOptService.java    |  4 ++
+ .../webkit/WebViewUpdateServiceImpl.java      | 10 ++-
+ .../java/com/android/server/SystemServer.java | 63 ++++++++++++++++++-
+ 4 files changed, 80 insertions(+), 4 deletions(-)
+
+diff --git a/core/java/android/view/WindowLayout.java b/core/java/android/view/WindowLayout.java
+index 5ed9d2f90a72..c7355b8ac4d8 100644
+--- a/core/java/android/view/WindowLayout.java
++++ b/core/java/android/view/WindowLayout.java
+@@ -260,7 +260,12 @@ public class WindowLayout {
+         // FLAG_LAYOUT_NO_LIMITS is set. This is so we place Popups, dialogs, and similar windows on
+         // screen, but SurfaceViews want to be always at a specific location so we don't fit it to
+         // the display.
+-        final boolean fitToDisplay = !inMultiWindowMode
++        // ARC++: notification windows (TYPE_STATUS_BAR_SUB_PANEL == 2017, from
++        // org.chromium.arc.ArcNotificationService) are positioned by Chrome OS and
++        // must not be fit to the display, so exclude them from the first clause.
++        final boolean fitToDisplay = (!inMultiWindowMode
++                && !(attrs.type == 2017 && attrs.packageName != null
++                    && attrs.packageName.startsWith("org.chromium.arc.ArcNotificationService")))
+                 || ((attrs.type != TYPE_BASE_APPLICATION) && !noLimits);
+ 
+         // Set mFrame
+diff --git a/services/core/java/com/android/server/pm/BackgroundDexOptService.java b/services/core/java/com/android/server/pm/BackgroundDexOptService.java
+index 915a13f9055c..99b2bae1c3dd 100644
+--- a/services/core/java/com/android/server/pm/BackgroundDexOptService.java
++++ b/services/core/java/com/android/server/pm/BackgroundDexOptService.java
+@@ -928,6 +928,10 @@ public final class BackgroundDexOptService {
+         }
+         // Safe to do this outside lock.
+         mInjector.getJobScheduler().cancel(JOB_POST_BOOT_UPDATE);
++        // ARC++ dev-mode signal that boot-time dexopt has finished.
++        if (SystemProperties.getInt("ro.boot.dev_mode", 0) == 1) {
++            SystemProperties.set("dev.arc.boot_dexopt_complete", "1");
++        }
+     }
+ 
+     private void notifyPinService(ArraySet<String> updatedPackages) {
+diff --git a/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl.java b/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl.java
+index 43d62aaa120a..5e4273168d53 100644
+--- a/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl.java
++++ b/services/core/java/com/android/server/webkit/WebViewUpdateServiceImpl.java
+@@ -21,6 +21,7 @@ import android.content.pm.PackageInfo;
+ import android.content.pm.PackageManager.NameNotFoundException;
+ import android.content.pm.Signature;
+ import android.os.AsyncTask;
++import android.os.SystemProperties;
+ import android.os.Trace;
+ import android.os.UserHandle;
+ import android.util.Slog;
+@@ -88,6 +89,12 @@ class WebViewUpdateServiceImpl {
+     private static final int MULTIPROCESS_SETTING_ON_VALUE = Integer.MAX_VALUE;
+     private static final int MULTIPROCESS_SETTING_OFF_VALUE = Integer.MIN_VALUE;
+ 
++    private static final String ARC_LAZY_INIT_PROPERTY = "ro.boot.arc.web_view_zygote.lazy_init";
++
++    private static boolean isLazyWebViewZygoteInitEnabled() {
++        return SystemProperties.getInt(ARC_LAZY_INIT_PROPERTY, 0) == 1;
++    }
++
+     private final SystemInterface mSystemInterface;
+     private final Context mContext;
+ 
+@@ -359,7 +366,8 @@ class WebViewUpdateServiceImpl {
+ 
+         // Once we've notified the system that the provider has changed and started RELRO creation,
+         // try to restart the zygote so that it will be ready when apps use it.
+-        if (isMultiProcessEnabled()) {
++        // ARC++: skip eager start when lazy webview-zygote init is enabled.
++        if (isMultiProcessEnabled() && !isLazyWebViewZygoteInitEnabled()) {
+             AsyncTask.THREAD_POOL_EXECUTOR.execute(this::startZygoteWhenReady);
+         }
+     }
+diff --git a/services/java/com/android/server/SystemServer.java b/services/java/com/android/server/SystemServer.java
+index 8f8e4c2345ed..bebef83e632d 100644
+--- a/services/java/com/android/server/SystemServer.java
++++ b/services/java/com/android/server/SystemServer.java
+@@ -423,6 +423,24 @@ public final class SystemServer implements Dumpable {
+ 
+     private static final String TETHERING_CONNECTOR_CLASS = "android.net.ITetheringConnector";
+ 
++    // ARC++ services (from the Chrome OS Android container runtime); loaded by
++    // class name via SystemServiceManager.startService(String) so they need no
++    // compile-time dependency (they live in the arc-services system-server jar).
++    private static final String ARC_ABI_MIGRATION_SERVICE_CLASS =
++            "com.android.server.arc.abimigration.ArcAbiMigrationService";
++    private static final String ARC_APP_FUSE_MOUNTER_SERVICE_CLASS =
++            "com.android.server.arc.mounter.ArcAppFuseMounterService$LifeCycle";
++    private static final String ARC_NETWORK_SERVICE_CLASS =
++            "com.android.server.arc.net.ArcNetworkService";
++    private static final String ARC_OBB_MOUNTER_SERVICE_CLASS =
++            "com.android.server.arc.mounter.ArcObbMounterService$LifeCycle";
++    private static final String ARC_PERSISTENT_DATA_BLOCK_SERVICE_CLASS =
++            "com.android.server.arc.persistent_data_block.ArcPersistentDataBlockService";
++    private static final String ARC_POWER_MANAGER_SERVICE_CLASS =
++            "com.android.server.power.ArcPowerManagerService";
++    private static final String ARC_SYSTEM_HEALTH_SERVICE =
++            "com.android.server.arc.health.ArcSystemHealthService";
++
+     private static final String PERSISTENT_DATA_BLOCK_PROP = "ro.frp.pst";
+ 
+     private static final String UNCRYPT_PACKAGE_FILE = "/cache/recovery/uncrypt_file";
+@@ -1142,7 +1160,13 @@ public final class SystemServer implements Dumpable {
+         // to handle incoming binder calls immediately (including being able to verify
+         // the permissions for those calls).
+         t.traceBegin("StartPowerManager");
+-        mPowerManagerService = mSystemServiceManager.startService(PowerManagerService.class);
++        if (Build.HARDWARE.equals("cheets")) {
++            // ARC++ container: ArcPowerManagerService forwards power state to/from
++            // Chrome OS instead of driving the display/suspend itself.
++            mSystemServiceManager.startService(ARC_POWER_MANAGER_SERVICE_CLASS);
++        } else {
++            mPowerManagerService = mSystemServiceManager.startService(PowerManagerService.class);
++        }
+         t.traceEnd();
+ 
+         t.traceBegin("StartThermalManager");
+@@ -1271,6 +1295,16 @@ public final class SystemServer implements Dumpable {
+             }
+         }
+ 
++        if (Build.HARDWARE.equals("cheets")) {
++            // ARC++ early services.
++            t.traceBegin("StartArcSystemHealthService");
++            mSystemServiceManager.startService(ARC_SYSTEM_HEALTH_SERVICE);
++            t.traceEnd();
++            t.traceBegin("StartAbiMigration");
++            mSystemServiceManager.startService(ARC_ABI_MIGRATION_SERVICE_CLASS);
++            t.traceEnd();
++        }
++
+         t.traceBegin("StartUserManagerService");
+         mSystemServiceManager.startService(UserManagerService.LifeCycle.class);
+         t.traceEnd();
+@@ -1798,6 +1832,10 @@ public final class SystemServer implements Dumpable {
+                 t.traceEnd();
+             }
+ 
++            if (SystemProperties.getInt("ro.boot.dev_mode", 0) == 1) {
++                // ARC++ dev image: persistent-data-block backed by Chrome OS.
++                mSystemServiceManager.startService(ARC_PERSISTENT_DATA_BLOCK_SERVICE_CLASS);
++            }
+             t.traceBegin("StartTestHarnessMode");
+             mSystemServiceManager.startService(TestHarnessModeService.class);
+             t.traceEnd();
+@@ -1945,7 +1983,7 @@ public final class SystemServer implements Dumpable {
+             t.traceEnd();
+ 
+             if (context.getPackageManager().hasSystemFeature(
+-                    PackageManager.FEATURE_WIFI)) {
++                    PackageManager.FEATURE_WIFI) && !isArc) {
+                 // Wifi Service must be started first for wifi-related services.
+                 t.traceBegin("StartWifi");
+                 mSystemServiceManager.startServiceFromJar(
+@@ -1957,6 +1995,14 @@ public final class SystemServer implements Dumpable {
+                 t.traceEnd();
+             }
+ 
++            if (isArc) {
++                // ARC++ Wifi state is bridged from Chrome OS via ArcNetworkService
++                // (ArcWifiService), not the platform Wifi stack above.
++                t.traceBegin("StartArcNetworking");
++                mSystemServiceManager.startService(ARC_NETWORK_SERVICE_CLASS);
++                t.traceEnd();
++            }
++
+             if (context.getPackageManager().hasSystemFeature(
+                     PackageManager.FEATURE_WIFI_RTT)) {
+                 t.traceBegin("StartRttService");
+@@ -2700,6 +2746,19 @@ public final class SystemServer implements Dumpable {
+             systemTheme.rebase();
+         }
+ 
++        // ARC++ fuse/obb mounter services (app-fuse + OBB backed by Chrome OS).
++        // The AOSP-11 patch also deferred mPowerManagerService.systemReady() here
++        // for !cheets; that call no longer exists in 13 (PMS readiness moved to
++        // boot phases), so only the mounter starts are ported.
++        if (Build.HARDWARE.equals("cheets")) {
++            t.traceBegin("StartArcAppFuseMounterService");
++            mSystemServiceManager.startService(ARC_APP_FUSE_MOUNTER_SERVICE_CLASS);
++            t.traceEnd();
++            t.traceBegin("StartArcObbMounterService");
++            mSystemServiceManager.startService(ARC_OBB_MOUNTER_SERVICE_CLASS);
++            t.traceEnd();
++        }
++
+         // Permission policy service
+         t.traceBegin("StartPermissionPolicyService");
+         mSystemServiceManager.startService(PermissionPolicyService.class);
+-- 
+2.43.0
+

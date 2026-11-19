@@ -1,0 +1,39 @@
+From c262f7170e23bb8fbd9c2bb4e8efd20b6e82cc98 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 24 Apr 2026 12:28:00 +0800
+Subject: [PATCH 1/2] Add vendor hw/egl lib paths to legacy default namespace
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In non-treblelized (legacy) mode, the default namespace includes
+/vendor/${LIB} but not /vendor/${LIB}/hw or /vendor/${LIB}/egl.
+This prevents loading HAL libraries like vulkan.cheets.so and
+libEGL_mesa.so that live in those subdirectories.
+
+The sphal namespace already includes these paths (935f98a), but in
+legacy mode there is no sphal namespace — everything loads through
+the default namespace. Add the hw and egl subdirectories to match.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ibe43880088556748a0c24c7dc8c1312f4e6a9caf
+---
+ contents/namespace/systemdefault.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/contents/namespace/systemdefault.cc b/contents/namespace/systemdefault.cc
+index 0d5c42b..7ef0de5 100644
+--- a/contents/namespace/systemdefault.cc
++++ b/contents/namespace/systemdefault.cc
+@@ -103,6 +103,8 @@ Namespace BuildSystemDefaultNamespace([[maybe_unused]] const Context& ctx) {
+   }
+   if (!is_fully_treblelized) {
+     ns.AddSearchPath("/vendor/${LIB}");
++    ns.AddSearchPath("/vendor/${LIB}/hw");
++    ns.AddSearchPath("/vendor/${LIB}/egl");
+     ns.AddSearchPath("/odm/${LIB}");
+   }
+ 
+-- 
+2.43.0
+

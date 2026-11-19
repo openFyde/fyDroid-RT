@@ -1,0 +1,140 @@
+From fbeb92d8cba34cd882bf8fa20065a2a426c7618b Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 9 Sep 2026 16:50:28 +0800
+Subject: [PATCH 64/75] am: keep the ANR dialog's Settings and PackageManager
+ lookups off mProcLock
+
+handleShowAnrUi() read Settings.Secure (a binder call into the settings provider
+process), called canShowErrorDialogs() (which takes the ATM global lock), and
+built AppNotRespondingDialog -- whose constructor makes two PackageManager calls
+to load the app labels -- all while holding mProcLock. Every other holder of
+that lock therefore stalled for the duration of an ANR: measured on an ARC
+board, MojoThread (the ARC<->Chrome bridge) blocked 3139 ms and a binder thread
+6911 ms, which is a large part of why the whole Android side freezes during an
+ANR rather than just the wedged app.
+
+Resolve all of it before taking the lock and pass the labels in through
+AppNotRespondingDialog.Data. The dialog construction itself stays inside the
+lock, since every ErrorDialogController method is @GuardedBy("mProcLock"); the
+constructor falls back to its own lookups when a caller has not pre-resolved,
+so other paths are unchanged.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I45b96b0ba0420201b36191849ab74e2477fd5c8c
+---
+ .../java/com/android/server/am/AppErrors.java | 40 +++++++++++++++++--
+ .../server/am/AppNotRespondingDialog.java     | 24 +++++++++--
+ 2 files changed, 56 insertions(+), 8 deletions(-)
+
+diff --git a/services/core/java/com/android/server/am/AppErrors.java b/services/core/java/com/android/server/am/AppErrors.java
+index 0e08243364ef..6b6bc2ca4429 100644
+--- a/services/core/java/com/android/server/am/AppErrors.java
++++ b/services/core/java/com/android/server/am/AppErrors.java
+@@ -38,6 +38,7 @@ import android.app.usage.UsageStatsManager;
+ import android.content.ActivityNotFoundException;
+ import android.content.Context;
+ import android.content.Intent;
++import android.content.pm.PackageManager;
+ import android.content.pm.VersionedPackage;
+ import android.net.Uri;
+ import android.os.Binder;
+@@ -1079,6 +1080,40 @@ class AppErrors {
+             Slog.e(TAG, "handleShowAnrUi: proc is null");
+             return;
+         }
++        // fydroid: resolve these BEFORE taking mProcLock.
++        //
++        // Settings.Secure.getIntForUser() is a binder call into the settings
++        // provider process, and canShowErrorDialogs() takes the ATM global lock.
++        // Stock AOSP makes both while holding mProcLock, so for the whole of an
++        // ANR every other holder of that lock is stalled behind them -- measured
++        // on device, MojoThread (the ARC<->Chrome bridge) blocked 3139 ms and a
++        // binder thread 6911 ms behind handleShowAnrUi. That is a large part of
++        // why the entire Android side, not just the wedged app, freezes during an
++        // ANR. Neither call reads per-process state, so neither needs the lock.
++        //
++        // The dialog construction itself stays inside the lock: every
++        // ErrorDialogController method is @GuardedBy("mProcLock").
++        final boolean showBackground = Settings.Secure.getIntForUser(
++                mContext.getContentResolver(), Settings.Secure.ANR_SHOW_BACKGROUND, 0,
++                mService.mUserController.getCurrentUserId()) != 0;
++        final boolean canShowErrorDialogs = mService.mAtmInternal.canShowErrorDialogs();
++
++        // Same reasoning: these are PackageManager binder calls, and building the
++        // dialog inside mProcLock made them part of the critical section. Resolve
++        // them here so the locked region only assembles an already-built string.
++        try {
++            final PackageManager pm = mContext.getPackageManager();
++            if (data.aInfo != null) {
++                data.preloadedActivityLabel = data.aInfo.loadLabel(pm);
++            }
++            if (proc.info != null) {
++                data.preloadedAppLabel = pm.getApplicationLabel(proc.info);
++            }
++        } catch (RuntimeException e) {
++            // Never let label lookup stop the dialog: the constructor falls back.
++            Slog.w(TAG, "Could not pre-resolve ANR dialog labels for " + proc, e);
++        }
++
+         synchronized (mProcLock) {
+             final ProcessErrorStateRecord errState = proc.mErrorState;
+             // Tapping "Wait" clears the not-responding flag and then asks for this
+@@ -1104,10 +1139,7 @@ class AppErrors {
+                 return;
+             }
+ 
+-            boolean showBackground = Settings.Secure.getIntForUser(mContext.getContentResolver(),
+-                    Settings.Secure.ANR_SHOW_BACKGROUND, 0,
+-                    mService.mUserController.getCurrentUserId()) != 0;
+-            if (mService.mAtmInternal.canShowErrorDialogs() || showBackground) {
++            if (canShowErrorDialogs || showBackground) {
+                 AnrController anrController = errState.getDialogController().getAnrController();
+                 if (anrController == null) {
+                     errState.getDialogController().showAnrDialogs(data);
+diff --git a/services/core/java/com/android/server/am/AppNotRespondingDialog.java b/services/core/java/com/android/server/am/AppNotRespondingDialog.java
+index 5fe842752e81..cfb57d1532c8 100644
+--- a/services/core/java/com/android/server/am/AppNotRespondingDialog.java
++++ b/services/core/java/com/android/server/am/AppNotRespondingDialog.java
+@@ -61,12 +61,18 @@ final class AppNotRespondingDialog extends BaseErrorDialog implements View.OnCli
+         setCancelable(false);
+ 
+         int resid;
+-        CharSequence name1 = data.aInfo != null
+-                ? data.aInfo.loadLabel(context.getPackageManager())
+-                : null;
++        // Prefer labels resolved off the lock (see Data) and only hit PackageManager
++        // here when this dialog was built by a caller that did not pre-resolve them.
++        CharSequence name1 = data.preloadedActivityLabel != null
++                ? data.preloadedActivityLabel
++                : (data.aInfo != null
++                        ? data.aInfo.loadLabel(context.getPackageManager())
++                        : null);
+         CharSequence name2 = null;
+         if (mProc.getPkgList().size() == 1
+-                && (name2 = context.getPackageManager().getApplicationLabel(mProc.info)) != null) {
++                && (name2 = data.preloadedAppLabel != null
++                        ? data.preloadedAppLabel
++                        : context.getPackageManager().getApplicationLabel(mProc.info)) != null) {
+             if (name1 != null) {
+                 resid = com.android.internal.R.string.anr_activity_application;
+             } else {
+@@ -197,6 +203,16 @@ final class AppNotRespondingDialog extends BaseErrorDialog implements View.OnCli
+         final ApplicationInfo aInfo;
+         final boolean aboveSystem;
+ 
++        /*
++         * fydroid: labels resolved by AppErrors.handleShowAnrUi() BEFORE it takes
++         * mProcLock. Resolving them costs two PackageManager binder calls, and doing
++         * that inside the lock stalled every other holder for seconds during an ANR.
++         * Left null by any caller that does not pre-resolve; the constructor then
++         * falls back to looking them up itself, so behaviour is unchanged.
++         */
++        CharSequence preloadedActivityLabel;
++        CharSequence preloadedAppLabel;
++
+         Data(ProcessRecord proc, ApplicationInfo aInfo, boolean aboveSystem) {
+             this.proc = proc;
+             this.aInfo = aInfo;
+-- 
+2.43.0
+

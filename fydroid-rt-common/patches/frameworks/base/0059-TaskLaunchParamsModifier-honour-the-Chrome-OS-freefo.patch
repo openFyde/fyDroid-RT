@@ -1,0 +1,198 @@
+From 9a0641ffe1aa3c313526cccfbc69fc5453535123 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 3 Sep 2026 13:55:29 +0800
+Subject: [PATCH 59/75] TaskLaunchParamsModifier: honour the Chrome OS freeform
+ window hints
+
+Apps declare WindowManagerPreference:FreeformWindowSize (phone|tablet|maximize|N%)
+and FreeformWindowOrientation (portrait|landscape) for ARC. Upstream consumes
+them Chrome-side; AOSP never reads them, so in the container they had no effect.
+
+Play Store asks for "80%"/"landscape" and was launched portrait at the AOSP
+phone-portrait default -- which also made every later maximize an orientation
+flip on top of a resize, the most expensive config delta for an activity that
+declares no configChanges (it is relaunched either way, but from the wrong shape).
+
+An unknown value falls back to stock sizing rather than guessing. Note the hints
+only apply when LaunchParamsPersister has no entry for the activity: a remembered
+size the user chose still wins.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I393ec5c652ac78fa2c43dcd3df1923c1a4a707e7
+---
+ .../server/wm/TaskLaunchParamsModifier.java   | 138 +++++++++++++++++-
+ 1 file changed, 135 insertions(+), 3 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index ed0dc3fbcc2e..eedd6a426ca9 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -47,6 +47,7 @@ import android.app.WindowConfiguration;
+ import android.content.pm.ActivityInfo;
+ import android.content.res.Configuration;
+ import android.graphics.Rect;
++import android.os.Bundle;
+ import android.util.Size;
+ import android.util.Slog;
+ import android.view.Gravity;
+@@ -965,7 +966,21 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+             return;
+         }
+ 
+-        final int orientation = resolveOrientation(root, displayArea, inOutBounds);
++        int orientation = resolveOrientation(root, displayArea, inOutBounds);
++        // fydroid-rt: honour the Chrome OS window-management hints an app declares for
++        // ARC. Upstream ARC++ reads these Chrome-side; nothing in AOSP looks at them, so
++        // without this an app that asks for a landscape window is launched at whatever
++        // orientation its screenOrientation/default bounds imply. Play Store asks for
++        // "80%"/"landscape" and was being launched portrait at the AOSP phone default,
++        // which also made every later maximize an orientation flip on top of a resize --
++        // the most expensive config delta there is for an activity that does not declare
++        // configChanges (it is relaunched either way, but from the wrong shape).
++        final int hintedOrientation = arcFreeformOrientationHint(root);
++        if (hintedOrientation != SCREEN_ORIENTATION_UNSPECIFIED) {
++            orientation = hintedOrientation;
++            if (DEBUG) appendLog("arc-freeform-orientation-hint="
++                    + ActivityInfo.screenOrientationToString(orientation));
++        }
+         if (orientation != SCREEN_ORIENTATION_PORTRAIT
+                 && orientation != SCREEN_ORIENTATION_LANDSCAPE) {
+             throw new IllegalStateException(
+@@ -975,8 +990,13 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+ 
+         // First we get the default size we want.
+         displayArea.getStableRect(mTmpStableBounds);
+-        final Size defaultSize = LaunchParamsUtil.getDefaultFreeformSize(root, displayArea,
+-                layout, orientation, mTmpStableBounds);
++        Size defaultSize = arcFreeformSizeHint(root, orientation, mTmpStableBounds);
++        if (defaultSize != null) {
++            if (DEBUG) appendLog("arc-freeform-size-hint=" + defaultSize);
++        } else {
++            defaultSize = LaunchParamsUtil.getDefaultFreeformSize(root, displayArea,
++                    layout, orientation, mTmpStableBounds);
++        }
+         mTmpBounds.set(0, 0, defaultSize.getWidth(), defaultSize.getHeight());
+         if (hasInitialBounds || sizeMatches(inOutBounds, mTmpBounds)) {
+             // We're here because either input parameters specified initial bounds, or the suggested
+@@ -1019,6 +1039,118 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+         }
+     }
+ 
++    // --- Chrome OS window-management hints (fydroid-rt) -----------------------
++    //
++    // Declared by apps as <meta-data> on the launched component, and documented by
++    // Google for ARC++:
++    //
++    //   WindowManagerPreference:FreeformWindowSize        = phone|tablet|maximize|N%
++    //   WindowManagerPreference:FreeformWindowOrientation = portrait|landscape
++    //
++    // Upstream these are consumed Chrome-side; AOSP itself never reads them (grep is
++    // empty), so in the container they have to be applied here or not at all.
++    private static final String ARC_META_FREEFORM_SIZE =
++            "WindowManagerPreference:FreeformWindowSize";
++    private static final String ARC_META_FREEFORM_ORIENTATION =
++            "WindowManagerPreference:FreeformWindowOrientation";
++    // "tablet": a tablet-shaped window. Same numbers as the AOSP landscape freeform
++    // default, which is private to LaunchParamsUtil and so cannot be referenced.
++    private static final int ARC_TABLET_FREEFORM_SHORT_DP = 600;
++    private static final int ARC_TABLET_FREEFORM_LONG_DP = 1064;
++
++    /**
++     * Reads a hint off the activity, falling back to the application. Returns null when
++     * absent, which every caller treats as "keep stock behaviour".
++     *
++     * The activity bundle is checked first so an activity-alias can override what the
++     * application declares -- which is exactly how Play Store ships them: the hints sit
++     * on the com.android.vending.AssetBrowserActivity alias, not on its target.
++     */
++    @Nullable
++    private static String arcWindowHint(@NonNull ActivityRecord activity, String key) {
++        if (!android.os.Build.IS_CONTAINER || activity.info == null) return null;
++        final Bundle activityMeta = activity.info.metaData;
++        if (activityMeta != null) {
++            final Object v = activityMeta.get(key);
++            if (v != null) return v.toString().trim();
++        }
++        if (activity.info.applicationInfo != null
++                && activity.info.applicationInfo.metaData != null) {
++            final Object v = activity.info.applicationInfo.metaData.get(key);
++            if (v != null) return v.toString().trim();
++        }
++        return null;
++    }
++
++    /** SCREEN_ORIENTATION_PORTRAIT / _LANDSCAPE, or _UNSPECIFIED when not hinted. */
++    private static int arcFreeformOrientationHint(@NonNull ActivityRecord activity) {
++        final String hint = arcWindowHint(activity, ARC_META_FREEFORM_ORIENTATION);
++        if (hint == null) return SCREEN_ORIENTATION_UNSPECIFIED;
++        if ("portrait".equalsIgnoreCase(hint)) return SCREEN_ORIENTATION_PORTRAIT;
++        if ("landscape".equalsIgnoreCase(hint)) return SCREEN_ORIENTATION_LANDSCAPE;
++        Slog.w(TAG, "Unknown " + ARC_META_FREEFORM_ORIENTATION + "=" + hint
++                + " for " + activity.mActivityComponent);
++        return SCREEN_ORIENTATION_UNSPECIFIED;
++    }
++
++    /**
++     * The launch size the app asked for, in display pixels, or null when it did not ask
++     * (or asked for something unparseable -- an unknown value must fall back to stock
++     * sizing rather than guess).
++     *
++     * The result is oriented to {@code orientation}: the hint names a size, the
++     * orientation hint names which way round it goes, and the two are independent.
++     */
++    @Nullable
++    private static Size arcFreeformSizeHint(@NonNull ActivityRecord activity, int orientation,
++            @NonNull Rect stableBounds) {
++        final String hint = arcWindowHint(activity, ARC_META_FREEFORM_SIZE);
++        if (hint == null) return null;
++
++        final int stableShort = Math.min(stableBounds.width(), stableBounds.height());
++        final int stableLong = Math.max(stableBounds.width(), stableBounds.height());
++        if (stableShort <= 0) return null;
++        final float density = (float) activity.getConfiguration().densityDpi / DENSITY_DEFAULT;
++
++        int shortSide;
++        int longSide;
++        if (hint.endsWith("%")) {
++            // A percentage of the display, which is what Play Store ships ("80%").
++            final float pct;
++            try {
++                pct = Float.parseFloat(hint.substring(0, hint.length() - 1));
++            } catch (NumberFormatException e) {
++                Slog.w(TAG, "Bad " + ARC_META_FREEFORM_SIZE + "=" + hint
++                        + " for " + activity.mActivityComponent);
++                return null;
++            }
++            if (!(pct > 0f) || pct > 100f) return null;
++            shortSide = Math.round(stableShort * pct / 100f);
++            longSide = Math.round(stableLong * pct / 100f);
++        } else if ("maximize".equalsIgnoreCase(hint)) {
++            shortSide = stableShort;
++            longSide = stableLong;
++        } else if ("phone".equalsIgnoreCase(hint)) {
++            shortSide = Math.round(LaunchParamsUtil.DEFAULT_PORTRAIT_FREEFORM_WIDTH_DP * density);
++            longSide = Math.round(LaunchParamsUtil.DEFAULT_PORTRAIT_FREEFORM_HEIGHT_DP * density);
++        } else if ("tablet".equalsIgnoreCase(hint)) {
++            shortSide = Math.round(ARC_TABLET_FREEFORM_SHORT_DP * density);
++            longSide = Math.round(ARC_TABLET_FREEFORM_LONG_DP * density);
++        } else {
++            Slog.w(TAG, "Unknown " + ARC_META_FREEFORM_SIZE + "=" + hint
++                    + " for " + activity.mActivityComponent);
++            return null;
++        }
++
++        // Never hand back something larger than the display or degenerate.
++        shortSide = Math.max(1, Math.min(shortSide, stableShort));
++        longSide = Math.max(1, Math.min(longSide, stableLong));
++
++        return (orientation == SCREEN_ORIENTATION_LANDSCAPE)
++                ? new Size(longSide, shortSide)
++                : new Size(shortSide, longSide);
++    }
++
+     private int resolveOrientation(@NonNull ActivityRecord root,
+             @NonNull TaskDisplayArea displayArea, @NonNull Rect bounds) {
+         int orientation = resolveOrientation(root);
+-- 
+2.43.0
+

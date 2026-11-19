@@ -1,0 +1,66 @@
+From 643f73c1a8c3e93638b488762bf85a34c0e7b435 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 12:28:33 +0800
+Subject: [PATCH 1/7] build: wire BOARD_SYSTEMIMAGE_UID/GID_MAP through to
+ mkuserimg
+
+Plumb UID/GID mapping from BoardConfig.mk through to mkuserimg_mke2fs,
+enabling ext4 images with remapped UIDs/GIDs for user-namespaced
+containers (ARC++). Ported from the AOSP 11 fydroid-rt patch.
+
+AOSP 13 placement differs from the AOSP 11 patch: generate-image-prop-
+dictionary moved the system_selinux_fc / reserved-size anchors into the
+new add-common-ro-flags-to-image-props macro, so system_uid_map/_gid_map
+are emitted in the system filter block (beside system_headroom). In
+build_image.py, ImagePropFromGlobalDict is now table-driven; the
+system_uid_map -> uid_map / system_gid_map -> gid_map copy_props go in
+the mount_point=="system" block, and the --uid_map/--gid_map mkuserimg
+args are added in BuildImageMkfs.
+
+Change-Id: I655a0f4169472dead0820d35a3eee13b01ad093c
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ core/Makefile                     | 2 ++
+ tools/releasetools/build_image.py | 6 ++++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/core/Makefile b/core/Makefile
+index 72aa890cea..bf81b0ee11 100644
+--- a/core/Makefile
++++ b/core/Makefile
+@@ -1910,6 +1910,8 @@ define generate-image-prop-dictionary
+ $(if $(filter $(2),system),\
+     $(if $(INTERNAL_SYSTEM_OTHER_PARTITION_SIZE),$(hide) echo "system_other_size=$(INTERNAL_SYSTEM_OTHER_PARTITION_SIZE)" >> $(1))
+     $(if $(PRODUCT_SYSTEM_HEADROOM),$(hide) echo "system_headroom=$(PRODUCT_SYSTEM_HEADROOM)" >> $(1))
++    $(if $(BOARD_SYSTEMIMAGE_UID_MAP),$(hide) echo "system_uid_map=$(BOARD_SYSTEMIMAGE_UID_MAP)" >> $(1))
++    $(if $(BOARD_SYSTEMIMAGE_GID_MAP),$(hide) echo "system_gid_map=$(BOARD_SYSTEMIMAGE_GID_MAP)" >> $(1))
+     $(call add-common-ro-flags-to-image-props,system,$(1))
+ )
+ $(if $(filter $(2),system_other),\
+diff --git a/tools/releasetools/build_image.py b/tools/releasetools/build_image.py
+index 9049622efb..2537fd621f 100755
+--- a/tools/releasetools/build_image.py
++++ b/tools/releasetools/build_image.py
+@@ -312,6 +312,10 @@ def BuildImageMkfs(in_dir, prop_dict, out_file, target_out, fs_config):
+         build_command.extend(["-U", prop_dict["uuid"]])
+       if "hash_seed" in prop_dict:
+         build_command.extend(["-S", prop_dict["hash_seed"]])
++    if "uid_map" in prop_dict:
++      build_command.extend(["--uid_map", prop_dict["uid_map"]])
++    if "gid_map" in prop_dict:
++      build_command.extend(["--gid_map", prop_dict["gid_map"]])
+     if prop_dict.get("ext4_share_dup_blocks") == "true":
+       build_command.append("-c")
+     if (needs_projid):
+@@ -759,6 +763,8 @@ def ImagePropFromGlobalDict(glob_dict, mount_point):
+     copy_prop("system_root_image", "system_root_image")
+     copy_prop("root_dir", "root_dir")
+     copy_prop("root_fs_config", "root_fs_config")
++    copy_prop("system_uid_map", "uid_map")
++    copy_prop("system_gid_map", "gid_map")
+   elif mount_point == "data":
+     # Copy the generic fs type first, override with specific one if available.
+     copy_prop("flash_logical_block_size", "flash_logical_block_size")
+-- 
+2.43.0
+

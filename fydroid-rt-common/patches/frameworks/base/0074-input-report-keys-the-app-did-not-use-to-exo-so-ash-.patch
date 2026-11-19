@@ -1,0 +1,106 @@
+From 7d99cefceb379da717daf2b244b38e9fe9cbb98a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 19 Oct 2026 18:47:47 +0800
+Subject: [PATCH 74/75] input: report keys the app did not use to exo, so ash
+ shortcuts skip copied Ctrl+C
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: Ia6378c64b75bd6482df19d60f97a291f0eb7b00f
+---
+ ...droid_server_input_InputManagerService.cpp | 45 +++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+
+diff --git a/services/core/jni/com_android_server_input_InputManagerService.cpp b/services/core/jni/com_android_server_input_InputManagerService.cpp
+index 287fb8219650..827ac5fdceb4 100644
+--- a/services/core/jni/com_android_server_input_InputManagerService.cpp
++++ b/services/core/jni/com_android_server_input_InputManagerService.cpp
+@@ -42,6 +42,7 @@
+ #include <android_view_VerifiedMotionEvent.h>
+ #include <batteryservice/include/batteryservice/BatteryServiceConstants.h>
+ #include <binder/IServiceManager.h>
++#include <binder/Parcel.h>
+ #include <input/PointerController.h>
+ #include <input/SpriteController.h>
+ #include <inputflinger/InputManager.h>
+@@ -58,6 +59,7 @@
+ 
+ #include <atomic>
+ #include <cinttypes>
++#include <mutex>
+ #include <vector>
+ 
+ #include "android_hardware_display_DisplayViewport.h"
+@@ -213,6 +215,36 @@ inline static T max(const T& a, const T& b) {
+     return a > b ? a : b;
+ }
+ 
++// fydroid: Chrome's exo holds every key it sends Android away from ash's
++// accelerators until the wayland service acks it (WaylandKeyboardHandler::ackKey
++// in device/fydeos). Report a key the focused app did not get or did not use
++// as not handled, so ash still runs its shortcut for it; keys the app used are
++// never reported and exo drops them as handled. That is what stops a Ctrl+C an
++// app used for copy from also opening FydeOS AI. The wayland service
++// matches on the event time InputReaderArc gave the key; events it did not send
++// (injected keys, Android key repeats) are ignored there.
++static void arcReportKeyNotHandled(const KeyEvent* keyEvent) {
++    static std::mutex sLock;
++    static sp<IBinder> sWayland;
++    sp<IBinder> wayland;
++    {
++        std::lock_guard<std::mutex> lock(sLock);
++        if (sWayland == nullptr || !sWayland->isBinderAlive()) {
++            sWayland = defaultServiceManager()->checkService(String16("Wayland"));
++        }
++        wayland = sWayland;
++    }
++    if (wayland == nullptr) {
++        return;
++    }
++    Parcel data;
++    data.writeInterfaceToken(String16("org.chromium.arc.wayland.IWaylandService"));
++    data.writeInt64(keyEvent->getEventTime());
++    data.writeInt32(0 /* handled */);
++    // IWaylandService TRANSACTION_ackKeyboardKeyByEventTime.
++    wayland->transact(55, data, nullptr, IBinder::FLAG_ONEWAY);
++}
++
+ static inline const char* toString(bool value) {
+     return value ? "true" : "false";
+ }
+@@ -1244,6 +1276,10 @@ void NativeInputManager::interceptKeyBeforeQueueing(const KeyEvent* keyEvent,
+         }
+ 
+         handleInterceptActions(wmActions, when, /*byref*/ policyFlags);
++        if (!(policyFlags & POLICY_FLAG_PASS_TO_USER)) {
++            // The policy kept it from the app (volume, power, ...).
++            arcReportKeyNotHandled(keyEvent);
++        }
+     } else {
+         if (interactive) {
+             policyFlags |= POLICY_FLAG_PASS_TO_USER;
+@@ -1331,6 +1367,10 @@ nsecs_t NativeInputManager::interceptKeyBeforeDispatching(
+             ALOGE("Failed to obtain key event object for interceptKeyBeforeDispatching.");
+         }
+     }
++    if (result < 0) {
++        // Consumed by the policy before the app saw it.
++        arcReportKeyNotHandled(keyEvent);
++    }
+     return result;
+ }
+ 
+@@ -1340,6 +1380,11 @@ bool NativeInputManager::dispatchUnhandledKey(const sp<IBinder>& token,
+     // Policy:
+     // - Ignore untrusted events and do not perform default handling.
+     bool result = false;
++    // The app did not use it. A canceled event is the dispatcher withdrawing a
++    // fallback because the app did handle this one.
++    if (!(keyEvent->getFlags() & AKEY_EVENT_FLAG_CANCELED)) {
++        arcReportKeyNotHandled(keyEvent);
++    }
+     if (policyFlags & POLICY_FLAG_TRUSTED) {
+         JNIEnv* env = jniEnv();
+         ScopedLocalFrame localFrame(env);
+-- 
+2.43.0
+

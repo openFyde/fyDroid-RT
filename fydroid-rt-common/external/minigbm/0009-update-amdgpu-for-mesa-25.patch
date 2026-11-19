@@ -1,0 +1,64 @@
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index 6450b24..799d395 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -198,13 +198,13 @@ bool cros_gralloc_driver::get_resolved_format_and_use_flags(
+ 		combo = drv_get_combination(drv_.get(), resolved_format, resolved_use_flags);
+ 	}
+ 	if (!combo) {
+-  #ifdef __aarch64__
+-    ALOGE("No combo found, resolved_format:%s, resoloved_flags:%lu", (char *) &resolved_format, resolved_use_flags);
+-  #else
+-    ALOGE("No combo found, resolved_format:%s, resoloved_flags:%llu", (char *) &resolved_format, resolved_use_flags);
+-  #endif
++		/* resolved_use_flags is uint64_t; cast so the format matches on every
++		 * ABI (LP64 arm64/x86_64 where uint64_t is unsigned long, and 32-bit
++		 * x86 where it is unsigned long long). */
++		ALOGE("No combo found, resolved_format:%s, resoloved_flags:%llu",
++		      (char *)&resolved_format, (unsigned long long)resolved_use_flags);
+ 		return false;
+-  }
++	}
+ 
+ 	*out_format = resolved_format;
+ 	*out_use_flags = resolved_use_flags;
+diff --git a/dri.c b/dri.c
+index bf980be..cb520b9 100644
+--- a/dri.c
++++ b/dri.c
+@@ -27,6 +27,35 @@
+ #include "GL/internal/dri_interface.h"
+ #undef GL_GLEXT_LEGACY
+ 
++/*
++ * Mesa >= 25 removed the __DRI_IMAGE_FORMAT_* tokens from the public
++ * dri_interface.h and redefined them internally (loader_dri_helper.h) as
++ * pipe_format values, since createImage() now keys on pipe_format via
++ * dri2_get_mapping_by_format(). Define the formats this file uses with the
++ * matching pipe_format integer values so dri.c both compiles and passes values
++ * Mesa understands at runtime. The #ifndef guard keeps older Mesa (which still
++ * exports these tokens) working unchanged.
++ *
++ * Values are the Mesa 26.2.5 enum pipe_format integers for x86 (little-endian),
++ * generated from src/util/format/u_format.yaml (enum now in u_format_gen.h).
++ * If Mesa is bumped, re-verify: 26.2 dropped Y8_UNORM and shifted the rest.
++ */
++#ifndef __DRI_IMAGE_FORMAT_R8
++#define __DRI_IMAGE_FORMAT_NONE            0   /* PIPE_FORMAT_NONE */
++#define __DRI_IMAGE_FORMAT_R8             81   /* PIPE_FORMAT_R8_UNORM */
++#define __DRI_IMAGE_FORMAT_GR88           82   /* PIPE_FORMAT_R8G8_UNORM */
++#define __DRI_IMAGE_FORMAT_RGB565        308   /* PIPE_FORMAT_B5G6R5_UNORM */
++#define __DRI_IMAGE_FORMAT_XRGB8888      281   /* PIPE_FORMAT_B8G8R8X8_UNORM */
++#define __DRI_IMAGE_FORMAT_ARGB8888      105   /* PIPE_FORMAT_B8G8R8A8_UNORM */
++#define __DRI_IMAGE_FORMAT_XBGR8888      292   /* PIPE_FORMAT_R8G8B8X8_UNORM */
++#define __DRI_IMAGE_FORMAT_ABGR8888       84   /* PIPE_FORMAT_R8G8B8A8_UNORM */
++#define __DRI_IMAGE_FORMAT_XRGB2101010   444   /* PIPE_FORMAT_B10G10R10X2_UNORM */
++#define __DRI_IMAGE_FORMAT_XBGR2101010   309   /* PIPE_FORMAT_R10G10B10X2_UNORM */
++#define __DRI_IMAGE_FORMAT_ARGB2101010   120   /* PIPE_FORMAT_B10G10R10A2_UNORM */
++#define __DRI_IMAGE_FORMAT_ABGR2101010   114   /* PIPE_FORMAT_R10G10B10A2_UNORM */
++#define __DRI_IMAGE_FORMAT_ABGR16161616F  56   /* PIPE_FORMAT_R16G16B16A16_FLOAT */
++#endif
++
+ struct dri_driver {
+ 	int fd;
+ 	void *driver_handle;

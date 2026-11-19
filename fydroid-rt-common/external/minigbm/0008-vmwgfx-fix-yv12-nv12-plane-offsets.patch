@@ -1,0 +1,48 @@
+Description: vmwgfx: lay out per-plane offsets/sizes from the real height
+ 0006-add-vmware-vmwgfx-backend.patch inflates `aligned_height` to
+ `3 * DIV_ROUND_UP(height, 2)` for YV12/I420/YUYV/NV12 — that's the
+ size the SVGA hardware surface needs (one 2D rectangle big enough to
+ pack Y + V + U planes top-to-bottom), and it's the right value to
+ pass to `req->base_size.height`.
+ .
+ But the same inflated value was also fed into drv_bo_from_format,
+ which uses it as the *per-plane* height — so plane offsets/sizes get
+ computed for a hypothetical 540-row YV12 frame instead of a real
+ 360-row one. The actual chroma data the codec writes (compact YV12
+ starting at offset stride*height) ends up well before the
+ minigbm-reported V/U plane offsets, and AHardwareBuffer_lockPlanes /
+ lockYCbCr consumers see zero-filled padding instead of chroma —
+ visible as a uniform green wash for every soft-codec video frame.
+ .
+ Pass the real `height` to drv_bo_from_format so the per-plane
+ layout is compact YV12 (Y at 0, V at stride*height,
+ U at stride*height + chroma_stride*height/2), matching the AOSP
+ c2.android.{vpx,aom,gav1,mpeg4}_dec output. The SVGA surface
+ `base_size.height` still uses `aligned_height`.
+Author: FydeOS <yang@fydeos.io>
+
+Index: minigbm/vmwgfx.c
+===================================================================
+--- minigbm.orig/vmwgfx.c
++++ minigbm/vmwgfx.c
+@@ -184,7 +184,19 @@ static int vmwgfx_bo_create_with_modifie
+ 	  return ret;
+   }
+   stride = drv_stride_from_format(format, aligned_width, 0);
+-  drv_bo_from_format(bo, stride, 1, aligned_height, format);
++  /*
++   * Use the original `height` (not `aligned_height`) so drv_bo_from_format
++   * lays out the per-plane offsets/sizes for a real-size frame —
++   * i.e. compact YV12/NV12: Y at 0 (size = stride*height), then V/U
++   * chroma planes at stride/2 × height/2 each. `aligned_height` is the
++   * SVGA hardware surface size (1.5*height to fit packed Y+V+U), but it
++   * must NOT be used as a per-plane height: doing so put the V/U
++   * plane offsets way past where the codec actually writes (= compact
++   * YV12 from Y onward), so lockYCbCr / AHardwareBuffer_lockPlanes
++   * pointed consumers at zero-filled padding and every soft codec's
++   * output came up green on this gralloc.
++   */
++  drv_bo_from_format(bo, stride, 1, height, format);
+   bo->handle.u32 = rep->handle;
+   store_map_handle(&bo->meta, rep->buffer_map_handle);
+   return 0;

@@ -1,0 +1,75 @@
+From 49718eefc98b6c8c3eecfb51e3467bec215f1606 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 17:24:00 +0800
+Subject: [PATCH 6/6] documentsui: defer DragShadowBuilder creation to a UI
+ context
+
+DocumentsApplication.onCreate() builds the DragAndDropManager from the
+non-UI Application context, and that constructor eagerly inflated the
+drag-shadow layout. Inflating from a non-UI context trips StrictMode's
+detectIncorrectContextUse on this build:
+
+  E StrictMode: Tried to access the API:LayoutInflater which needs to
+  have proper configuration from a non-UI Context
+
+Build the DragShadowBuilder lazily on the first startDrag(), using the
+originating view's UI context (v.getContext()), instead of at app
+startup. Every mShadowBuilder dereference is reachable only during a
+same-app drag -- cross-app DRAG_FLAG_GLOBAL drags are rejected at
+canHandleDragEvent(), so the View drag framework never delivers the
+later drag events -- meaning the builder is always created before it is
+used. The @VisibleForTesting injected builder is preserved via a null
+guard.
+
+Verified on a fydroid-rt board: no StrictMode
+LayoutInflater violation at DocumentsUI startup and the Files app
+launches cleanly.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I9da014f94eaa8948f4070cf3d441bed656ffb2b6
+---
+ .../android/documentsui/DragAndDropManager.java    | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/com/android/documentsui/DragAndDropManager.java b/src/com/android/documentsui/DragAndDropManager.java
+index bed8764ae..0794e2473 100644
+--- a/src/com/android/documentsui/DragAndDropManager.java
++++ b/src/com/android/documentsui/DragAndDropManager.java
+@@ -168,7 +168,10 @@ public interface DragAndDropManager {
+ 
+         private final Context mContext;
+         private final DocumentClipper mClipper;
+-        private final DragShadowBuilder mShadowBuilder;
++        // Built lazily from the originating view's UI context on the first startDrag()
++        // (or injected for tests). DocumentsApplication creates this manager from the
++        // non-UI Application context, so it must not be inflated eagerly here.
++        private DragShadowBuilder mShadowBuilder;
+         private final Drawable mDefaultShadowIcon;
+ 
+         private @State int mState = STATE_UNKNOWN;
+@@ -194,7 +197,8 @@ public interface DragAndDropManager {
+             this(
+                     context.getApplicationContext(),
+                     clipper,
+-                    new DragShadowBuilder(context),
++                    // Deferred until startDrag(), where a UI context is available.
++                    null,
+                     IconUtils.loadMimeIcon(context, MimeTypes.GENERIC_TYPE));
+         }
+ 
+@@ -257,6 +261,12 @@ public interface DragAndDropManager {
+             mClipData.getDescription().getExtras()
+                     .putString(SRC_ROOT_KEY, root.getUri().toString());
+ 
++            // Build the shadow against the originating view's UI context, the first
++            // time a drag actually starts. Guarded so tests can inject their own.
++            if (mShadowBuilder == null) {
++                mShadowBuilder = new DragShadowBuilder(v.getContext());
++            }
++
+             updateShadow(srcs, iconHelper);
+ 
+             int flag = View.DRAG_FLAG_GLOBAL | View.DRAG_FLAG_OPAQUE;
+-- 
+2.43.0
+

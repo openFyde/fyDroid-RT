@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <library name="org.chromium.arc"
+             file="/system/framework/org.chromium.arc.jar"
+             dependency="org.chromium.arc.mojom" />
+</permissions>

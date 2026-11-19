@@ -1,0 +1,109 @@
+From bf0dbc38345a02b9878c1a17de52fda04c919bd4 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 13 Jul 2026 15:59:28 +0800
+Subject: [PATCH 46/75] PackageInstaller: close the unknown-sources authority
+ window on grant
+
+Follow-up to "fix install unknown apps authority screen on ARC". After the
+user allows the source to install unknown apps, the installer re-fronts its
+confirm dialog, but the Settings "install unknown apps" authority window was
+left open behind it (it runs in its own ARC task/window and is only paused,
+not stopped, so NO_HISTORY doesn't finish it).
+
+Close it from the app-op grant handler: at that moment the user has just
+toggled the switch on the authority screen, so it is the focused task. Grab it
+with getFocusedRootTaskInfo() and removeTask() it (no-op unless the focused
+task is a Settings screen). Adds MANAGE_ACTIVITY_TASKS and REMOVE_TASKS, both
+signature-level, so a platform-signed PackageInstaller is granted them by
+signature match (no privapp allowlist needed).
+
+Verified on amd64: granting closes the authority window as the install
+confirm dialog returns.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ic863214e461372b5b21061a7ff253aed60087443
+---
+ packages/PackageInstaller/AndroidManifest.xml |  5 ++++
+ .../PackageInstallerActivity.java             | 29 +++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/packages/PackageInstaller/AndroidManifest.xml b/packages/PackageInstaller/AndroidManifest.xml
+index 6669d6ba3085..030175d643ad 100644
+--- a/packages/PackageInstaller/AndroidManifest.xml
++++ b/packages/PackageInstaller/AndroidManifest.xml
+@@ -14,6 +14,11 @@
+     <uses-permission android:name="android.permission.UPDATE_APP_OPS_STATS" />
+     <uses-permission android:name="android.permission.MANAGE_APP_OPS_MODES" />
+     <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
++    <!-- fydroid: close the Settings "install unknown apps" authority window when
++         the source is granted install permission (getFocusedRootTaskInfo +
++         removeTask). Both are signature-level. -->
++    <uses-permission android:name="android.permission.MANAGE_ACTIVITY_TASKS" />
++    <uses-permission android:name="android.permission.REMOVE_TASKS" />
+     <uses-permission android:name="android.permission.SUBSTITUTE_NOTIFICATION_APP_NAME" />
+     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+diff --git a/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java b/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java
+index 26e005bd7272..5549f2962c44 100644
+--- a/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java
++++ b/packages/PackageInstaller/src/com/android/packageinstaller/PackageInstallerActivity.java
+@@ -25,6 +25,7 @@ import android.annotation.NonNull;
+ import android.annotation.StringRes;
+ import android.app.Activity;
+ import android.app.ActivityOptions;
++import android.app.ActivityTaskManager;
+ import android.app.WindowConfiguration;
+ import android.app.AlertDialog;
+ import android.app.AppGlobals;
+@@ -48,6 +49,7 @@ import android.os.Bundle;
+ import android.os.Handler;
+ import android.os.Looper;
+ import android.os.Process;
++import android.os.RemoteException;
+ import android.os.UserManager;
+ import android.provider.Settings;
+ import android.util.Log;
+@@ -782,6 +784,11 @@ public class PackageInstallerActivity extends AlertActivity {
+             }
+             unregister(this);
+             mActiveUnknownSourcesListeners.remove(this);
++            // Close the "install unknown apps" authority (Settings) window now
++            // that the source is trusted, so it does not linger behind the
++            // installer dialog we are about to bring back. The user just toggled
++            // the switch on that screen, so it is the focused task.
++            closeAuthorityScreen();
+             // fydroid: re-front the installer after the grant. When we hand off
+             // to the authority screen we moveTaskToBack() ourselves so the
+             // installer overlay stops occluding it, which tears this activity
+@@ -813,6 +820,28 @@ public class PackageInstallerActivity extends AlertActivity {
+         mActiveUnknownSourcesListeners.remove(listener);
+     }
+ 
++    /**
++     * fydroid: close the Settings "install unknown apps" authority window. Called
++     * from the app-op grant handler, when the user has just toggled the switch on
++     * that screen, so it is the focused task. Removing it here means it does not
++     * stay open behind the installer confirm dialog we re-front on grant. Uses
++     * MANAGE_ACTIVITY_TASKS (getFocusedRootTaskInfo) + REMOVE_TASKS (removeTask),
++     * both signature-level; no-op if the focused task is not a Settings screen.
++     */
++    private void closeAuthorityScreen() {
++        try {
++            ActivityTaskManager.RootTaskInfo focused =
++                    ActivityTaskManager.getService().getFocusedRootTaskInfo();
++            if (focused != null && focused.topActivity != null
++                    && "com.android.settings".equals(
++                            focused.topActivity.getPackageName())) {
++                ActivityTaskManager.getService().removeTask(focused.taskId);
++            }
++        } catch (RemoteException e) {
++            Log.e(TAG, "Failed to close unknown-sources authority screen", e);
++        }
++    }
++
+     /**
+      * An error dialog shown when external sources are not allowed
+      */
+-- 
+2.43.0
+

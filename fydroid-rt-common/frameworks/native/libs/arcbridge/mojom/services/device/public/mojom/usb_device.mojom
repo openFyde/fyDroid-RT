@@ -1,0 +1,102 @@
+// Stub for device.mojom.UsbDeviceInfo — used by arc/usb_host.mojom.
+// Fields, order, types and enum values must match Chrome's
+// services/device/public/mojom/usb_device.mojom exactly (it is the serializer);
+// any divergence shifts the wire layout and corrupts/crashes decoding.
+module device.mojom;
+
+import "mojo/public/mojom/base/string16.mojom";
+
+// Wire-compatible stub for url.mojom.Url (struct { string url; }) — only needed
+// so webusb_landing_page occupies its slot and keeps `configurations` aligned.
+struct Url {
+  string url;
+};
+
+// Corresponds to the USBDirection WebIDL type.
+enum UsbTransferDirection {
+  INBOUND = 0,
+  OUTBOUND,
+};
+
+enum UsbTransferType {
+  CONTROL = 0,
+  ISOCHRONOUS,
+  BULK,
+  INTERRUPT,
+};
+
+enum UsbSynchronizationType {
+  NONE = 0,
+  ASYNCHRONOUS,
+  ADAPTIVE,
+  SYNCHRONOUS,
+};
+
+enum UsbUsageType {
+  DATA = 0,
+  FEEDBACK,
+  EXPLICIT_FEEDBACK,
+  PERIODIC,
+  NOTIFICATION,
+  RESERVED,
+};
+
+struct UsbEndpointInfo {
+  uint8 endpoint_number;
+  UsbTransferDirection direction;
+  UsbTransferType type;
+  uint32 packet_size;
+  UsbSynchronizationType synchronization_type;
+  UsbUsageType usage_type;
+  uint8 polling_interval;
+  array<uint8> extra_data;
+};
+
+struct UsbAlternateInterfaceInfo {
+  uint8 alternate_setting;
+  uint8 class_code;
+  uint8 subclass_code;
+  uint8 protocol_code;
+  mojo_base.mojom.String16? interface_name;
+  array<UsbEndpointInfo> endpoints;
+  array<uint8> extra_data;
+};
+
+struct UsbInterfaceInfo {
+  uint8 interface_number;
+  uint8 first_interface;
+  array<UsbAlternateInterfaceInfo> alternates;
+};
+
+struct UsbConfigurationInfo {
+  uint8 configuration_value;
+  mojo_base.mojom.String16? configuration_name;
+  bool self_powered;
+  bool remote_wakeup;
+  uint8 maximum_power;
+  array<UsbInterfaceInfo> interfaces;
+  array<uint8> extra_data;
+};
+
+struct UsbDeviceInfo {
+  string guid;
+  uint8 usb_version_major;
+  uint8 usb_version_minor;
+  uint8 usb_version_subminor;
+  uint8 class_code;
+  uint8 subclass_code;
+  uint8 protocol_code;
+  uint32 bus_number;
+  uint32 port_number;
+  uint16 vendor_id;
+  uint16 product_id;
+  uint8 device_version_major;
+  uint8 device_version_minor;
+  uint8 device_version_subminor;
+  mojo_base.mojom.String16? manufacturer_name;
+  mojo_base.mojom.String16? product_name;
+  mojo_base.mojom.String16? serial_number;
+  Url? webusb_landing_page;
+  uint8 active_configuration;
+  array<UsbConfigurationInfo> configurations;
+};

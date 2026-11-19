@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.fydeos.arc.gateway">
+
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <protected-broadcast android:name="io.fydeos.arc.ArcGateway.action.INSTALL_PACKAGE" />
+    <protected-broadcast android:name="io.fydeos.arc.ArcGateway.action.INSTALL_PACKAGE_BY_POLICY" />
+
+    <application
+        android:label="@string/app_name"
+        android:hasCode="true"
+        android:persistent="true">
+
+        <service
+            android:name=".ArcGatewayService"
+            android:exported="false" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".InstallReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.fydeos.arc.ArcGateway.action.INSTALL_PACKAGE" />
+                <action android:name="io.fydeos.arc.ArcGateway.action.INSTALL_PACKAGE_BY_POLICY" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/vnd.android.package-archive" />
+            </intent-filter>
+            <!-- Plain action filter for broadcasts without data/type -->
+            <intent-filter>
+                <action android:name="io.fydeos.arc.ArcGateway.action.INSTALL_PACKAGE" />
+                <action android:name="io.fydeos.arc.ArcGateway.action.INSTALL_PACKAGE_BY_POLICY" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>

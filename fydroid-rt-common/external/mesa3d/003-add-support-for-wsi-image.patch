@@ -1,0 +1,207 @@
+diff --git a/src/panfrost/vulkan/panvk_device_memory.c b/src/panfrost/vulkan/panvk_device_memory.c
+index 5fece7e3c66..75293554aab 100644
+--- a/src/panfrost/vulkan/panvk_device_memory.c
++++ b/src/panfrost/vulkan/panvk_device_memory.c
+@@ -14,10 +14,18 @@
+ 
+ #include "pan_props.h"
+ 
++#include "util/format/u_format.h"
+ #include "util/u_atomic.h"
+ #include "vk_debug_utils.h"
+ #include "vk_log.h"
+ 
++#include "wsi_common.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <string.h>
++#include <xf86drm.h>
++
+ static void
+ panvk_memory_emit_report(struct panvk_device *device,
+                          const struct panvk_device_memory *mem,
+@@ -59,6 +67,71 @@ panvk_memory_emit_report(struct panvk_device *device,
+                                 (uintptr_t)(mem), heap_index);
+ }
+ 
++static void
++device_free_wsi_dumb(int display_render_fd, uint32_t dumb_handle)
++{
++   assert(display_render_fd >= 0);
++   if (dumb_handle == 0)
++      return;
++
++   struct drm_mode_destroy_dumb destroy_dumb = {
++      .handle = dumb_handle,
++   };
++
++   if (drmIoctl(display_render_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy_dumb)) {
++      mesa_loge("destroy dumb object %d: %s\n", dumb_handle, strerror(errno));
++   }
++}
++
++static VkResult
++device_alloc_for_wsi(struct panvk_device *device,
++                     const VkAllocationCallbacks *pAllocator,
++                     struct panvk_device_memory *mem,
++                     VkDeviceSize size)
++{
++   VkResult result;
++   struct panvk_physical_device *pdevice =
++      to_panvk_physical_device(device->vk.physical);
++   assert(pdevice->drm.display_render_fd >= 0);
++
++   mem->is_for_wsi = true;
++
++   int display_fd = pdevice->drm.display_render_fd;
++   struct drm_mode_create_dumb create_dumb = {
++      .width = 1024, /* one page */
++      .height = DIV_ROUND_UP(size, 4096),
++      .bpp = util_format_get_blocksizebits(PIPE_FORMAT_RGBA8888_UNORM),
++   };
++
++   int err;
++   err = drmIoctl(display_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_dumb);
++   if (err < 0)
++      goto fail_create;
++
++   int fd;
++   err = drmPrimeHandleToFD(display_fd, create_dumb.handle, O_CLOEXEC, &fd);
++   if (err < 0)
++      goto fail_export;
++
++   /* Import the dma-buf into panfrost */
++   mem->bo = pan_kmod_bo_import(device->kmod.dev, fd);
++   close(fd);
++   if (!mem->bo) {
++      result = panvk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++      goto fail_import;
++   }
++
++   mem->dumb_handle = create_dumb.handle;
++   return VK_SUCCESS;
++
++fail_import:
++fail_export:
++   device_free_wsi_dumb(display_fd, create_dumb.handle);
++
++fail_create:
++   return panvk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ panvk_AllocateMemory(VkDevice _device,
+                      const VkMemoryAllocateInfo *pAllocateInfo,
+@@ -99,13 +172,23 @@ panvk_AllocateMemory(VkDevice _device,
+    if (mem == NULL)
+       return panvk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
++   mem->is_for_wsi = false;
++   mem->dumb_handle = 0;
++
++   const struct wsi_memory_allocate_info *wsi_info =
++      vk_find_struct_const(pAllocateInfo->pNext, WSI_MEMORY_ALLOCATE_INFO_MESA);
+    const VkImportMemoryFdInfoKHR *fd_info =
+       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
+ 
+    if (fd_info && !fd_info->handleType)
+       fd_info = NULL;
+ 
+-   if (fd_info) {
++   if (wsi_info) {
++      result = device_alloc_for_wsi(device, pAllocator, mem,
++                                    pAllocateInfo->allocationSize);
++      if (result != VK_SUCCESS)
++         goto err_destroy_mem;
++   } else if (fd_info) {
+       assert(
+          fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
+          fd_info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+@@ -304,6 +387,12 @@ panvk_FreeMemory(VkDevice _device, VkDeviceMemory _mem,
+    panvk_memory_emit_report(device, mem, /* alloc_info */ NULL, VK_SUCCESS);
+ 
+    pan_kmod_bo_put(mem->bo);
++
++   /* Free the WSI dumb buffer on the display render node, if any. */
++   if (mem->is_for_wsi && mem->dumb_handle)
++      device_free_wsi_dumb(physical_device->drm.display_render_fd,
++                           mem->dumb_handle);
++
+    vk_device_memory_destroy(&device->vk, pAllocator, &mem->vk);
+ }
+ 
+diff --git a/src/panfrost/vulkan/panvk_device_memory.h b/src/panfrost/vulkan/panvk_device_memory.h
+index 6fc545b6a0f..2421a3dad8d 100644
+--- a/src/panfrost/vulkan/panvk_device_memory.h
++++ b/src/panfrost/vulkan/panvk_device_memory.h
+@@ -25,6 +25,9 @@ struct panvk_device_memory {
+        * PANVK_DEBUG=dump. */
+       void *host_mapping;
+    } debug;
++
++   bool is_for_wsi;
++   uint32_t dumb_handle;  /* DRM dumb buffer handle for WSI allocations */
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_device_memory, vk.base, VkDeviceMemory,
+diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
+index 3f25829a86d..433a3a80e3d 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -142,6 +142,16 @@ get_drm_device_ids(struct panvk_physical_device *device,
+       device->drm.primary_rdev = st.st_rdev;
+    }
+ 
++   /* For Panfrost, we need to use renderD128 for WSI allocations.
++    * Open /dev/dri/renderD128 directly to get a separate FD for display/WSI.
++    */
++   device->drm.display_render_fd = open("/dev/dri/renderD128",
++                                        O_RDWR | O_CLOEXEC);
++   if (device->drm.display_render_fd < 0) {
++      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                       "failed to open /dev/dri/renderD128 for WSI");
++   }
++
+    return VK_SUCCESS;
+ }
+ 
+@@ -368,6 +378,9 @@ panvk_physical_device_finish(struct panvk_physical_device *device)
+ {
+    panvk_wsi_finish(device);
+ 
++   if (device->drm.display_render_fd >= 0)
++      close(device->drm.display_render_fd);
++
+    free_disk_cache(device);
+ 
+    pan_kmod_dev_destroy(device->kmod.dev);
+diff --git a/src/panfrost/vulkan/panvk_physical_device.h b/src/panfrost/vulkan/panvk_physical_device.h
+index c44a66113f4..a69f55c1f25 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.h
++++ b/src/panfrost/vulkan/panvk_physical_device.h
+@@ -47,6 +47,7 @@ struct panvk_physical_device {
+    struct {
+       dev_t primary_rdev;
+       dev_t render_rdev;
++      int display_render_fd;  /* /dev/dri/renderD128 FD for WSI allocations */
+    } drm;
+ 
+    struct {
+diff --git a/src/panfrost/vulkan/panvk_wsi.c b/src/panfrost/vulkan/panvk_wsi.c
+index 1b4acc09f2a..c216f44ae99 100644
+--- a/src/panfrost/vulkan/panvk_wsi.c
++++ b/src/panfrost/vulkan/panvk_wsi.c
+@@ -47,9 +47,11 @@ panvk_wsi_init(struct panvk_physical_device *physical_device)
+       to_panvk_instance(physical_device->vk.instance);
+    VkResult result;
+ 
++   /* Panfrost needs to use the render node (renderD128) for WSI allocations */
+    result = wsi_device_init(&physical_device->wsi_device,
+                             panvk_physical_device_to_handle(physical_device),
+-                            panvk_wsi_proc_addr, &instance->vk.alloc, -1,
++                            panvk_wsi_proc_addr, &instance->vk.alloc,
++                            physical_device->drm.display_render_fd,
+                             &instance->drirc.options,
+                             &(struct wsi_device_options){.sw_device = false});
+    if (result != VK_SUCCESS)

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">Installazione pacchetto</string>
+    <string name="notification_channel_description">Avanzamento installazione APK</string>
+    <string name="mode_user">[Utente]</string>
+    <string name="mode_policy">[Criterio]</string>
+    <string name="installing">%1$s Installazione in corso: %2$s</string>
+    <string name="installed">%1$s Installato: %2$s</string>
+    <string name="install_failed">%1$s Installazione non riuscita: %2$s</string>
+</resources>

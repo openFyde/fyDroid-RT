@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_description">Bridges Android accessibility events to Chrome OS for screen readers and other assistive technologies.</string>
+</resources>

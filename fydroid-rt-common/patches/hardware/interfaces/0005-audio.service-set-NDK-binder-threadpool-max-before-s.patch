@@ -1,0 +1,67 @@
+From 95aea95f2735094de287d88e3e5edd063a415463 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 9 Jun 2026 16:02:30 +0800
+Subject: [PATCH 5/6] audio.service: set NDK binder threadpool max before
+ starting the pool
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the fydroid ARC container the vendor libbinder_ndk shares the single vendor
+libbinder ProcessState (driver /dev/vndbinder) with ::android::ProcessState in
+the audio HAL service — they are not split across /dev/binder and /dev/vndbinder
+as on a stock VNDK device. So the stock main() order —
+ProcessState::self()->startThreadPool() (starts the pool at the default max of
+15) followed by ABinderProcess_setThreadPoolMaxThreadCount(1) — aborts the
+process with "Binder threadpool cannot be shrunk after starting".
+
+That killed android.hardware.audio.service on every start, so audioserver never
+published media.audio_policy; system_server then blocked in
+AudioProductStrategy.native_list_audio_product_strategies() during AudioService
+startup until the Watchdog killed system_server (boot loop).
+
+Move ABinderProcess_setThreadPoolMaxThreadCount(1) before startThreadPool() so
+the max is set while the pool is unstarted. No-op on stock (the two ProcessState
+instances are distinct there); fixes the abort in the container.
+
+Verified on device: audio-hal + audioserver stay up, StartAudioService
+completes in 16ms, system_server advances past AudioService through late boot.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I9a2da3ba80a3892ed9cf4970148dcc91b4cc2007
+---
+ .../all-versions/default/service/service.cpp     | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/audio/common/all-versions/default/service/service.cpp b/audio/common/all-versions/default/service/service.cpp
+index fbf616563d..9959687094 100644
+--- a/audio/common/all-versions/default/service/service.cpp
++++ b/audio/common/all-versions/default/service/service.cpp
+@@ -76,10 +76,22 @@ int main(int /* argc */, char* /* argv */ []) {
+     signal(SIGPIPE, SIG_IGN);
+ 
+     ::android::ProcessState::initWithDriver("/dev/vndbinder");
+-    // start a threadpool for vndbinder interactions
+-    ::android::ProcessState::self()->startThreadPool();
+ 
++    // fydroid: set the NDK binder threadpool max BEFORE starting any pool.
++    // In the ARC container the vendor libbinder_ndk shares the single vendor
++    // libbinder ProcessState (driver /dev/vndbinder) with
++    // ::android::ProcessState::self() below — they are not split across
++    // /dev/binder and /dev/vndbinder as on a stock VNDK device. So calling
++    // ABinderProcess_setThreadPoolMaxThreadCount(1) AFTER startThreadPool()
++    // (which starts the pool at the default max of 15) aborts the process with
++    // "Binder threadpool cannot be shrunk after starting", killing the audio
++    // HAL -> audioserver never publishes media.audio_policy -> AudioService
++    // hangs -> Watchdog kills system_server. Setting the max first is a no-op on
++    // stock (separate ProcessStates) and avoids the shrink here.
+     ABinderProcess_setThreadPoolMaxThreadCount(1);
++
++    // start a threadpool for vndbinder interactions
++    ::android::ProcessState::self()->startThreadPool();
+     ABinderProcess_startThreadPool();
+ 
+     const int32_t defaultValue = -1;
+-- 
+2.43.0
+

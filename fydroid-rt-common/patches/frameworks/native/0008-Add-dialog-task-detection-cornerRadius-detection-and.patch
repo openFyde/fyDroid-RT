@@ -1,0 +1,184 @@
+From 5999ef20666930984c0966cd5dd1a794027327f3 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Sat, 28 Mar 2026 16:32:34 +0800
+Subject: [PATCH 08/40] Add dialog task detection, cornerRadius detection, and
+ IsDialogTask metadata
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three methods detect dialog/floating windows for modal overlay display:
+- Method 1: TYPE_APPLICATION_ATTACHED_DIALOG (type=1003) with container
+- Method 2: "Dim Layer for" named layers with smaller content inside
+- Method 3: cornerRadius > 0 on main activity layers (type 1-2) — catches
+  floating dialog activities (windowIsFloating=true) like PackageInstaller
+  where the theme applies rounded corners to the window background
+
+Also includes:
+- TaskId propagation to child layers for per-task GPU composition
+- Layer type/appId always sent to HWC (not just on geometry changes)
+- cornerRadius added to LayerFECompositionState for detection in Output.cpp
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I18f393fc18ed7ec2266a30cd73569c8c8f0eb60f
+---
+ .../LayerFECompositionState.h                 |  2 +
+ .../CompositionEngine/src/Output.cpp          | 50 +++++++++++++++++++
+ .../CompositionEngine/src/OutputLayer.cpp     |  4 ++
+ services/surfaceflinger/Layer.cpp             | 37 ++++++++++++++
+ 4 files changed, 93 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+index bdc1b74782..601d099fb9 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+@@ -150,6 +150,8 @@ struct LayerFECompositionState {
+ 
+     StretchEffect stretchEffect;
+ 
++    // (cornerRadius is declared above with the fydroid type/appId fields.)
++
+     /*
+      * Geometry state
+      */
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index bf4b20af3c..e51bc316ab 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -991,6 +991,56 @@ void Output::detectAndAdjustDialogTasks() {
+         containerLayer->editState().displayFrame = contentFrame;
+         containerLayer->editState().isDialogContainer = true;
+     }
++
++    // --- Method 3: Detect by cornerRadius (floating dialog activities) ---
++    //
++    // Floating dialog activities (windowIsFloating=true, e.g. PackageInstaller)
++    // use a theme that applies rounded corners to the window.  On virtual
++    // displays (per-task composition), Methods 1-2 fail because all layers
++    // share the same task bounds.  Instead, look for any main activity layer
++    // (type 1-2) with cornerRadius > 0 — if found, mark the bottom
++    // SOLID_COLOR container layer as a dialog.
++    {
++        static constexpr int TYPE_BASE_APPLICATION = 1;
++        static constexpr int TYPE_APPLICATION = 2;
++
++        // Skip if a dialog container was already found by Methods 1-2
++        bool alreadyDetected = false;
++        for (auto* layer : layers) {
++            if (layer->getState().isDialogContainer) { alreadyDetected = true; break; }
++        }
++
++        if (!alreadyDetected) {
++            bool hasRoundedContent = false;
++            compositionengine::OutputLayer* containerCandidate = nullptr;
++
++            for (size_t i = 0; i < layers.size(); i++) {
++                const auto* feState = layers[i]->getLayerFE().getCompositionState();
++                if (!feState) continue;
++
++                // First SOLID_COLOR layer is the task container
++                if (!containerCandidate &&
++                    feState->compositionType == Composition::SOLID_COLOR) {
++                    containerCandidate = layers[i];
++                    continue;
++                }
++
++                // Check main activity layers for rounded corners
++                if ((feState->type == TYPE_BASE_APPLICATION ||
++                     feState->type == TYPE_APPLICATION) &&
++                    feState->cornerRadius > 0.f) {
++                    hasRoundedContent = true;
++                    break;
++                }
++            }
++
++            if (hasRoundedContent && containerCandidate) {
++                containerCandidate->editState().isDialogContainer = true;
++                ALOGI("Dialog detected (cornerRadius): container='%s'",
++                      containerCandidate->getLayerFE().getDebugName());
++            }
++        }
++    }
+ }
+ 
+ compositionengine::OutputLayer* Output::findLayerRequestingBackgroundComposition() const {
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index d379df7e52..9d2f114883 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -416,6 +416,10 @@ void OutputLayer::writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t
+     writeOutputIndependentPerFrameStateToHWC(hwcLayer.get(), *outputIndependentState,
+                                              requestedCompositionType, skipLayer);
+ 
++    // fydroid-rt (AOSP-13): 0008's hwcLayer->setInfo(type, appId) is dropped —
++    // HWC2::Layer::setInfo / Composer::setLayerInfo were removed in 12. Window-type
++    // classification re-wiring (via setLayerGenericMetadata) is the deferred item
++    // tracked in WaylandHwc2Composer::setLayerInfoInternal.
+     writeCompositionTypeToHWC(hwcLayer.get(), requestedCompositionType, isPeekingThrough,
+                               skipLayer);
+ 
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 2546ea6cf1..b9a9878f77 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -469,6 +469,7 @@ void Layer::prepareGeometryCompositionState() {
+         compositionState->metadata
+                 .emplace(key, compositionengine::GenericLayerMetadataEntry{mandatory, it->second});
+     }
++
+ }
+ 
+ void Layer::preparePerFrameCompositionState() {
+@@ -1034,6 +1035,27 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+     if (!mDrawingState.metadata.merge(data, true /* eraseEmpty */)) return false;
+     mDrawingState.modified = true;
+     setTransactionFlags(eTransactionNeeded);
++
++#ifdef FYDROID_WAYLAND_COMPOSER
++    // Propagate TaskId to all descendants for per-task GPU composition.
++    // WaylandTaskOutput::belongsInOutput() checks TaskId metadata to claim
++    // layers. Only the Task's root layer gets TaskId from the WM, so we
++    // propagate it down the tree when it's set.
++    if (data.has(METADATA_TASK_ID)) {
++        int32_t taskId = data.getInt32(METADATA_TASK_ID, 0);
++        if (taskId > 0) {
++            mCurrentChildren.traverse([&](Layer* child) {
++                if (!child->mCurrentState.metadata.has(METADATA_TASK_ID)) {
++                    child->mCurrentState.metadata.setInt32(METADATA_TASK_ID, taskId);
++                    child->mCurrentState.sequence++;
++                    child->mCurrentState.modified = true;
++                    child->setTransactionFlags(eTransactionNeeded);
++                }
++            });
++        }
++    }
++#endif
++
+     return true;
+ }
+ 
+@@ -1571,6 +1593,21 @@ void Layer::addChild(const sp<Layer>& layer) {
+     layer->setParent(this);
+     layer->setGameModeForTree(mGameMode);
+     updateTreeHasFrameRateVote();
++
++#ifdef FYDROID_WAYLAND_COMPOSER
++    // Propagate TaskId to newly-added child (covers case where parent already
++    // has TaskId when child is added later). Walks up to find ancestor TaskId.
++    if (!layer->mCurrentState.metadata.has(METADATA_TASK_ID)) {
++        for (sp<Layer> ancestor = this; ancestor != nullptr;
++             ancestor = ancestor->mCurrentParent.promote()) {
++            int32_t taskId = ancestor->mCurrentState.metadata.getInt32(METADATA_TASK_ID, 0);
++            if (taskId > 0) {
++                layer->mCurrentState.metadata.setInt32(METADATA_TASK_ID, taskId);
++                break;
++            }
++        }
++    }
++#endif
+ }
+ 
+ ssize_t Layer::removeChild(const sp<Layer>& layer) {
+-- 
+2.43.0
+

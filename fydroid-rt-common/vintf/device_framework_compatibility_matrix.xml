@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  fydroid-rt device framework compatibility matrix.
+
+  Declares the ARC-specific HALs that the Android framework (arc-services /
+  system_server) consumes from the Chrome OS bridge. They are not part of the
+  AOSP framework compatibility matrices, so without this fragment checkvintf
+  (with PRODUCT_ENFORCE_VINTF_MANIFEST) reports them as "in the device manifest
+  but not specified in framework compatibility matrix". Listed optional — the
+  bridge HALs are always present in a real ARC session but the build/GSI
+  contract does not require them.
+
+  Wired via DEVICE_FRAMEWORK_COMPATIBILITY_MATRIX_FILE in fydroid_rt_common.mk.
+-->
+<compatibility-matrix version="1.0" type="framework">
+    <hal format="hidl" optional="true">
+        <name>vendor.google_arc.arcbridge</name>
+        <version>1.0</version>
+        <interface>
+            <name>IArcBridgeService</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl" optional="true">
+        <name>vendor.google_arc.arcvideobridge</name>
+        <version>1.0</version>
+        <interface>
+            <name>IArcVideoBridgeService</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</compatibility-matrix>

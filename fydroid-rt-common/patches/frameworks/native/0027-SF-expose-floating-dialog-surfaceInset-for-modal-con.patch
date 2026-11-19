@@ -1,0 +1,68 @@
+From 616b3f5c347f8f4d2b002ad8d1e191b78ff9ee73 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 17 Jun 2026 12:12:05 +0800
+Subject: [PATCH 27/40] SF: expose floating/dialog surfaceInset for modal
+ content crop (ARC)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A floating-activity/dialog buffer carries a transparent surfaceInset (shadow)
+border on every side. Expose it on the layer composition state (arcFloatingInset),
+populated from inputInfo.surfaceInset for a layer flagged IS_FLOATING_ACTIVITY
+(per-window/activity split) or IS_DIALOG (whole-task dialog, e.g.
+PackageInstaller). CompositionEngineArc (device side) uses it to crop the modal
+output to the content (card) — removing the empty padding margin and the matching
+~inset offset between the visible window and the input frame.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ie465dde627680765ddb28f797ccc155ffafb56dc
+---
+ .../compositionengine/LayerFECompositionState.h      |  7 +++++++
+ services/surfaceflinger/Layer.cpp                    | 12 ++++++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+index 601d099fb9..30e5544b60 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+@@ -126,6 +126,13 @@ struct LayerFECompositionState {
+     // detection of floating activities). (frameworks/native patch 0008)
+     float cornerRadius{0.f};
+ 
++    // fydroid-rt: for an IS_FLOATING_ACTIVITY layer, the window's surfaceInset
++    // (shadow padding) in layer pixels. The composited buffer includes this
++    // transparent border on every side; CompositionEngineArc crops the
++    // standalone modal output to the content (card) by this inset so the visible
++    // window and the (origin-anchored) input frame both cover the card only.
++    int32_t arcFloatingInset{0};
++
+     // The transform from layer local coordinates to composition coordinates
+     ui::Transform geomLayerTransform;
+ 
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 399548767f..bdf905512e 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -450,6 +450,18 @@ void Layer::prepareGeometryCompositionState() {
+     compositionState->geomUsesSourceCrop = usesSourceCrop();
+     compositionState->isSecure = isSecure();
+ 
++    // fydroid-rt: expose the surfaceInset for a floating-activity/dialog layer so
++    // CompositionEngineArc can crop the modal to the content (card), dropping the
++    // transparent shadow-padding border that otherwise offsets the visible window
++    // from the input frame. Covers both the per-window/activity split
++    // (IS_FLOATING_ACTIVITY → standalone output) and the whole-task dialog
++    // (IS_DIALOG → task VD, e.g. PackageInstaller).
++    compositionState->arcFloatingInset =
++            (mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)
++             || mDrawingState.metadata.has(METADATA_IS_DIALOG))
++                    ? mDrawingState.inputInfo.surfaceInset
++                    : 0;
++
+     compositionState->metadata.clear();
+     const auto& supportedMetadata = mFlinger->getHwComposer().getSupportedLayerGenericMetadata();
+     for (const auto& [key, mandatory] : supportedMetadata) {
+-- 
+2.43.0
+

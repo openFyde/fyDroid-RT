@@ -1,0 +1,66 @@
+From e94155895cb222cc9bb01e503a78744823e85fdd Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 31 Mar 2026 13:58:35 +0800
+Subject: [PATCH 02/40] BufferQueueProducer: support ARC++ listener-only
+ connect
+
+C2VdaBqBlockPool connects with api='ARC\0' (0x41524300) to register a
+buffer-released listener alongside the existing producer connection.
+The proprietary ARC++ libgui.so allows this; stock AOSP rejects it
+with BAD_VALUE. Handle this case by registering the listener and
+filling the output without disconnecting the existing producer.
+
+Bug: b/146409777
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I3a4da3d71503e7668cfadcf688696a5ff6683559
+---
+ libs/gui/BufferQueueProducer.cpp | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/libs/gui/BufferQueueProducer.cpp b/libs/gui/BufferQueueProducer.cpp
+index 5fe5e71db9..1065a879fc 100644
+--- a/libs/gui/BufferQueueProducer.cpp
++++ b/libs/gui/BufferQueueProducer.cpp
+@@ -44,6 +44,11 @@
+ 
+ namespace android {
+ 
++// ARC++ hack (b/146409777): C2VdaBqBlockPool uses this multi-char constant as
++// the 'api' parameter to connect() to register a buffer-released listener
++// alongside an existing producer connection.
++static const int kArcListenerApi = 'ARC\0';
++
+ // Macros for include BufferQueueCore information in log messages
+ #define BQ_LOGV(x, ...)                                                                           \
+     ALOGV("[%s](id:%" PRIx64 ",api:%d,p:%d,c:%" PRIu64 ") " x, mConsumerName.string(),            \
+@@ -1223,6 +1228,26 @@ status_t BufferQueueProducer::connect(const sp<IProducerListener>& listener,
+     }
+ 
+     if (mCore->mConnectedApi != BufferQueueCore::NO_CONNECTED_API) {
++        // ARC++ hack (b/146409777): C2VdaBqBlockPool connects with api='ARC\0'
++        // to register a buffer-released listener alongside the existing
++        // producer connection. Allow this without disconnecting.
++        if (api == kArcListenerApi) {
++            BQ_LOGI("connect: ARC listener-only connect (existing api=%d)",
++                    mCore->mConnectedApi);
++            if (listener != nullptr) {
++                mCore->mConnectedProducerListener = listener;
++                mCore->mBufferReleasedCbEnabled = listener->needsReleaseNotify();
++            }
++            output->width = mCore->mDefaultWidth;
++            output->height = mCore->mDefaultHeight;
++            output->transformHint = mCore->mTransformHintInUse = mCore->mTransformHint;
++            output->numPendingBuffers =
++                    static_cast<uint32_t>(mCore->mQueue.size());
++            output->nextFrameNumber = mCore->mFrameCounter + 1;
++            output->bufferReplaced = false;
++            output->maxBufferCount = mCore->mMaxBufferCount;
++            return NO_ERROR;
++        }
+         BQ_LOGE("connect: already connected (cur=%d req=%d)",
+                 mCore->mConnectedApi, api);
+         return BAD_VALUE;
+-- 
+2.43.0
+

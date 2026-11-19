@@ -1,0 +1,7 @@
+# GPU/graphics configuration for ARC++ container
+# Mesa EGL on ARM Mali GPU
+
+on early-init
+    # Advertise OpenGL ES 3.2
+    setprop ro.opengles.version 196610
+    setprop ro.hardware.egl mesa

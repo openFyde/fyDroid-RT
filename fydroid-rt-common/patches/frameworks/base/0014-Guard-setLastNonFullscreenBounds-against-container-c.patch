@@ -1,0 +1,49 @@
+From a99ad7f5d54357af98edbe69aa37e55cd3ebe233 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 20 Apr 2026 18:59:47 +0800
+Subject: [PATCH 14/75] Guard setLastNonFullscreenBounds against container
+ coordinate mismatch
+
+On ARC/fydroid-rt containers, Chrome/Exo controls window placement and
+sizing via Wayland. Android's pixel bounds are in a different coordinate
+space from Chrome's DIP-based system, so bounds saved by
+Task.onConfigurationChanged() are inflated. This causes freeform windows
+to start at the wrong size on each launch.
+
+Skip saving mLastNonFullscreenBounds entirely on containers
+(Build.IS_CONTAINER), letting Chrome handle window placement and
+TaskLaunchParamsModifier provide reasonable default freeform sizes.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Id6cfa5ccc60f69a31fe9e3a2a42bc874c830b29b
+---
+ services/core/java/com/android/server/wm/Task.java | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 256e59e4e51c..82eb279b7d9a 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -157,6 +157,7 @@ import android.graphics.Matrix;
+ import android.graphics.Point;
+ import android.graphics.Rect;
+ import android.os.Binder;
++import android.os.Build;
+ import android.os.Debug;
+ import android.os.Handler;
+ import android.os.IBinder;
+@@ -1951,7 +1952,10 @@ class Task extends TaskFragment {
+ 
+         // If the configuration supports persistent bounds (eg. Freeform), keep track of the
+         // current (non-fullscreen) bounds for persistence.
+-        if (getWindowConfiguration().persistTaskBounds()) {
++        // On ARC/container, Chrome/Exo controls window placement and sizing.
++        // Bounds from Chrome are in a different coordinate space (pixel vs DIP)
++        // and saving them causes windows to grow on each open/close cycle.
++        if (getWindowConfiguration().persistTaskBounds() && !Build.IS_CONTAINER) {
+             final Rect currentBounds = getRequestedOverrideBounds();
+             if (!currentBounds.isEmpty()) {
+                 setLastNonFullscreenBounds(currentBounds);
+-- 
+2.43.0
+

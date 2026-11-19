@@ -1,0 +1,185 @@
+From 9414efb162f411e305483b63a0b381ad3c8c8483 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 18:57:06 +0800
+Subject: [PATCH 3/6] fydroid: HEVC/H.265 Main decode support (Mojo)
+
+Add HEVC as a decodable codec across the reused decode path (patch 0011
+equivalent, applied onto AOSP-13):
+
+- common: VideoCodec::HEVC enum (+ kAllCodecs, VideoCodecToString); component
+  names kHEVCDecoder / kHEVCSecureDecoder (c2.mojo-legacy.hevc.decoder[.secure]).
+- V4L2DecodeInterface: map the HEVC names to VideoCodec::HEVC, declare the
+  HEVC Main profile/level set, and use the H264 reorder output-delay (16).
+- V4L2Decoder: HEVC V4L2 pixfmt (fallback path; define V4L2_PIX_FMT_HEVC).
+
+Local commit only. The Mojo profile mapping + store listing are in the
+device-side libfydroid_c2_mojo commit.
+
+Change-Id: Ia7f6763f0cbf16e415262afe355136bdd7828044
+---
+ common/V4L2ComponentCommon.cpp                |  5 ++-
+ common/VideoTypes.cpp                         |  2 ++
+ .../v4l2_codec2/common/V4L2ComponentCommon.h  |  2 ++
+ .../include/v4l2_codec2/common/VideoTypes.h   |  3 +-
+ components/V4L2DecodeInterface.cpp            | 36 +++++++++++++++++++
+ components/V4L2Decoder.cpp                    |  6 ++++
+ 6 files changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/common/V4L2ComponentCommon.cpp b/common/V4L2ComponentCommon.cpp
+index de74c86..c997531 100644
+--- a/common/V4L2ComponentCommon.cpp
++++ b/common/V4L2ComponentCommon.cpp
+@@ -25,15 +25,18 @@ const std::string V4L2ComponentName::kVP9Encoder = "c2.mojo.vp9.encoder";
+ const std::string V4L2ComponentName::kH264Decoder = "c2.mojo-legacy.avc.decoder";
+ const std::string V4L2ComponentName::kVP8Decoder = "c2.mojo-legacy.vp8.decoder";
+ const std::string V4L2ComponentName::kVP9Decoder = "c2.mojo-legacy.vp9.decoder";
++const std::string V4L2ComponentName::kHEVCDecoder = "c2.mojo-legacy.hevc.decoder";
+ const std::string V4L2ComponentName::kH264SecureDecoder = "c2.mojo-legacy.avc.decoder.secure";
+ const std::string V4L2ComponentName::kVP8SecureDecoder = "c2.mojo-legacy.vp8.decoder.secure";
+ const std::string V4L2ComponentName::kVP9SecureDecoder = "c2.mojo-legacy.vp9.decoder.secure";
++const std::string V4L2ComponentName::kHEVCSecureDecoder = "c2.mojo-legacy.hevc.decoder.secure";
+ 
+ // static
+ bool V4L2ComponentName::isValid(const char* name) {
+     return name == kH264Encoder || name == kVP8Encoder || name == kVP9Encoder ||
+            name == kH264Decoder || name == kVP8Decoder || name == kVP9Decoder ||
+-           name == kH264SecureDecoder || name == kVP8SecureDecoder || name == kVP9SecureDecoder;
++           name == kHEVCDecoder || name == kH264SecureDecoder || name == kVP8SecureDecoder ||
++           name == kVP9SecureDecoder || name == kHEVCSecureDecoder;
+ }
+ 
+ // static
+diff --git a/common/VideoTypes.cpp b/common/VideoTypes.cpp
+index c123ad1..18ebfc9 100644
+--- a/common/VideoTypes.cpp
++++ b/common/VideoTypes.cpp
+@@ -19,6 +19,8 @@ const char* VideoCodecToString(VideoCodec codec) {
+         return "VP8";
+     case VideoCodec::VP9:
+         return "VP9";
++    case VideoCodec::HEVC:
++        return "HEVC";
+     }
+ }
+ 
+diff --git a/common/include/v4l2_codec2/common/V4L2ComponentCommon.h b/common/include/v4l2_codec2/common/V4L2ComponentCommon.h
+index b8cf031..a5fbdaf 100644
+--- a/common/include/v4l2_codec2/common/V4L2ComponentCommon.h
++++ b/common/include/v4l2_codec2/common/V4L2ComponentCommon.h
+@@ -18,9 +18,11 @@ struct V4L2ComponentName {
+     static const std::string kH264Decoder;
+     static const std::string kVP8Decoder;
+     static const std::string kVP9Decoder;
++    static const std::string kHEVCDecoder;
+     static const std::string kH264SecureDecoder;
+     static const std::string kVP8SecureDecoder;
+     static const std::string kVP9SecureDecoder;
++    static const std::string kHEVCSecureDecoder;
+ 
+     // Return true if |name| is a valid component name.
+     static bool isValid(const char* name);
+diff --git a/common/include/v4l2_codec2/common/VideoTypes.h b/common/include/v4l2_codec2/common/VideoTypes.h
+index 076f096..cf2b54d 100644
+--- a/common/include/v4l2_codec2/common/VideoTypes.h
++++ b/common/include/v4l2_codec2/common/VideoTypes.h
+@@ -18,10 +18,11 @@ enum class VideoCodec {
+     H264,
+     VP8,
+     VP9,
++    HEVC,  // fydroid: HEVC/H.265 Main decode via Mojo
+ };
+ 
+ constexpr std::initializer_list<VideoCodec> kAllCodecs = {VideoCodec::H264, VideoCodec::VP8,
+-                                                          VideoCodec::VP9};
++                                                          VideoCodec::VP9, VideoCodec::HEVC};
+ 
+ const char* VideoCodecToString(VideoCodec codec);
+ const char* profileToString(C2Config::profile_t profile);
+diff --git a/components/V4L2DecodeInterface.cpp b/components/V4L2DecodeInterface.cpp
+index 4bc4121..cf1219f 100644
+--- a/components/V4L2DecodeInterface.cpp
++++ b/components/V4L2DecodeInterface.cpp
+@@ -34,6 +34,8 @@ std::optional<VideoCodec> getCodecFromComponentName(const std::string& name) {
+         return VideoCodec::VP8;
+     if (name == V4L2ComponentName::kVP9Decoder || name == V4L2ComponentName::kVP9SecureDecoder)
+         return VideoCodec::VP9;
++    if (name == V4L2ComponentName::kHEVCDecoder || name == V4L2ComponentName::kHEVCSecureDecoder)
++        return VideoCodec::HEVC;
+ 
+     ALOGE("Unknown name: %s", name.c_str());
+     return std::nullopt;
+@@ -179,6 +181,36 @@ V4L2DecodeInterface::V4L2DecodeInterface(const std::string& name,
+                         .withSetter(ProfileLevelSetter)
+                         .build());
+         break;
++
++    case VideoCodec::HEVC:
++        inputMime = MEDIA_MIMETYPE_VIDEO_HEVC;
++        addParameter(
++                DefineParam(mProfileLevel, C2_PARAMKEY_PROFILE_LEVEL)
++                        .withDefault(new C2StreamProfileLevelInfo::input(
++                                0u, C2Config::PROFILE_HEVC_MAIN, C2Config::LEVEL_HEVC_MAIN_5_1))
++                        .withFields(
++                                {C2F(mProfileLevel, profile)
++                                         .oneOf({C2Config::PROFILE_HEVC_MAIN,
++                                                 C2Config::PROFILE_HEVC_MAIN_STILL}),
++                                 C2F(mProfileLevel, level)
++                                         .oneOf({C2Config::LEVEL_HEVC_MAIN_1,
++                                                 C2Config::LEVEL_HEVC_MAIN_2,
++                                                 C2Config::LEVEL_HEVC_MAIN_2_1,
++                                                 C2Config::LEVEL_HEVC_MAIN_3,
++                                                 C2Config::LEVEL_HEVC_MAIN_3_1,
++                                                 C2Config::LEVEL_HEVC_MAIN_4,
++                                                 C2Config::LEVEL_HEVC_MAIN_4_1,
++                                                 C2Config::LEVEL_HEVC_MAIN_5,
++                                                 C2Config::LEVEL_HEVC_MAIN_5_1,
++                                                 C2Config::LEVEL_HEVC_MAIN_5_2,
++                                                 C2Config::LEVEL_HEVC_HIGH_4,
++                                                 C2Config::LEVEL_HEVC_HIGH_4_1,
++                                                 C2Config::LEVEL_HEVC_HIGH_5,
++                                                 C2Config::LEVEL_HEVC_HIGH_5_1,
++                                                 C2Config::LEVEL_HEVC_HIGH_5_2})})
++                        .withSetter(ProfileLevelSetter)
++                        .build());
++        break;
+     }
+ 
+     addParameter(
+@@ -350,6 +382,10 @@ uint32_t V4L2DecodeInterface::getOutputDelay(VideoCodec codec) {
+         return 0;
+     case VideoCodec::VP9:
+         return 0;
++    case VideoCodec::HEVC:
++        // HEVC also reorders frames (B-frames). Mirror the H264 budget so the
++        // codec2 framework keeps queuing input until the reorder window fills.
++        return 16;
+     }
+ }
+ 
+diff --git a/components/V4L2Decoder.cpp b/components/V4L2Decoder.cpp
+index aa59e91..884b6f7 100644
+--- a/components/V4L2Decoder.cpp
++++ b/components/V4L2Decoder.cpp
+@@ -27,6 +27,10 @@ constexpr size_t kNumInputBuffers = 16;
+ // Extra buffers for transmitting in the whole video pipeline.
+ constexpr size_t kNumExtraOutputBuffers = 4;
+ 
++#ifndef V4L2_PIX_FMT_HEVC
++#define V4L2_PIX_FMT_HEVC v4l2_fourcc('H', 'E', 'V', 'C')
++#endif
++
+ // Currently we only support flexible pixel 420 format YCBCR_420_888 in Android.
+ // Here is the list of flexible 420 format.
+ constexpr std::initializer_list<uint32_t> kSupportedOutputFourccs = {
+@@ -42,6 +46,8 @@ uint32_t VideoCodecToV4L2PixFmt(VideoCodec codec) {
+         return V4L2_PIX_FMT_VP8;
+     case VideoCodec::VP9:
+         return V4L2_PIX_FMT_VP9;
++    case VideoCodec::HEVC:
++        return V4L2_PIX_FMT_HEVC;
+     }
+ }
+ 
+-- 
+2.43.0
+

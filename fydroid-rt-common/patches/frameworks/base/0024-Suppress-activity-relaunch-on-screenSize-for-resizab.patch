@@ -1,0 +1,65 @@
+From 98a7535d22304023ed321e1b973ec8d435d9683e Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 28 Apr 2026 18:20:32 +0800
+Subject: [PATCH 24/75] Suppress activity relaunch on screenSize for resizable
+ activities
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ARC apps are dragged across physical displays with different DSFs;
+each crossover changes the window's effective screen-size config.
+For activities whose manifest doesn't list screenSize in
+android:configChanges (e.g. com.android.settings.Settings, most AOSP
+apps), Android's default response is to destroy + recreate the
+activity, which produces a visible reset/flash and resets the window
+to the activity's freeform default — undoing whatever size the user
+had before.
+
+Most modern apps are responsive enough to handle screen-size changes
+in-process without breaking; they just don't bother to declare it.
+For any activity that's already opted into resizing
+(android:resizeableActivity != false → isResizeable() returns true),
+treat CONFIG_SCREEN_SIZE | CONFIG_SMALLEST_SCREEN_SIZE |
+CONFIG_SCREEN_LAYOUT as implicitly handled in
+ActivityRecord.shouldRelaunchLocked(). Activities that genuinely
+can't handle resize have already opted out via
+android:resizeableActivity="false" and won't take this path.
+
+Change-Id: If188e1315460f76d2decfeec3b2bf1bdf8d29e47
+---
+ .../com/android/server/wm/ActivityRecord.java  | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index 6325a5a05dd5..8788b611b843 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -9515,6 +9515,24 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+             configChanged |= CONFIG_UI_MODE;
+         }
+ 
++        // fydroid-rt: assume any resizable activity implicitly handles
++        // screen-size config changes, even if its manifest doesn't list
++        // them in android:configChanges. Many AOSP apps (Settings,
++        // PackageInstaller, etc.) are responsive enough to handle
++        // size changes without breaking, but they don't bother to
++        // declare it — and our Wayland window crossover keeps producing
++        // size-change events that flash the user with destroy/create
++        // cycles. Suppressing the relaunch lets these apps retain
++        // state and avoid the visible reset; activities that genuinely
++        // can't handle resize have already opted out via
++        // android:resizeableActivity="false" (which makes isResizeable()
++        // return false).
++        if (isResizeable()) {
++            configChanged |= CONFIG_SCREEN_SIZE
++                    | CONFIG_SMALLEST_SCREEN_SIZE
++                    | CONFIG_SCREEN_LAYOUT;
++        }
++
+         return (changes & (~configChanged)) != 0;
+     }
+ 
+-- 
+2.43.0
+

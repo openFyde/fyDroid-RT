@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="io.fydeos.arc.policymanager">
+
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.CHANGE_COMPONENT_ENABLED_STATE" />
+    <uses-permission android:name="android.permission.READ_INSTALL_SESSIONS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Sent only by the system (arc-services / Chrome bridge), never by ordinary apps. -->
+    <protected-broadcast android:name="io.fydeos.arc.ArcGateway.action.APPLY_POLICY" />
+    <protected-broadcast android:name="io.fydeos.arc.policymanager.action.STOP_MANAGER" />
+    <protected-broadcast android:name="io.fydeos.arc.policymanager.action.SET_COMPONENT_STATE" />
+    <!-- Sent by our BootReceiver (platform-signed) to ArcPolicyService to pull policy on boot.
+         Declaring it protected stops AMS' checkBroadcastFromSystem from logging a "non-protected
+         broadcast from system" wtf for this persistent system app. -->
+    <protected-broadcast android:name="io.fydeos.arc.policy.action.REQUEST_REFRESH" />
+
+    <application
+        android:label="@string/app_name"
+        android:hasCode="true"
+        android:persistent="true">
+
+        <service
+            android:name=".PolicyService"
+            android:exported="false" />
+
+        <receiver
+            android:name=".PolicyReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.fydeos.arc.ArcGateway.action.APPLY_POLICY" />
+                <action android:name="io.fydeos.arc.policymanager.action.STOP_MANAGER" />
+                <action android:name="io.fydeos.arc.policymanager.action.SET_COMPONENT_STATE" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".ArcDeviceAdminReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+        </receiver>
+
+    </application>
+</manifest>

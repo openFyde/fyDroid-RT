@@ -1,0 +1,96 @@
+From cc5f9f3b4052e27dec3a6e5565b8711ff59eb838 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 18 Jun 2026 12:56:11 +0800
+Subject: [PATCH 41/75] wm: classify PackageInstaller as a dialog (centered
+ modal) via live re-stamp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The install confirmation rendered as a regular freeform window in the
+top-left, clipping its content, instead of a centered modal. Root cause:
+Task.setTaskMetadata stamps METADATA_IS_DIALOG only at surface build and on
+makeAnimationLeash. The install task is created while its translucent,
+NON-floating InstallStaging activity is on top (not flagged), and the floating
+PackageInstallerActivity that follows uses a no-animation theme, so
+makeAnimationLeash never re-runs setTaskMetadata with the floating activity on
+top — IS_DIALOG was never stamped, and the fydroid compositor never presented
+it as a modal.
+
+Recompute the dialog classification live in prepareSurfaces (extracted as
+isDialogTaskNow()) and push changes to the task surface via
+Transaction.setMetadata, so a floating/dialog activity that becomes top without
+an animation is correctly classified. Verified on fydroid-rt (rk3588): the
+installer is now recognized as a dialog and the compositor presents it as a
+modal window (no longer a clipped top-left freeform window).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I4ae97922d03d9fa37e054c4b4aedf1b3b2b541a8
+---
+ .../core/java/com/android/server/wm/Task.java | 35 +++++++++++++++++--
+ 1 file changed, 32 insertions(+), 3 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 2b98b4bfe0fd..af3e40b2a274 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -3133,10 +3133,9 @@ class Task extends TaskFragment {
+         // never translucent): checking the top activity alone would flip a normal
+         // app into a modal mid-transition (setTaskMetadata re-runs on
+         // makeAnimationLeash). A translucent task has no opaque content to lose.
+-        if (isDialogTask(getRootActivity())
+-                || (isTranslucent(null /* starting */)
+-                        && isDialogTask(getTopNonFinishingActivity()))) {
++        if (isDialogTaskNow()) {
+             b.setMetadata(METADATA_IS_DIALOG, 1);
++            mLastDialogMetadata = 1;
+         }
+         if (getActivityType() == ACTIVITY_TYPE_HOME) {
+             b.setMetadata(METADATA_IS_HOME, 1);
+@@ -3144,6 +3143,24 @@ class Task extends TaskFragment {
+         return b;
+     }
+ 
++    /**
++     * Whether the task currently presents as a dialog (centered modal). Its
++     * ROOT activity uses a floating theme, OR the task is translucent (no opaque
++     * activity) and its TOP activity is floating — see the long comment in
++     * {@link #setTaskMetadata}. Recomputed live so the classification tracks the
++     * top activity (the build-time stamp alone misses cases like PackageInstaller,
++     * whose floating PackageInstallerActivity follows a non-floating InstallStaging
++     * with a no-animation theme, so makeAnimationLeash never re-stamps).
++     */
++    private boolean isDialogTaskNow() {
++        return isDialogTask(getRootActivity())
++                || (isTranslucent(null /* starting */)
++                        && isDialogTask(getTopNonFinishingActivity()));
++    }
++
++    /** Last IS_DIALOG value pushed to the task surface (-1 = not yet stamped). */
++    private int mLastDialogMetadata = -1;
++
+     @Override
+     public SurfaceControl.Builder makeAnimationLeash() {
+         return setTaskMetadata(super.makeAnimationLeash());
+@@ -3449,6 +3466,18 @@ class Task extends TaskFragment {
+             if (show != mLastSurfaceShowing) {
+                 t.setVisibility(mSurfaceControl, show);
+             }
++            // Re-stamp IS_DIALOG live: setTaskMetadata only runs at surface
++            // build / makeAnimationLeash, so a floating activity that becomes
++            // top without an animation (e.g. PackageInstaller's no-animation
++            // PackageInstallerActivity after the non-floating InstallStaging)
++            // would never be classified as a dialog. Recompute as the top
++            // activity changes and push the change to the task surface so the
++            // compositor presents it as a centered modal.
++            final int dialog = isDialogTaskNow() ? 1 : 0;
++            if (dialog != mLastDialogMetadata) {
++                mLastDialogMetadata = dialog;
++                t.setMetadata(mSurfaceControl, METADATA_IS_DIALOG, dialog);
++            }
+         }
+         // Only show the overlay if the task has other visible children
+         if (mOverlayHost != null) {
+-- 
+2.43.0
+

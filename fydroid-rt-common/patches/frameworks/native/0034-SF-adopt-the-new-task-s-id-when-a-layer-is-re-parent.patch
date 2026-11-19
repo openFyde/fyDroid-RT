@@ -1,0 +1,79 @@
+From d10b326154b9d27c687ae3a04c415e34ef87a25f Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 17 Aug 2026 15:29:43 +0800
+Subject: [PATCH 34/40] SF: adopt the new task's id when a layer is re-parented
+ between tasks
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I9a7a2a0b163aa7196e1f772901c3716db4cdf961
+---
+ services/surfaceflinger/Layer.cpp | 48 ++++++++++++++++++++++++++++---
+ 1 file changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 6f20923f70..7116fbe31c 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1696,15 +1696,55 @@ void Layer::addChild(const sp<Layer>& layer) {
+     // Propagate TaskId to newly-added child (covers case where parent already
+     // has TaskId when child is added later). Walks up to find ancestor TaskId.
+     // Floating-activity subtrees are intentionally excluded (see above).
+-    if (!inFloatingSubtree &&
+-        !layer->mDrawingState.metadata.has(METADATA_TASK_ID)) {
++    if (!inFloatingSubtree) {
+         for (sp<Layer> ancestor = this; ancestor != nullptr;
+              ancestor = ancestor->mCurrentParent.promote()) {
+             int32_t taskId = ancestor->mDrawingState.metadata.getInt32(METADATA_TASK_ID, 0);
+-            if (taskId > 0) {
++            if (taskId <= 0) continue;
++            // Adopt it even if the child already carries a DIFFERENT one.
++            //
++            // A layer's task is its ancestry's task, by definition — so a
++            // mismatch means the layer has been REPARENTED into another task and
++            // is carrying the id it was created with. That is not hypothetical:
++            // multi-activity PIP moves an existing activity into a brand new
++            // pinned task, and its content layer kept taskId=206 while the
++            // activity had moved to 207. The compositor claims layers into a
++            // task's virtual display purely by TaskId, so the video went on
++            // composing into the old task's window and the PIP window was empty.
++            //
++            // Only filling a MISSING id (the original rule) cannot fix that, and
++            // the stale value is never corrected by anything else — WM stamps
++            // METADATA_TASK_ID at layer creation and reparenting does not rewrite
++            // it. Floating-activity subtrees stay excluded: they are deliberately
++            // split out of their host task and must keep their own id.
++            const int32_t current =
++                    layer->mDrawingState.metadata.getInt32(METADATA_TASK_ID, 0);
++            if (current != taskId) {
++                if (current > 0) {
++                    ALOGI("addChild: '%s' reparented into '%s' — taskId %d → %d",
++                          layer->mName.c_str(), mName.c_str(), current, taskId);
++                }
+                 layer->mDrawingState.metadata.setInt32(METADATA_TASK_ID, taskId);
+-                break;
++                layer->mDrawingState.sequence++;
++                layer->mDrawingState.modified = true;
++                layer->setTransactionFlags(eTransactionNeeded);
++                // The activity's own children (the SurfaceView carrying the
++                // video, its BLAST wrapper) hold the stale id too.
++                layer->mCurrentChildren.traverse([&](Layer* child) {
++                    if (child->mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++                        return;
++                    }
++                    if (child->mDrawingState.metadata.getInt32(METADATA_TASK_ID, 0)
++                            == taskId) {
++                        return;
++                    }
++                    child->mDrawingState.metadata.setInt32(METADATA_TASK_ID, taskId);
++                    child->mDrawingState.sequence++;
++                    child->mDrawingState.modified = true;
++                    child->setTransactionFlags(eTransactionNeeded);
++                });
+             }
++            break;
+         }
+     }
+     // Inherit IsDialog from nearest ancestor that has it.
+-- 
+2.43.0
+

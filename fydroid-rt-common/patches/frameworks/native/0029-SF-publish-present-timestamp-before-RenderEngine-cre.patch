@@ -1,0 +1,87 @@
+From 21c25a28d906b5b03e59e7f8878b411887920fb3 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 29 Jun 2026 11:56:00 +0800
+Subject: [PATCH 29/40] SF: publish present-timestamp before
+ RenderEngine::create (AMD/zink)
+
+When the RenderEngine GL backend is zink (GL-on-Vulkan, used on AMD where
+radeonsi is not built), RenderEngine::create() -> eglInitialize() enters the
+Android Vulkan loader, which blocks in
+WaitForPropertyCreation("service.sf.present_timestamp") -- a property that
+SurfaceFlinger itself only sets afterwards via StartPropertySetThread. This
+made SurfaceFlinger deadlock against itself during boot and never come up.
+
+Create and configure the HWComposer (needed for the presentFenceReliable
+capability query) and start the property-set thread before creating the
+RenderEngine, so the property already exists when zink/Vulkan enumerates
+device extensions. The StartPropertySetThread also (re)starts the boot
+animation, which simply waits for SF's main loop, so the earlier start is
+harmless.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I93c5c1a6717f53fcbf7172e413cbbd186ee0a42b
+---
+ services/surfaceflinger/SurfaceFlinger.cpp | 33 ++++++++++++++--------
+ 1 file changed, 21 insertions(+), 12 deletions(-)
+
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index c7a20ebe08..6af02f1a6e 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -807,6 +807,27 @@ void SurfaceFlinger::init() {
+             "Initializing graphics H/W...");
+     Mutex::Autolock _l(mStateLock);
+ 
++    // fydroid/AMD(zink): create and configure the HWComposer, then publish
++    // "service.sf.present_timestamp", BEFORE creating the RenderEngine. When the
++    // RenderEngine GL backend is zink (GL-on-Vulkan, used on AMD where radeonsi
++    // is not built), RenderEngine::create() -> eglInitialize() enters the Android
++    // Vulkan loader, which blocks in
++    // WaitForPropertyCreation("service.sf.present_timestamp") -- a property that
++    // SurfaceFlinger itself sets via StartPropertySetThread. In the stock order
++    // that thread starts only after RenderEngine::create(), so SF deadlocks
++    // against itself during boot and never comes up. Setting it first avoids the
++    // deadlock; StartPropertySetThread also (re)starts the boot animation, which
++    // simply waits for SF's main loop, so the earlier start is harmless.
++    mCompositionEngine->setHwComposer(getFactory().createHWComposer(mHwcServiceName));
++    mCompositionEngine->getHwComposer().setCallback(*this);
++
++    const bool presentFenceReliable =
++            !getHwComposer().hasCapability(Capability::PRESENT_FENCE_IS_NOT_RELIABLE);
++    mStartPropertySetThread = getFactory().createStartPropertySetThread(presentFenceReliable);
++    if (mStartPropertySetThread->Start() != NO_ERROR) {
++        ALOGE("Run StartPropertySetThread failed!");
++    }
++
+     // Get a RenderEngine for the given display / config (can't fail)
+     // TODO(b/77156734): We need to stop casting and use HAL types when possible.
+     // Sending maxFrameBufferAcquiredBuffers as the cache size is tightly tuned to single-display.
+@@ -834,8 +855,6 @@ void SurfaceFlinger::init() {
+     }
+ 
+     mCompositionEngine->setTimeStats(mTimeStats);
+-    mCompositionEngine->setHwComposer(getFactory().createHWComposer(mHwcServiceName));
+-    mCompositionEngine->getHwComposer().setCallback(*this);
+     ClientCache::getInstance().setRenderEngine(&getRenderEngine());
+ 
+     enableLatchUnsignaledConfig = getLatchUnsignaledConfig();
+@@ -880,16 +899,6 @@ void SurfaceFlinger::init() {
+ 
+     onActiveDisplaySizeChanged(display);
+ 
+-    // Inform native graphics APIs whether the present timestamp is supported:
+-
+-    const bool presentFenceReliable =
+-            !getHwComposer().hasCapability(Capability::PRESENT_FENCE_IS_NOT_RELIABLE);
+-    mStartPropertySetThread = getFactory().createStartPropertySetThread(presentFenceReliable);
+-
+-    if (mStartPropertySetThread->Start() != NO_ERROR) {
+-        ALOGE("Run StartPropertySetThread failed!");
+-    }
+-
+     ALOGV("Done initializing");
+ }
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,98 @@
+From 78371f1b064997946bd5333738b71f2c53ad4a7a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 16 Jun 2026 10:52:21 +0800
+Subject: [PATCH 38/75] wm: split a floating activity stacked on a non-dialog
+ task into its own modal (ARC)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A floating-themed activity (windowIsFloating) launched on top of a
+non-dialog task — e.g. SystemUI's brightness dialog over Settings —
+joins the host task, so its window layer inherits the host TaskId. The
+ARC compositor then unions the dialog's display-centered bounds into the
+host task footprint and auto-expands the host window.
+
+Stamp METADATA_IS_FLOATING_ACTIVITY (=13) on such an activity's own
+surface in ActivityRecord.setInitialSurfaceControlProperties, gated on
+!isRootOfTask() && a windowIsFloating theme. A standalone dialog task
+(whose root is floating) is unaffected and keeps the existing
+IsDialogTask path. Add the matching SurfaceControl constant.
+
+The compositor uses the flag to split the activity into its own modal
+window instead of growing the host.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I57dffa398d8e73e9ed3f4549558bec91f956118a
+---
+ core/java/android/view/SurfaceControl.java    | 11 +++++++
+ .../com/android/server/wm/ActivityRecord.java | 31 +++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/core/java/android/view/SurfaceControl.java b/core/java/android/view/SurfaceControl.java
+index 260715058e47..36a353bdac39 100644
+--- a/core/java/android/view/SurfaceControl.java
++++ b/core/java/android/view/SurfaceControl.java
+@@ -812,6 +812,17 @@ public final class SurfaceControl implements Parcelable {
+      */
+     public static final int METADATA_IS_HOME = 12;
+ 
++    /**
++     * A floating-themed activity (windowIsFloating) stacked on top of a non-dialog
++     * task — e.g. the brightness dialog over Settings. Set on the activity's own
++     * surface (not the task), so the compositor can split it into its own modal
++     * window instead of unioning it into the host task footprint (which would
++     * auto-expand the host app window). Must match METADATA_IS_FLOATING_ACTIVITY
++     * in frameworks/native LayerMetadata.h.
++     * @hide
++     */
++    public static final int METADATA_IS_FLOATING_ACTIVITY = 13;
++
+     /**
+      * A wrapper around HardwareBuffer that contains extra information about how to
+      * interpret the screenshot HardwareBuffer.
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index e9bc63c2814c..2c86ebbca4db 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -7539,6 +7539,37 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+         }
+     }
+ 
++    @Override
++    void setInitialSurfaceControlProperties(SurfaceControl.Builder b) {
++        // A floating-themed activity (windowIsFloating) stacked on top of a
++        // non-dialog task — e.g. SystemUI's brightness dialog launched over the
++        // Settings task. The whole task is NOT flagged IsDialogTask (Task only
++        // checks the root activity, on purpose), so without this the floating
++        // activity's layer inherits the host task's TaskId and the compositor
++        // unions its display-centered bounds into the host footprint, auto-
++        // expanding the host window. Mark the activity's own surface so the
++        // compositor can split it into its own modal window instead.
++        if (info != null && task != null && !isRootOfTask() && usesFloatingTheme()) {
++            b.setMetadata(SurfaceControl.METADATA_IS_FLOATING_ACTIVITY, 1);
++        }
++        super.setInitialSurfaceControlProperties(b);
++    }
++
++    /** Whether this activity's theme declares windowIsFloating (dialog theme). */
++    private boolean usesFloatingTheme() {
++        if (info == null || info.applicationInfo == null) {
++            return false;
++        }
++        final int theme = info.getThemeResource();
++        if (theme == 0) return false;
++        final AttributeCache.Entry ent = AttributeCache.instance().get(
++                info.applicationInfo.packageName, theme,
++                com.android.internal.R.styleable.Window, mUserId);
++        if (ent == null) return false;
++        return ent.array.getBoolean(
++                com.android.internal.R.styleable.Window_windowIsFloating, false);
++    }
++
+     @Override
+     boolean showSurfaceOnCreation() {
+         return false;
+-- 
+2.43.0
+

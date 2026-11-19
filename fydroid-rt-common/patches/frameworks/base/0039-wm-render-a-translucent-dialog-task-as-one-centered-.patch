@@ -1,0 +1,94 @@
+From 7efa7b787ca3ffef920276004553a12848b6da43 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 16 Jun 2026 11:52:56 +0800
+Subject: [PATCH 39/75] wm: render a translucent dialog task as one centered
+ modal (ARC)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Complements 0038. A floating activity in its OWN translucent task — e.g.
+PackageInstaller, whose transparent no-UI root (DeleteStagedFileOnResult)
+isn't floating but whose visible PackageInstallerActivity on top is — must
+not be split per-window by IS_FLOATING_ACTIVITY: it has multiple concentric
+windows that would fragment into separate modals.
+
+- ActivityRecord.setInitialSurfaceControlProperties: gate
+  IS_FLOATING_ACTIVITY on !task.isTranslucent(), so it only fires when there
+  is a real opaque host beneath (e.g. the brightness dialog over Settings).
+  A translucent task (no opaque host) is skipped.
+- Task.setTaskMetadata: also set METADATA_IS_DIALOG when the task is
+  translucent AND its top activity is floating. The translucent gate keeps a
+  normal opaque app from being flagged when it merely shows a dialog activity
+  (the 0037 concern). The whole task then composites into one centered
+  frameless modal instead of fragmenting.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I080c453b952939539a21692247da58f5041ecee6
+---
+ .../com/android/server/wm/ActivityRecord.java | 11 +++++++-
+ .../core/java/com/android/server/wm/Task.java | 26 ++++++++++++-------
+ 2 files changed, 27 insertions(+), 10 deletions(-)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index 2c86ebbca4db..a94acd20f222 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -7549,7 +7549,16 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+         // unions its display-centered bounds into the host footprint, auto-
+         // expanding the host window. Mark the activity's own surface so the
+         // compositor can split it into its own modal window instead.
+-        if (info != null && task != null && !isRootOfTask() && usesFloatingTheme()) {
++        //
++        // Only do this when the task has a real OPAQUE host beneath (e.g. the
++        // brightness dialog over Settings). A *translucent* task — one with no
++        // opaque activity, e.g. PackageInstaller (its no-UI DeleteStagedFileOnResult
++        // root isn't floating, but the whole task is the dialog) — must NOT be
++        // split per-activity: it has multiple windows that would fragment into
++        // separate modals. Such a task is flagged IsDialogTask instead (see
++        // Task.setTaskMetadata) and composited as one centered modal.
++        if (info != null && task != null && !isRootOfTask() && usesFloatingTheme()
++                && !task.isTranslucent(null /* starting */)) {
+             b.setMetadata(SurfaceControl.METADATA_IS_FLOATING_ACTIVITY, 1);
+         }
+         super.setInitialSurfaceControlProperties(b);
+diff --git a/services/core/java/com/android/server/wm/Task.java b/services/core/java/com/android/server/wm/Task.java
+index 2166eade3dca..2b98b4bfe0fd 100644
+--- a/services/core/java/com/android/server/wm/Task.java
++++ b/services/core/java/com/android/server/wm/Task.java
+@@ -3119,15 +3119,23 @@ class Task extends TaskFragment {
+                         == ApplicationInfo.CATEGORY_GAME) {
+             b.setMetadata(METADATA_IS_GAME, 1);
+         }
+-        // A task is a dialog task only when its ROOT activity uses a floating
+-        // theme — i.e. the whole task is a standalone dialog (PackageInstaller,
+-        // permission prompts). Checking the top activity instead flags a normal
+-        // app the moment it shows a dialog-themed activity on top: the task
+-        // metadata propagates to all child layers, and the Chrome-side composer
+-        // latches the entire app task into a modal overlay. setTaskMetadata is
+-        // re-run on makeAnimationLeash (the dialog-open transition), so the
+-        // top-activity check would flip mid-animation and stick.
+-        if (isDialogTask(getRootActivity())) {
++        // A task is a dialog task when its ROOT activity uses a floating theme —
++        // i.e. the whole task is a standalone dialog (permission prompts) —
++        // OR when the task is translucent (no opaque activity) and its TOP
++        // activity is floating. The latter covers PackageInstaller: its root is
++        // a transparent no-UI activity (DeleteStagedFileOnResult), not floating,
++        // but the visible PackageInstallerActivity on top is — so the whole task
++        // is effectively the dialog and must composite into one centered modal
++        // rather than fragment per-window via IS_FLOATING_ACTIVITY.
++        //
++        // The translucent gate is what keeps a normal app from being flagged the
++        // moment it shows a dialog-themed activity on top (an opaque app task is
++        // never translucent): checking the top activity alone would flip a normal
++        // app into a modal mid-transition (setTaskMetadata re-runs on
++        // makeAnimationLeash). A translucent task has no opaque content to lose.
++        if (isDialogTask(getRootActivity())
++                || (isTranslucent(null /* starting */)
++                        && isDialogTask(getTopNonFinishingActivity()))) {
+             b.setMetadata(METADATA_IS_DIALOG, 1);
+         }
+         if (getActivityType() == ACTIVITY_TYPE_HOME) {
+-- 
+2.43.0
+

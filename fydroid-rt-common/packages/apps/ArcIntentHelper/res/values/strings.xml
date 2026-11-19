@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shown when Android asks which app should open a link. -->
+    <string name="app_name">System browser</string>
+    <!-- Share-sheet entry for sending an email through Chrome's mailto: handler. -->
+    <string name="send_email">Email</string>
+</resources>

@@ -1,0 +1,22 @@
+// Copyright 2014 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+package org.chromium.arc.mojom;
+
+import org.chromium.mojo.bindings.Callbacks;
+import org.chromium.mojo.bindings.Interface;
+
+public interface IioSensorInstance extends Interface {
+    public static final Interface.Manager<IioSensorInstance, Proxy> MANAGER = IioSensorInstance_Internal.MANAGER;
+
+    public interface InitResponse extends Callbacks.Callback0 {
+    }
+
+    public interface Proxy extends IioSensorInstance, Interface.Proxy {
+    }
+
+    void init(IioSensorHost iioSensorHost, InitResponse initResponse);
+
+    void onTabletModeChanged(boolean z);
+}

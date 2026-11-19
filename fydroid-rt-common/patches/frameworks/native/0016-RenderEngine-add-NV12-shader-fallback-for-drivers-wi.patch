@@ -1,0 +1,413 @@
+From af230eb31c303193f47a0b0ce5e25d7e0f9f71a6 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 7 May 2026 15:03:30 +0800
+Subject: [PATCH 16/40] RenderEngine: add NV12 shader fallback for drivers
+ without direct import
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some drivers don't accept DRM_FORMAT_NV12 in EGL_LINUX_DMA_BUF_EXT or don't
+support driver-side YUV→RGB conversion through samplerExternalOES. Add a
+shader-based fallback that imports the Y and UV planes separately (R8 +
+GR88) and converts to RGBA via a fragment shader (BT.601 limited-range).
+
+A first-call probe picks whichever path succeeds and caches the result in
+mNv12Path so we don't retry the unsupported route every frame. On Mesa
+Panfrost / RK3588 the direct path is selected and the fallback's program/
+FBO/textures are never allocated.
+
+The fallback is bug-fixed relative to the original 0009 shader:
+- Doesn't toggle attrib 0 (Program::position stays enabled).
+- Per-call output EGLImage handle (no persistent class member); each
+  glEGLImageTargetTexture2DOES call uses a fresh handle so driver-level
+  alias caches don't leak the previous video frame into a recycled texName.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: Ia1332abb5db17d9da70381b08f8f59523fe2992a
+---
+ libs/renderengine/gl/GLESRenderEngine.cpp | 290 +++++++++++++++++++++-
+ libs/renderengine/gl/GLESRenderEngine.h   |  34 ++-
+ 2 files changed, 309 insertions(+), 15 deletions(-)
+
+diff --git a/libs/renderengine/gl/GLESRenderEngine.cpp b/libs/renderengine/gl/GLESRenderEngine.cpp
+index f65cf3bebe..0e2d8c7bef 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.cpp
++++ b/libs/renderengine/gl/GLESRenderEngine.cpp
+@@ -492,6 +492,13 @@ GLESRenderEngine::~GLESRenderEngine() {
+     unbindFrameBuffer(mDrawingBuffer.get());
+     mDrawingBuffer = nullptr;
+     eglDestroyImageKHR(mEGLDisplay, mPlaceholderImage);
++    if (mNv12ShaderInited) {
++        if (mNv12Program) glDeleteProgram(mNv12Program);
++        if (mNv12FBO) glDeleteFramebuffers(1, &mNv12FBO);
++        if (mNv12VBO) glDeleteBuffers(1, &mNv12VBO);
++        GLuint nv12Textures[] = { mNv12YTex, mNv12UVTex, mNv12OutputTex };
++        glDeleteTextures(3, nv12Textures);
++    }
+     mImageCache.clear();
+     if (mStubSurface != EGL_NO_SURFACE) {
+         eglDestroySurface(mEGLDisplay, mStubSurface);
+@@ -678,14 +685,34 @@ void GLESRenderEngine::deleteTextures(size_t count, uint32_t const* names) {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// NV12/YCbCr direct dmabuf import. The driver (Mesa Panfrost) does YUV→RGB
+-// conversion at sample time inside samplerExternalOES, so we don't need a
+-// custom shader, FBO, intermediate texture, or persistent EGLImage state.
+-// The layer's texName is bound directly to the NV12 dmabuf via a per-call
+-// EGLImage with both planes specified — same lifetime as the layer compose,
+-// no leakage into subsequent layers.
++// NV12/YCbCr → RGBA. Two-tier strategy:
++//   1. Direct multi-plane dmabuf import via samplerExternalOES (preferred).
++//   2. Per-plane import + custom YUV→RGB shader (fallback).
++// First-call probing chooses the path; subsequent calls take the same route.
+ // ---------------------------------------------------------------------------
+ 
++bool GLESRenderEngine::bindNv12(const sp<GraphicBuffer>& buffer, uint32_t texName) {
++    if (mNv12Path == NV12_PATH_DIRECT) {
++        return bindNv12AsExternalImage(buffer, texName);
++    }
++    if (mNv12Path == NV12_PATH_SHADER) {
++        return bindNv12ViaShader(buffer, texName);
++    }
++    // Probe: try direct first; lock in whichever path succeeds.
++    if (bindNv12AsExternalImage(buffer, texName)) {
++        ALOGI("bindNv12: using direct multi-plane dmabuf import");
++        mNv12Path = NV12_PATH_DIRECT;
++        return true;
++    }
++    if (bindNv12ViaShader(buffer, texName)) {
++        ALOGI("bindNv12: direct import unsupported, using shader fallback");
++        mNv12Path = NV12_PATH_SHADER;
++        return true;
++    }
++    ALOGW("bindNv12: both direct and shader paths failed");
++    return false;
++}
++
+ bool GLESRenderEngine::bindNv12AsExternalImage(const sp<GraphicBuffer>& buffer,
+                                                 uint32_t texName) {
+     const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
+@@ -737,6 +764,247 @@ bool GLESRenderEngine::bindNv12AsExternalImage(const sp<GraphicBuffer>& buffer,
+     return true;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Shader fallback: NV12 → RGBA via per-plane EGLImage import + GLSL converter.
++// Used only when the driver rejects multi-plane DRM_FORMAT_NV12 import via
++// EGL_LINUX_DMA_BUF_EXT (probed once, cached in mNv12Path).
++// ---------------------------------------------------------------------------
++
++namespace {
++
++constexpr const char* kNv12VertexShader = R"(
++    attribute vec2 position;
++    varying vec2 vTexCoord;
++    void main() {
++        vTexCoord = position * 0.5 + 0.5;
++        gl_Position = vec4(position, 0.0, 1.0);
++    }
++)";
++
++constexpr const char* kNv12FragmentShader = R"(
++    #extension GL_OES_EGL_image_external : require
++    precision mediump float;
++    varying vec2 vTexCoord;
++    uniform samplerExternalOES y_tex;
++    uniform samplerExternalOES uv_tex;
++    void main() {
++        vec3 yuv;
++        yuv.x = texture2D(y_tex, vTexCoord).r;
++        yuv.yz = texture2D(uv_tex, vTexCoord).rg - vec2(0.5, 0.5);
++        // BT.601 limited-range YUV → full-range RGB
++        vec3 rgb = mat3(
++            1.0, 1.0, 1.0,
++            0.0, -0.344, 1.772,
++            1.403, -0.714, 0.0
++        ) * yuv;
++        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
++    }
++)";
++
++GLuint compileNv12Shader(GLenum type, const char* source) {
++    GLuint shader = glCreateShader(type);
++    glShaderSource(shader, 1, &source, nullptr);
++    glCompileShader(shader);
++    GLint compiled = 0;
++    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
++    if (!compiled) {
++        GLint len = 0;
++        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
++        std::string log(len, '\0');
++        glGetShaderInfoLog(shader, len, nullptr, log.data());
++        ALOGE("NV12 fallback shader compile failed: %s", log.c_str());
++        glDeleteShader(shader);
++        return 0;
++    }
++    return shader;
++}
++
++} // namespace
++
++void GLESRenderEngine::initNv12Shader() {
++    if (mNv12ShaderInited) return;
++    mNv12ShaderInited = true;
++
++    GLuint vs = compileNv12Shader(GL_VERTEX_SHADER, kNv12VertexShader);
++    GLuint fs = compileNv12Shader(GL_FRAGMENT_SHADER, kNv12FragmentShader);
++    if (!vs || !fs) {
++        if (vs) glDeleteShader(vs);
++        if (fs) glDeleteShader(fs);
++        return;
++    }
++
++    mNv12Program = glCreateProgram();
++    glAttachShader(mNv12Program, vs);
++    glAttachShader(mNv12Program, fs);
++    glLinkProgram(mNv12Program);
++    glDeleteShader(vs);
++    glDeleteShader(fs);
++
++    GLint linked = 0;
++    glGetProgramiv(mNv12Program, GL_LINK_STATUS, &linked);
++    if (!linked) {
++        ALOGE("NV12 fallback program link failed");
++        glDeleteProgram(mNv12Program);
++        mNv12Program = 0;
++        return;
++    }
++
++    mNv12PosLoc = glGetAttribLocation(mNv12Program, "position");
++    mNv12YTexLoc = glGetUniformLocation(mNv12Program, "y_tex");
++    mNv12UVTexLoc = glGetUniformLocation(mNv12Program, "uv_tex");
++
++    static const GLfloat vertices[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++    glGenBuffers(1, &mNv12VBO);
++    glBindBuffer(GL_ARRAY_BUFFER, mNv12VBO);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glGenFramebuffers(1, &mNv12FBO);
++    glGenTextures(1, &mNv12YTex);
++    glGenTextures(1, &mNv12UVTex);
++    glGenTextures(1, &mNv12OutputTex);
++}
++
++bool GLESRenderEngine::bindNv12ViaShader(const sp<GraphicBuffer>& buffer,
++                                          uint32_t texName) {
++    initNv12Shader();
++    if (!mNv12Program) return false;
++
++    const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
++    if (!h || h->magic != 0xABCDDCBA || h->format != DRM_FORMAT_NV12) return false;
++
++    int fd = h->fds[0];
++    if (fd < 0) return false;
++
++    uint32_t w = buffer->getWidth();
++    uint32_t height = buffer->getHeight();
++    uint32_t yStride = h->strides[0];
++    uint32_t uvStride = h->strides[1] ? h->strides[1] : yStride;
++    uint32_t uvOffset = h->offsets[1] ? h->offsets[1] : yStride * height;
++
++    EGLint yAttrs[] = {
++        EGL_LINUX_DRM_FOURCC_EXT,       (EGLint)DRM_FORMAT_R8,
++        EGL_WIDTH,                      (EGLint)w,
++        EGL_HEIGHT,                     (EGLint)height,
++        EGL_DMA_BUF_PLANE0_FD_EXT,      fd,
++        EGL_DMA_BUF_PLANE0_OFFSET_EXT,  0,
++        EGL_DMA_BUF_PLANE0_PITCH_EXT,   (EGLint)yStride,
++        EGL_NONE
++    };
++    EGLImageKHR yImage = eglCreateImageKHR(mEGLDisplay, EGL_NO_CONTEXT,
++                                            EGL_LINUX_DMA_BUF_EXT, nullptr, yAttrs);
++    if (yImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("bindNv12ViaShader: Y plane import failed: %#x", eglGetError());
++        return false;
++    }
++
++    EGLint uvAttrs[] = {
++        EGL_LINUX_DRM_FOURCC_EXT,       (EGLint)DRM_FORMAT_GR88,
++        EGL_WIDTH,                      (EGLint)(w / 2),
++        EGL_HEIGHT,                     (EGLint)(height / 2),
++        EGL_DMA_BUF_PLANE0_FD_EXT,      fd,
++        EGL_DMA_BUF_PLANE0_OFFSET_EXT,  (EGLint)uvOffset,
++        EGL_DMA_BUF_PLANE0_PITCH_EXT,   (EGLint)uvStride,
++        EGL_NONE
++    };
++    EGLImageKHR uvImage = eglCreateImageKHR(mEGLDisplay, EGL_NO_CONTEXT,
++                                             EGL_LINUX_DMA_BUF_EXT, nullptr, uvAttrs);
++    if (uvImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("bindNv12ViaShader: UV plane import failed: %#x", eglGetError());
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        return false;
++    }
++
++    if (mNv12OutputW != w || mNv12OutputH != height) {
++        glBindTexture(GL_TEXTURE_2D, mNv12OutputTex);
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, height, 0,
++                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++        mNv12OutputW = w;
++        mNv12OutputH = height;
++    }
++
++    GLint prevFBO, prevProg, prevVp[4], prevActiveTex;
++    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
++    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
++    glGetIntegerv(GL_VIEWPORT, prevVp);
++    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
++
++    glBindFramebuffer(GL_FRAMEBUFFER, mNv12FBO);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                           GL_TEXTURE_2D, mNv12OutputTex, 0);
++    GLenum fbStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++    if (fbStatus != GL_FRAMEBUFFER_COMPLETE) {
++        ALOGE("bindNv12ViaShader: FBO incomplete: %#x", fbStatus);
++        glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        eglDestroyImageKHR(mEGLDisplay, uvImage);
++        return false;
++    }
++
++    glViewport(0, 0, w, height);
++    glUseProgram(mNv12Program);
++
++    glActiveTexture(GL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mNv12YTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)yImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glUniform1i(mNv12YTexLoc, 0);
++
++    glActiveTexture(GL_TEXTURE1);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mNv12UVTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)uvImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glUniform1i(mNv12UVTexLoc, 1);
++
++    glBindBuffer(GL_ARRAY_BUFFER, mNv12VBO);
++    glVertexAttribPointer(mNv12PosLoc, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
++    // Don't toggle enable/disable on attrib 0: Program::position is enabled
++    // exactly once at Program construction and the rest of RenderEngine
++    // assumes it stays enabled. Disabling it would collapse all subsequent
++    // layer geometry to (0,0,0,1).
++    glEnableVertexAttribArray(mNv12PosLoc);
++    glDisable(GL_BLEND);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
++    glUseProgram(prevProg);
++    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
++    glActiveTexture(prevActiveTex);
++
++    // Per-call output EGLImage handle (no persistent class member). Each
++    // glEGLImageTargetTexture2DOES below uses a fresh handle, sidestepping
++    // driver-level EGLImage→texture-name alias caches that misbehave when a
++    // texName is freed and later recycled by an unrelated layer.
++    EGLImageKHR outImage = eglCreateImageKHR(mEGLDisplay, mEGLContext,
++                                              EGL_GL_TEXTURE_2D_KHR,
++                                              (EGLClientBuffer)(uintptr_t)mNv12OutputTex,
++                                              nullptr);
++    if (outImage == EGL_NO_IMAGE_KHR) {
++        ALOGE("bindNv12ViaShader: output EGLImage creation failed: %#x", eglGetError());
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        eglDestroyImageKHR(mEGLDisplay, uvImage);
++        return false;
++    }
++
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texName);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)outImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++
++    eglDestroyImageKHR(mEGLDisplay, outImage);
++    eglDestroyImageKHR(mEGLDisplay, yImage);
++    eglDestroyImageKHR(mEGLDisplay, uvImage);
++
++    return true;
++}
++
+ void GLESRenderEngine::bindExternalTextureImage(uint32_t texName, const Image& image) {
+     ATRACE_CALL();
+     const GLImage& glImage = static_cast<const GLImage&>(image);
+@@ -752,19 +1020,19 @@ void GLESRenderEngine::bindExternalTextureBuffer(uint32_t texName, const sp<Grap
+                                                  const sp<Fence>& bufferFence) {
+     ATRACE_CALL();
+ 
+-    // NV12/YCbCr direct dmabuf import. Must check BEFORE the normal cache path
+-    // since NV12 buffers change content each frame (same buffer ID, new pixel
+-    // data) and the NV12 path doesn't go through mImageCache.
++    // NV12/YCbCr path. Must check BEFORE the normal cache path since NV12
++    // buffers change content each frame (same buffer ID, new pixel data) and
++    // the NV12 path doesn't go through mImageCache.
+     {
+         const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
+         if (h && h->magic == 0xABCDDCBA && h->format == DRM_FORMAT_NV12) {
+             if (bufferFence != nullptr && bufferFence->isValid()) {
+                 bufferFence->waitForever("RenderEngine::bindNV12");
+             }
+-            if (bindNv12AsExternalImage(buffer, texName)) {
++            if (bindNv12(buffer, texName)) {
+                 return NO_ERROR;
+             }
+-            ALOGW("NV12 dmabuf import failed, falling through to normal path");
++            ALOGW("NV12 import failed, falling through to normal path");
+         }
+     }
+ 
+diff --git a/libs/renderengine/gl/GLESRenderEngine.h b/libs/renderengine/gl/GLESRenderEngine.h
+index 3c22510ca4..20e2828e99 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.h
++++ b/libs/renderengine/gl/GLESRenderEngine.h
+@@ -272,11 +272,37 @@ private:
+     // fence that doesn't exist.
+     bool mPriorResourcesCleaned = true;
+ 
+-    // NV12/YCbCr direct dmabuf import. Mesa Panfrost (and most modern GPU
+-    // drivers) handle YUV→RGB conversion at sample time inside
+-    // samplerExternalOES, so we just import the NV12 dmabuf as a multi-plane
+-    // EGLImage and bind it to the layer's texture name. No persistent state.
++    // NV12/YCbCr → RGBA. Two-tier strategy:
++    //   1. Direct multi-plane dmabuf import (preferred). Mesa Panfrost / most
++    //      modern drivers do YUV→RGB at sample time inside samplerExternalOES.
++    //      No GL state, no shader, no FBO.
++    //   2. Per-plane import + custom shader (fallback). For drivers that don't
++    //      accept DRM_FORMAT_NV12 in EGL_LINUX_DMA_BUF_EXT or don't support
++    //      driver-side YUV color conversion. Persistent shader/FBO/output
++    //      texture; per-call EGLImage handles.
++    //
++    // mNv12DirectImportSupported caches the result of the first attempt so
++    // we don't churn on a known-unsupported driver every frame.
++    enum Nv12Path { NV12_PATH_UNKNOWN, NV12_PATH_DIRECT, NV12_PATH_SHADER };
++    Nv12Path mNv12Path = NV12_PATH_UNKNOWN;
++    bool bindNv12(const sp<GraphicBuffer>& buffer, uint32_t texName);
+     bool bindNv12AsExternalImage(const sp<GraphicBuffer>& buffer, uint32_t texName);
++    bool bindNv12ViaShader(const sp<GraphicBuffer>& buffer, uint32_t texName);
++
++    // Shader fallback state. Lazily initialized on first use of NV12_PATH_SHADER.
++    bool mNv12ShaderInited = false;
++    GLuint mNv12Program = 0;
++    GLuint mNv12VBO = 0;
++    GLuint mNv12FBO = 0;
++    GLuint mNv12YTex = 0;
++    GLuint mNv12UVTex = 0;
++    GLuint mNv12OutputTex = 0;
++    uint32_t mNv12OutputW = 0;
++    uint32_t mNv12OutputH = 0;
++    GLint mNv12PosLoc = -1;
++    GLint mNv12YTexLoc = -1;
++    GLint mNv12UVTexLoc = -1;
++    void initNv12Shader();
+ 
+     // Blur effect processor, only instantiated when a layer requests it.
+     BlurFilter* mBlurFilter = nullptr;
+-- 
+2.43.0
+

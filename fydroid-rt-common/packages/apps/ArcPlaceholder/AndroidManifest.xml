@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The invisible editor that lets an Android IME serve a Chrome OS text field.
+  See docs/gboard-system-ime.plan (Channel 3).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.chromium.arc.applauncher"
+    coreApp="true">
+
+    <application
+        android:label="ArcPlaceholder"
+        android:directBootAware="true"
+        android:allowBackup="false">
+
+        <!--
+          Theme: NOT Theme.NoDisplay. That one requires finish() before
+          onResume, so the platform force-finishes any activity that stays up —
+          observed as the activity logging onCreate and then vanishing before it
+          could bind to the IME. This activity must live as long as the Chrome
+          field is focused, so it uses a translucent theme and shrinks its
+          window to 1x1 in code instead.
+        -->
+        <activity
+            android:name=".PlaceholderActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="org.chromium.arc.applauncher.placeholder"
+            android:launchMode="singleInstance"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode">
+            <intent-filter>
+                <action android:name="org.chromium.arc.applauncher.PlaceholderActivity" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

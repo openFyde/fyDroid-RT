@@ -1,0 +1,70 @@
+From 3c20bfaa3eaf0af81719a348be764fae639bc9c7 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 4 Aug 2026 14:40:12 +0800
+Subject: [PATCH 33/40] SF: tell the compositor when a layer carries
+ FLAG_SECURE content
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Half of the FLAG_SECURE fix. fydroid composites each ARC task in a
+WaylandTaskOutput and hands the result to Chrome, so SF marking that output
+secure (device side) only stops SF blacking the layer out — it does nothing
+to protect the content once it leaves for the ChromeOS compositor.
+
+Send org.chromium.arc.V1_0.IsSecure=1 for a secure layer, alongside the
+existing IsDialogTask synthesis. The compositor turns it into a
+zcr_secure_output_v1 only_visible_on_secure_output request on that window's
+wl_surface, which is what makes viz drop the quad from screen-capture copy
+requests (and asks ash for HDCP).
+
+isSecure comes from Layer::isSecure(), which already walks up to the parent,
+so a window's buffer child inherits FLAG_SECURE without the metadata
+down-propagation IsGame needed (patch 0030). Only ever sent as 1 — the
+compositor latches it on for the life of the window, because a task's secure
+layer can come and go faster than a surface could be safely unprotected.
+
+Verified on device: Spotify's login window renders instead of composing black,
+and the compositor logs "marked only_visible_on_secure_output".
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Change-Id: I512d372e09afd48a32585648c1e5066063188f99
+---
+ .../CompositionEngine/src/OutputLayer.cpp     | 21 +++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+index e5d100ec2d..ff2392f792 100644
+--- a/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+@@ -413,6 +413,27 @@ void OutputLayer::writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t
+         }
+     }
+ 
++    // fydroid-rt: tell the compositor this layer carries FLAG_SECURE content, so
++    // it can ask Chrome to keep the window out of screenshots and casts
++    // (zcr_secure_output_v1 -> only_visible_on_secure_output). This is the other
++    // half of WaylandTaskOutput marking its output secure: without that the layer
++    // is blacked out here and never reaches Chrome at all, and without this it
++    // reaches Chrome with no protection. isSecure comes from Layer::isSecure(),
++    // which already walks up to the parent, so a window's buffer child inherits
++    // FLAG_SECURE without the metadata down-propagation IsGame needed. Only ever
++    // sent as 1 — the compositor latches it on for the life of the window.
++    if (outputIndependentState->isSecure) {
++        int32_t isSecure = 1;
++        std::vector<uint8_t> val(sizeof(int32_t));
++        memcpy(val.data(), &isSecure, sizeof(int32_t));
++        auto error = hwcLayer->setLayerGenericMetadata(
++                "org.chromium.arc.V1_0.IsSecure", false, val);
++        if (error != hal::Error::NONE) {
++            ALOGW("[%s] Failed to set IsSecure metadata — FLAG_SECURE content may "
++                  "be exposed to screen capture", getLayerFE().getDebugName());
++        }
++    }
++
+     writeOutputDependentPerFrameStateToHWC(hwcLayer.get());
+     writeOutputIndependentPerFrameStateToHWC(hwcLayer.get(), *outputIndependentState,
+                                              requestedCompositionType, skipLayer);
+-- 
+2.43.0
+

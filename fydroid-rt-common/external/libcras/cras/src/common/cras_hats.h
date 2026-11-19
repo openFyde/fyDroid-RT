@@ -1,0 +1,1 @@
+../../../common/cras_hats.h

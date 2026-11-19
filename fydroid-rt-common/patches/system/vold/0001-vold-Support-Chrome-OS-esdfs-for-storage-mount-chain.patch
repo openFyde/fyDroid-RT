@@ -1,0 +1,156 @@
+From 99e02a0acecbea675148563045166bd2f6259618 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 23 Apr 2026 11:50:02 +0800
+Subject: [PATCH 1/4] vold: Support Chrome OS esdfs for storage mount chain
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Chrome OS uses esdfs (not sdcardfs) to provide fused storage views
+that inject the CrOS Downloads folder into Android's storage via the
+dl_loc mount parameter. Without this fix, IsSdcardfsUsed() returns
+false on CrOS, causing vold to bind-mount raw /data/media instead of
+the esdfs views, which breaks the Downloads integration.
+
+Changes:
+- IsSdcardfsUsed(): Also check for esdfs filesystem support
+- EmulatedVolume::doMount(): When esdfs mounts are present at
+  /var/run/arc/sdcard/{default,read,write,full}/emulated (set up by
+  arc-setup), bind-mount them to /mnt/runtime/ instead of exec'ing
+  the sdcard binary. This restores the mount chain:
+  esdfs → /mnt/runtime/full/emulated → /mnt/pass_through/0/emulated
+  → MediaProvider FUSE at /storage/emulated
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I0eb83901716f90d5718447e5a70d92fa493efa18
+---
+ Utils.cpp                |  2 +-
+ model/EmulatedVolume.cpp | 92 ++++++++++++++++++++++++----------------
+ 2 files changed, 57 insertions(+), 37 deletions(-)
+
+diff --git a/Utils.cpp b/Utils.cpp
+index e8049eda..5e66e9f5 100644
+--- a/Utils.cpp
++++ b/Utils.cpp
+@@ -1059,7 +1059,7 @@ bool IsFilesystemSupported(const std::string& fsType) {
+ }
+ 
+ bool IsSdcardfsUsed() {
+-    return IsFilesystemSupported("sdcardfs") &&
++    return (IsFilesystemSupported("sdcardfs") || IsFilesystemSupported("esdfs")) &&
+            base::GetBoolProperty(kExternalStorageSdcardfs, true);
+ }
+ 
+diff --git a/model/EmulatedVolume.cpp b/model/EmulatedVolume.cpp
+index 270d0974..d4641390 100644
+--- a/model/EmulatedVolume.cpp
++++ b/model/EmulatedVolume.cpp
+@@ -270,49 +270,69 @@ status_t EmulatedVolume::doMount() {
+ 
+     // Mount sdcardfs regardless of FUSE, since we need it to bind-mount on top of the
+     // FUSE volume for various reasons.
++    // On Chrome OS (ARC++/fydroid-rt), esdfs mounts are set up by arc-setup at
++    // /var/run/arc/sdcard/{default,read,write,full}/emulated.  Bind-mount them
++    // to /mnt/runtime/*/emulated so MountUserFuse can pick them up.
+     if (mUseSdcardFs && getMountUserId() == 0) {
+-        LOG(INFO) << "Executing sdcardfs";
+-        int sdcardFsPid;
+-        if (!(sdcardFsPid = fork())) {
+-            // clang-format off
+-            if (execl(kSdcardFsPath, kSdcardFsPath,
+-                    "-u", "1023", // AID_MEDIA_RW
+-                    "-g", "1023", // AID_MEDIA_RW
+-                    "-m",
+-                    "-w",
+-                    "-G",
+-                    "-i",
+-                    "-o",
+-                    mRawPath.c_str(),
+-                    label.c_str(),
+-                    NULL)) {
+-                // clang-format on
+-                PLOG(ERROR) << "Failed to exec";
++        static const char* kCrosEsdfsBase = "/var/run/arc/sdcard";
++        bool isCrosEsdfs = !access(kCrosEsdfsBase, F_OK) &&
++                           IsFilesystemSupported("esdfs");
++        if (isCrosEsdfs) {
++            static const char* kViews[] = {"default", "read", "write", "full"};
++            for (const char* view : kViews) {
++                std::string src = StringPrintf("%s/%s/%s", kCrosEsdfsBase, view, label.c_str());
++                std::string dst = StringPrintf("/mnt/runtime/%s/%s", view, label.c_str());
++                LOG(INFO) << "Bind mounting " << src << " to " << dst;
++                auto ret = BindMount(src, dst);
++                if (ret != OK) {
++                    LOG(ERROR) << "Failed to bind mount " << src << " to " << dst;
++                    return ret;
++                }
++            }
++        } else {
++            LOG(INFO) << "Executing sdcardfs";
++            int sdcardFsPid;
++            if (!(sdcardFsPid = fork())) {
++                // clang-format off
++                if (execl(kSdcardFsPath, kSdcardFsPath,
++                        "-u", "1023", // AID_MEDIA_RW
++                        "-g", "1023", // AID_MEDIA_RW
++                        "-m",
++                        "-w",
++                        "-G",
++                        "-i",
++                        "-o",
++                        mRawPath.c_str(),
++                        label.c_str(),
++                        NULL)) {
++                    // clang-format on
++                    PLOG(ERROR) << "Failed to exec";
++                }
++
++                LOG(ERROR) << "sdcardfs exiting";
++                _exit(1);
+             }
+ 
+-            LOG(ERROR) << "sdcardfs exiting";
+-            _exit(1);
+-        }
+-
+-        if (sdcardFsPid == -1) {
+-            PLOG(ERROR) << getId() << " failed to fork";
+-            return -errno;
+-        }
++            if (sdcardFsPid == -1) {
++                PLOG(ERROR) << getId() << " failed to fork";
++                return -errno;
++            }
+ 
+-        nsecs_t start = systemTime(SYSTEM_TIME_BOOTTIME);
+-        while (before == GetDevice(mSdcardFsFull)) {
+-            LOG(DEBUG) << "Waiting for sdcardfs to spin up...";
+-            usleep(50000);  // 50ms
++            nsecs_t start = systemTime(SYSTEM_TIME_BOOTTIME);
++            while (before == GetDevice(mSdcardFsFull)) {
++                LOG(DEBUG) << "Waiting for sdcardfs to spin up...";
++                usleep(50000);  // 50ms
+ 
+-            nsecs_t now = systemTime(SYSTEM_TIME_BOOTTIME);
+-            if (nanoseconds_to_milliseconds(now - start) > 5000) {
+-                LOG(WARNING) << "Timed out while waiting for sdcardfs to spin up";
+-                return -ETIMEDOUT;
++                nsecs_t now = systemTime(SYSTEM_TIME_BOOTTIME);
++                if (nanoseconds_to_milliseconds(now - start) > 5000) {
++                    LOG(WARNING) << "Timed out while waiting for sdcardfs to spin up";
++                    return -ETIMEDOUT;
++                }
+             }
++            /* sdcardfs will have exited already. The filesystem will still be running */
++            TEMP_FAILURE_RETRY(waitpid(sdcardFsPid, nullptr, 0));
++            sdcardFsPid = 0;
+         }
+-        /* sdcardfs will have exited already. The filesystem will still be running */
+-        TEMP_FAILURE_RETRY(waitpid(sdcardFsPid, nullptr, 0));
+-        sdcardFsPid = 0;
+     }
+ 
+     if (isVisible) {
+-- 
+2.43.0
+

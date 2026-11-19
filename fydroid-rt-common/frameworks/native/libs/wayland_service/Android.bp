@@ -1,0 +1,138 @@
+// Copyright (C) 2024 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Wayland client library for fydroid-rt SurfaceFlinger.
+// Replaces the proprietary vendor/google_arc/libs/wayland_service/.
+//
+// This library implements the Wayland client that connects to Chrome's Exo
+// compositor, submitting Android surfaces as Wayland surfaces. It is
+// statically linked into the surfaceflinger binary.
+
+cc_library_static {
+    name: "libfydroid_wayland_service",
+    defaults: [
+        "surfaceflinger_defaults",
+        "fydroid_perf_defaults",
+    ],
+
+    cflags: [
+        "-DATRACE_TAG=ATRACE_TAG_GRAPHICS",
+        "-fvisibility=hidden",
+    ],
+
+    lto: {
+        thin: true,
+    },
+
+    srcs: [
+        "WaylandClient.cpp",
+        "WaylandConnection.cpp",
+        "WaylandGlobals.cpp",
+        "display/WaylandDisplay.cpp",
+        "display/WaylandOutput.cpp",
+        "display/WaylandTiming.cpp",
+        "layer/WaylandLayerManager.cpp",
+        "layer/WaylandLayerDrmBufferManager.cpp",
+        "layer/WaylandLayerContainer.cpp",
+        "layer/WaylandPipController.cpp",
+        "window/WaylandSurfaceData.cpp",
+        "window/WaylandAccessibilityId.cpp",
+        "window/WaylandAppWindow.cpp",
+        "window/WaylandNotificationWindow.cpp",
+        "window/WaylandInputMethodWindow.cpp",
+        "window/WaylandToastWindow.cpp",
+        "window/WaylandModalWindow.cpp",
+        "window/WaylandOverlayWindow.cpp",
+        "window/WaylandCursor.cpp",
+        "input/InputBridge.cpp",
+        "input/WaylandInputManager.cpp",
+        "input/WaylandKeyboardHandler.cpp",
+        "input/WaylandPointerHandler.cpp",
+        "input/WaylandTouchHandler.cpp",
+        "input/WaylandStylusHandler.cpp",
+        "input/WaylandRelativePointerHandler.cpp",
+        "input/WaylandGamepadHandler.cpp",
+        "WaylandDataDevice.cpp",
+        "WaylandTracing.cpp",
+        // HWC2 Composer implementation for Wayland
+        "hwc2/WaylandHwc2Composer.cpp",
+        "hwc2/WaylandTaskResizer.cpp",
+        "hwc2/WaylandArcTaskWorker.cpp",
+        "hwc2/WaylandSessionIdResolver.cpp",
+        // Stub for org.chromium.arc.wayland.IWaylandService (drop-in replacement
+        // for the proprietary com.google.android.chromeos jar's binder).
+        "binder/WaylandBinderService.cpp",
+        "binder/WaylandLayoutParcel.cpp",
+        "binder/WaylandShellHandlerProxy.cpp",
+    ],
+
+    local_include_dirs: ["include"],
+    // Export both "include/" (for wayland_service/*.h headers) and the root
+    // (for "hwc2/WaylandHwc2Composer.h" used by the factory).
+    export_include_dirs: ["include", "."],
+
+    shared_libs: [
+        "libbase",
+        "libcutils",
+        "liblog",
+        "libui",
+        "libutils",
+        "libbinder",
+        // FydeOS task-control AIDL (C++ backend) — lets WaylandTaskResizer call
+        // arc-services via a generated stub instead of hardcoded IActivityTaskManager
+        // transaction codes.
+        "fydroid_arc_task_aidl-cpp",
+        "libgui",
+        "libnativewindow",
+        "libsync",
+        "libhardware",
+        // Required by ComposerHal.h (used by WaylandHwc2Composer)
+        "android.hardware.graphics.common@1.2",
+        "android.hardware.graphics.composer@2.1",
+        "android.hardware.graphics.composer@2.2",
+        "android.hardware.graphics.composer@2.3",
+        "android.hardware.graphics.composer@2.4",
+        // AOSP-13: ComposerHal.h now pulls in the composer3 AIDL/NDK HAL
+        // (aidl/android/hardware/graphics/composer3/*); match AOSP SF's deps.
+        "android.hardware.graphics.composer3-V1-ndk",
+        "android.hardware.common-V2-ndk",
+        "android.hardware.common.fmq-V1-ndk",
+        "libbinder_ndk",
+        "libhidlbase",
+        "libfmq",
+    ],
+
+    static_libs: [
+        "libwayland_client_static",
+        "libfydroid_wayland_extension_client_protocols",
+        "libwayland_extension_client_protocols",
+        "libminigbm_cros_gralloc",
+        "libdrm",
+    ],
+
+    export_static_lib_headers: [
+        "libfydroid_wayland_extension_client_protocols",
+        "libwayland_extension_client_protocols",
+    ],
+
+    header_libs: [
+        "libsurfaceflinger_headers",
+        // Command buffer headers required by ComposerHal.h
+        "android.hardware.graphics.composer@2.1-command-buffer",
+        "android.hardware.graphics.composer@2.2-command-buffer",
+        "android.hardware.graphics.composer@2.3-command-buffer",
+        "android.hardware.graphics.composer@2.4-command-buffer",
+        "android.hardware.graphics.composer3-command-buffer",
+    ],
+}

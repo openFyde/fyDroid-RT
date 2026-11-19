@@ -1,0 +1,222 @@
+// Copyright (C) 2026 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Next MinVersion: 2
+
+// fydroid-rt: the Android <-> Chrome contract for Widevine content decryption.
+//
+// This is NOT the stock ARC++ Widevine path. That one (oemcrypto.mojom) hands
+// Android an arc.mojom.OemCryptoService to sit underneath Widevine's own
+// libwvdrmengine.so, and is backed by the ChromeOS cdm-oemcrypto daemon. Neither
+// piece exists here: libwvdrmengine.so is proprietary and not in our vendor
+// image, and this board has no CDM factory daemon (chromeos.cdm.mojom.
+// CdmFactoryDaemon proxies to one, so CreateFactory would return null).
+//
+// What the board DOES have is Chrome's library CDM,
+// /opt/google/chrome/WidevineCdm/_platform_specific/cros_*/libwidevinecdm.so,
+// the same L3 software CDM that serves web playback. So instead of putting a
+// crypto backend under an Android-side Widevine plugin, we put the WHOLE key
+// exchange on Chrome's side and leave Android with a thin DRM HAL that forwards.
+//
+//   Spotify -> MediaDrm/MediaCrypto
+//           -> android.hardware.drm AIDL service "widevine"  (Android)
+//           -> this interface
+//           -> media::CdmAdapter over libwidevinecdm.so       (Chrome)
+//
+// The shape deliberately mirrors chromeos.cdm.mojom.ContentDecryptionModule
+// (EME semantics), narrowed to what Android's IDrmPlugin/ICryptoPlugin needs, so
+// the Chrome side is mostly adaptation rather than new CDM logic.
+//
+// Scope: L3 / software decrypt only. There is no secure-buffer path here — a
+// SecureStop/secure-decode story would need the OEMCrypto route and real HW
+// backing. Audio (Spotify) and non-HW-restricted video work; content that
+// demands L1 will be refused by the license server, which is correct.
+
+module arc.mojom;
+
+// Mirrors Android's KeyType / EME session types. Persistent-usage-record
+// sessions are intentionally absent: they need SecureStop, which is L1 territory.
+[Extensible]
+enum CdmSessionType {
+  [Default] kTemporary,
+  kPersistentLicense,
+};
+
+// Mirrors EME MessageType. Android's KeyRequestType is derived from this on the
+// HAL side (kLicenseRequest -> INITIAL, kLicenseRenewal -> RENEWAL,
+// kLicenseRelease -> RELEASE, kIndividualizationRequest -> INITIAL with the
+// provisioning flag).
+[Extensible]
+enum CdmMessageType {
+  [Default] kLicenseRequest,
+  kLicenseRenewal,
+  kLicenseRelease,
+  kIndividualizationRequest,
+};
+
+// Result of a CDM operation. Maps onto the AIDL Status codes the DRM HAL
+// returns; kNeedsProvisioning is the one Android surfaces specially, as
+// ERROR_DRM_NOT_PROVISIONED, so the framework can run the provisioning flow.
+[Extensible]
+enum CdmStatus {
+  [Default] kSuccess,
+  kNotSupported,
+  kInvalidState,
+  kInvalidArgument,
+  kQuotaExceeded,
+  kNeedsProvisioning,
+  kSessionNotFound,
+  kDecryptError,
+  kFailed,
+};
+
+// Mirrors EME MediaKeyStatus / Android KeyStatusType.
+[Extensible]
+enum CdmKeyStatus {
+  [Default] kUsable,
+  kExpired,
+  kOutputRestricted,
+  kOutputDownscaled,
+  kStatusPending,
+  kReleased,
+  kInternalError,
+};
+
+[Extensible]
+enum CdmEncryptionScheme {
+  [Default] kUnencrypted,
+  kCenc,   // AES-CTR
+  kCbcs,   // AES-CBC with pattern
+};
+
+struct CdmKeyInfo {
+  array<uint8> key_id;
+  CdmKeyStatus status;
+};
+
+// One subsample of a protected buffer: |clear_bytes| plaintext followed by
+// |cipher_bytes| ciphertext. Matches Android's SubSample and EME's
+// SubsampleEntry.
+struct CdmSubsample {
+  uint32 clear_bytes;
+  uint32 cipher_bytes;
+};
+
+// cbcs pattern: |crypt_byte_block| encrypted 16-byte blocks followed by
+// |skip_byte_block| clear ones. Ignored for cenc.
+struct CdmEncryptionPattern {
+  uint32 crypt_byte_block;
+  uint32 skip_byte_block;
+};
+
+struct CdmDecryptConfig {
+  array<uint8> key_id;
+  array<uint8> iv;
+  CdmEncryptionScheme scheme;
+  array<CdmSubsample> subsamples;
+  CdmEncryptionPattern? pattern;
+};
+
+// Session events pushed from Chrome's CDM back to the Android HAL, which
+// re-emits them through IDrmPluginListener. Associated with its Cdm so ordering
+// against the request that caused them is preserved.
+interface CdmSessionClient {
+  // Carries a license request/renewal/release to be sent to the app's license
+  // server. The HAL completes the pending getKeyRequest with this.
+  OnSessionMessage@0(string session_id, CdmMessageType message_type,
+                     array<uint8> message);
+
+  // Key availability changed. |keys_info| is the full current set, not a delta.
+  OnSessionKeysChange@1(string session_id, bool has_additional_usable_key,
+                        array<CdmKeyInfo> keys_info);
+
+  // |new_expiry_time_sec| is seconds since the epoch; 0 means "never expires".
+  OnSessionExpirationUpdate@2(string session_id, double new_expiry_time_sec);
+
+  OnSessionClosed@3(string session_id);
+};
+
+// One CDM instance. Android opens one per MediaDrm session set; sessions within
+// it are addressed by the CDM's own string session ids, which the HAL maps to
+// the opaque byte-array session ids MediaDrm hands out.
+interface Cdm {
+  // Service certificate for privacy mode (Android:
+  // setPropertyByteArray("serviceCertificate")).
+  SetServerCertificate@0(array<uint8> certificate_data)
+      => (CdmStatus status);
+
+  // Android getKeyRequest() for a new session. |init_data| is the PSSH box.
+  // The generated request arrives via OnSessionMessage, not as a return value —
+  // the HAL correlates it by the session id returned here.
+  CreateSessionAndGenerateRequest@1(CdmSessionType session_type,
+                                    array<uint8> init_data)
+      => (CdmStatus status, string session_id);
+
+  // Android restoreKeys() for a persistent license.
+  LoadSession@2(CdmSessionType session_type, string session_id)
+      => (CdmStatus status);
+
+  // Android provideKeyResponse().
+  UpdateSession@3(string session_id, array<uint8> response)
+      => (CdmStatus status);
+
+  // Android closeSession().
+  CloseSession@4(string session_id) => (CdmStatus status);
+
+  // Android removeKeys().
+  RemoveSession@5(string session_id) => (CdmStatus status);
+
+  // Android ICryptoPlugin::decrypt(). Sample data crosses the bridge in the
+  // clear on the way back, which is why this path is L3-only: there is no
+  // secure buffer to decrypt into. Callers must keep buffers to media-sample
+  // size; this is not a bulk transfer channel.
+  Decrypt@6(string session_id, array<uint8> encrypted_data,
+            CdmDecryptConfig decrypt_config)
+      => (CdmStatus status, array<uint8> decrypted_data);
+};
+
+// Implemented in Chrome. Creates CDM instances over the library CDM.
+interface CdmHost {
+  // |key_system| is currently only "com.widevine.alpha". Fails with
+  // kNotSupported if the CDM library is missing or the key system is unknown.
+  CreateCdm@0(string key_system,
+              pending_associated_remote<CdmSessionClient> client,
+              pending_associated_receiver<Cdm> cdm)
+      => (CdmStatus status);
+
+  // A stable, opaque 32-byte identity for MediaDrm's
+  // getPropertyByteArray("deviceUniqueId"). Chrome answers with
+  // SHA-256 of the CDM origin ID it keeps for the fixed ARC origin, so the
+  // value never exposes Chrome's internal token and is not derived from
+  // hardware.
+  //
+  // Netflix derives its ESN from this, which is why it has to be *stable*:
+  // a value that changes makes the device re-register, and an unreadable one
+  // puts Netflix into StatusCode -1003 MSL_LEGACY_CRYPTO / -1033
+  // WIDEVINE_INITIAL_PROVISIONING_CHECK_FAILED — reported to the user,
+  // misleadingly, as "could not reach the Netflix service".
+  //
+  // Scope is (user profile x origin), not the device: a second profile gets a
+  // different value, and clearing CDM/site data or a powerwash resets it.
+  // Answers kNotSupported if the origin ID cannot be obtained.
+  [MinVersion=1] GetDeviceUniqueId@1()
+      => (CdmStatus status, array<uint8> device_unique_id);
+};
+
+// Implemented in Android by the DRM HAL service. Mirrors the OemCryptoInstance
+// pattern: Chrome pushes the host remote in, Android keeps it for the life of
+// the connection.
+interface CdmInstance {
+  Init@0(pending_remote<CdmHost> host_remote) => ();
+};

@@ -1,0 +1,87 @@
+From 253501d0382a763d9ea74308d5ab079c21911dff Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 16:28:37 +0800
+Subject: [PATCH 13/40] SF: adapt dialog-cluster Layer metadata propagation to
+ AOSP-13 (mDrawingState)
+
+The 0008 TaskId/IsDialog descendant-propagation blocks used Layer::mCurrentState,
+which AOSP-12 unified into mDrawingState. Re-point the fydroid metadata-propagation
+writes to mDrawingState (the *methods* removeFromCurrentState/onRemovedFromCurrentState/
+isRemovedFromCurrentState keep their names; only the member mRemovedFromDrawingState
+changed). fydroid_surfaceflinger builds clean with the full dialog cluster.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I197583470267f93f14e9e7dc2f91b4effb8ac2e7
+---
+ services/surfaceflinger/Layer.cpp | 30 +++++++++++++++---------------
+ 1 file changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index fb5f519adf..e0f25cfef9 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1045,10 +1045,10 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+         int32_t taskId = data.getInt32(METADATA_TASK_ID, 0);
+         if (taskId > 0) {
+             mCurrentChildren.traverse([&](Layer* child) {
+-                if (!child->mCurrentState.metadata.has(METADATA_TASK_ID)) {
+-                    child->mCurrentState.metadata.setInt32(METADATA_TASK_ID, taskId);
+-                    child->mCurrentState.sequence++;
+-                    child->mCurrentState.modified = true;
++                if (!child->mDrawingState.metadata.has(METADATA_TASK_ID)) {
++                    child->mDrawingState.metadata.setInt32(METADATA_TASK_ID, taskId);
++                    child->mDrawingState.sequence++;
++                    child->mDrawingState.modified = true;
+                     child->setTransactionFlags(eTransactionNeeded);
+                 }
+             });
+@@ -1060,10 +1060,10 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+     if (data.has(METADATA_IS_DIALOG)) {
+         int32_t isDialog = data.getInt32(METADATA_IS_DIALOG, 0);
+         mCurrentChildren.traverse([&](Layer* child) {
+-            if (!child->mCurrentState.metadata.has(METADATA_IS_DIALOG)) {
+-                child->mCurrentState.metadata.setInt32(METADATA_IS_DIALOG, isDialog);
+-                child->mCurrentState.sequence++;
+-                child->mCurrentState.modified = true;
++            if (!child->mDrawingState.metadata.has(METADATA_IS_DIALOG)) {
++                child->mDrawingState.metadata.setInt32(METADATA_IS_DIALOG, isDialog);
++                child->mDrawingState.sequence++;
++                child->mDrawingState.modified = true;
+                 child->setTransactionFlags(eTransactionNeeded);
+             }
+         });
+@@ -1612,24 +1612,24 @@ void Layer::addChild(const sp<Layer>& layer) {
+ #ifdef FYDROID_WAYLAND_COMPOSER
+     // Propagate TaskId to newly-added child (covers case where parent already
+     // has TaskId when child is added later). Walks up to find ancestor TaskId.
+-    if (!layer->mCurrentState.metadata.has(METADATA_TASK_ID)) {
++    if (!layer->mDrawingState.metadata.has(METADATA_TASK_ID)) {
+         for (sp<Layer> ancestor = this; ancestor != nullptr;
+              ancestor = ancestor->mCurrentParent.promote()) {
+-            int32_t taskId = ancestor->mCurrentState.metadata.getInt32(METADATA_TASK_ID, 0);
++            int32_t taskId = ancestor->mDrawingState.metadata.getInt32(METADATA_TASK_ID, 0);
+             if (taskId > 0) {
+-                layer->mCurrentState.metadata.setInt32(METADATA_TASK_ID, taskId);
++                layer->mDrawingState.metadata.setInt32(METADATA_TASK_ID, taskId);
+                 break;
+             }
+         }
+     }
+     // Inherit IsDialog from nearest ancestor that has it.
+-    if (!layer->mCurrentState.metadata.has(METADATA_IS_DIALOG)) {
++    if (!layer->mDrawingState.metadata.has(METADATA_IS_DIALOG)) {
+         for (sp<Layer> ancestor = this; ancestor != nullptr;
+              ancestor = ancestor->mCurrentParent.promote()) {
+-            if (ancestor->mCurrentState.metadata.has(METADATA_IS_DIALOG)) {
++            if (ancestor->mDrawingState.metadata.has(METADATA_IS_DIALOG)) {
+                 int32_t isDialog =
+-                        ancestor->mCurrentState.metadata.getInt32(METADATA_IS_DIALOG, 0);
+-                layer->mCurrentState.metadata.setInt32(METADATA_IS_DIALOG, isDialog);
++                        ancestor->mDrawingState.metadata.getInt32(METADATA_IS_DIALOG, 0);
++                layer->mDrawingState.metadata.setInt32(METADATA_IS_DIALOG, isDialog);
+                 break;
+             }
+         }
+-- 
+2.43.0
+

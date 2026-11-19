@@ -1,0 +1,31 @@
+From aef51747f200b5ce7591295c08b33675f41b5352 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 14 Oct 2026 11:22:54 +0800
+Subject: [PATCH 7/7] build: let BoardConfig drop the username from the
+ fingerprint build number
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: I609b9692530c60aced3ddec3171d0f6a08df39cf
+---
+ core/sysprop.mk | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/core/sysprop.mk b/core/sysprop.mk
+index 2b51a5d47f..1e3a2c3d58 100644
+--- a/core/sysprop.mk
++++ b/core/sysprop.mk
+@@ -168,7 +168,10 @@ BUILD_VERSION_TAGS := $(subst $(space),$(comma),$(sort $(BUILD_VERSION_TAGS)))
+ # product; used by the OTA server.
+ ifeq (,$(strip $(BUILD_FINGERPRINT)))
+   ifeq ($(strip $(HAS_BUILD_NUMBER)),false)
+-    BF_BUILD_NUMBER := $(BUILD_USERNAME)$$($(DATE_FROM_FILE) +%m%d%H%M)
++    # fydeos: BUILD_FINGERPRINT_NO_USERNAME := true (BoardConfig) drops the
++    # $(BUILD_USERNAME) prefix, leaving just MMDDHHmm, so a release-keys
++    # fingerprint stays under the 91-char legacy __system_property_get limit.
++    BF_BUILD_NUMBER := $(if $(filter true,$(BUILD_FINGERPRINT_NO_USERNAME)),,$(BUILD_USERNAME))$$($(DATE_FROM_FILE) +%m%d%H%M)
+   else
+     BF_BUILD_NUMBER := $(file <$(BUILD_NUMBER_FILE))
+   endif
+-- 
+2.43.0
+

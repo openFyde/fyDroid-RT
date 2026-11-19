@@ -1,0 +1,4 @@
+// Stub for ash.cros_safety.mojom.OnDeviceSafetySession — used by arc/on_device_safety.mojom.
+module ash.cros_safety.mojom;
+
+interface OnDeviceSafetySession {};

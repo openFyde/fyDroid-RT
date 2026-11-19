@@ -1,0 +1,74 @@
+From 6f301464c1ddf03099e312b94bdfb654e954ae82 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 28 May 2026 12:01:57 +0800
+Subject: [PATCH 12/40] SF: refine cornerRadius dialog detection to require
+ surfaceInsets
+
+Method 3 in Output::detectAndAdjustDialogTasks marks the SOLID_COLOR
+task container as a dialog when it finds any TYPE_BASE_APPLICATION /
+TYPE_APPLICATION layer with cornerRadius > 0. That over-triggers on
+modern apps that round their main window for design (e.g. NetEase
+Music), so the ARC compositor treats them as frameless modal dialogs.
+
+A real floating dialog also reserves surfaceInsets around its content
+for the elevation shadow, which SF reflects as a horizontal crop of
+geomLayerBounds relative to geomBufferSize. Require that crop to be
+> 0 in addition to cornerRadius, so dialog themes (PackageInstaller,
+etc.) still match while full-screen apps with rounded corners don't.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Change-Id: I3caf77af38740d6671facd2c59f80ee54bb77eca
+---
+ .../CompositionEngine/src/Output.cpp          | 24 +++++++++++++++----
+ 1 file changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/services/surfaceflinger/CompositionEngine/src/Output.cpp b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+index a6f9b5e6a6..014123521f 100644
+--- a/services/surfaceflinger/CompositionEngine/src/Output.cpp
++++ b/services/surfaceflinger/CompositionEngine/src/Output.cpp
+@@ -1016,7 +1016,7 @@ void Output::detectAndAdjustDialogTasks() {
+         }
+ 
+         if (!alreadyDetected) {
+-            bool hasRoundedContent = false;
++            compositionengine::OutputLayer* roundedContent = nullptr;
+             compositionengine::OutputLayer* containerCandidate = nullptr;
+ 
+             for (size_t i = 0; i < layers.size(); i++) {
+@@ -1031,15 +1031,29 @@ void Output::detectAndAdjustDialogTasks() {
+                 }
+ 
+                 // Check main activity layers for rounded corners
+-                if ((feState->type == TYPE_BASE_APPLICATION ||
++                if (!roundedContent &&
++                    (feState->type == TYPE_BASE_APPLICATION ||
+                      feState->type == TYPE_APPLICATION) &&
+                     feState->cornerRadius > 0.f) {
+-                    hasRoundedContent = true;
+-                    break;
++                    roundedContent = layers[i];
+                 }
+             }
+ 
+-            if (hasRoundedContent && containerCandidate) {
++            // A true floating dialog reserves surfaceInsets around its content
++            // for the window's elevation shadow, so its buffer is wider than
++            // the layer bounds (SF crops the bounds by surfaceInsets
++            // horizontally). Full-screen apps that apply rounded corners (e.g.
++            // NetEase Music) have buffer == bounds (no shadow reserve), and
++            // without this extra check they get misclassified as dialogs.
++            bool hasSurfaceInsets = false;
++            if (roundedContent) {
++                const auto* fe = roundedContent->getLayerFE().getCompositionState();
++                const float leftInset = fe->geomLayerBounds.left - fe->geomBufferSize.left;
++                const float rightInset = fe->geomBufferSize.right - fe->geomLayerBounds.right;
++                hasSurfaceInsets = (leftInset > 0.5f || rightInset > 0.5f);
++            }
++
++            if (roundedContent && containerCandidate && hasSurfaceInsets) {
+                 containerCandidate->editState().isDialogContainer = true;
+                 ALOGI("Dialog detected (cornerRadius): container='%s'",
+                       containerCandidate->getLayerFE().getDebugName());
+-- 
+2.43.0
+

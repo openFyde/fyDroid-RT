@@ -1,0 +1,123 @@
+// Copyright 2020 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// NOTE: This mojom exists in two places and must be kept in sync:
+//       Chromium:  //chromeos/components/sensors/mojom/
+//       Chrome OS: src/platform2/iioservice/mojo/
+
+module chromeos.sensors.mojom;
+
+const string kScale = "scale";
+const string kSamplingFrequencyAvailable = "sampling_frequency_available";
+const string kLocation = "location";
+const string kLabel = "label";
+
+const string kDeviceName = "name";
+
+const string kSysPath = "syspath";
+
+const string kDevlink = "devlink";
+
+const string kLocationBase = "base";
+const string kLocationLid = "lid";
+const string kLocationCamera = "camera";
+
+const string kLabelBase = "accel-base";
+const string kLabelLid = "accel-display";
+
+const string kAccelerometerChannel = "accel";
+const string kGyroscopeChannel = "anglvel";
+const string kMagnetometerChannel = "magn";
+const string kGravityChannel = "gravity";
+
+const string kLightChannel = "illuminance";
+const string kPressureChannel = "pressure";
+
+const string kTimestampChannel = "timestamp";
+
+[Extensible]
+enum DeviceType {
+  [Default] NONE = 0,
+  ACCEL = 1,
+  ANGLVEL = 2,
+  LIGHT = 3,
+  COUNT = 4,
+  MAGN = 5,
+  ANGL = 6,
+  BARO = 7,
+  ACCEL_UNCALIBRATED = 8,
+  ANGLVEL_UNCALIBRATED = 9,
+  MAGN_UNCALIBRATED = 10,
+  GRAVITY = 11,
+};
+
+[Extensible]
+enum ObserverErrorType {
+  [Default] ALREADY_STARTED = 0,
+  SET_FREQUENCY_IO_FAILED = 1,
+  FREQUENCY_INVALID = 2,
+  NO_ENABLED_CHANNELS = 3,
+  GET_FD_FAILED = 4,
+  READ_FAILED = 5,
+  READ_TIMEOUT = 6,
+};
+
+[Extensible]
+enum SensorServiceDisconnectReason {
+  [Default] IIOSERVICE_CRASHED = 0,
+  IIOSERVICE_SHUTDOWN = 1,
+  CHROME_STOPPED = 2,
+};
+
+interface SensorService {
+  GetDeviceIds@0(DeviceType type) => (array<int32> iio_device_ids);
+
+  // Use array<int32> instead of array<DeviceType> to work around a Mojo Java
+  // codegen bug: nested array + enum validation generates duplicate loop vars.
+  GetAllDeviceIds@1() => (map<int32, array<int32>> iio_device_ids_types);
+
+  GetDevice@2(int32 iio_device_id,
+      pending_receiver<SensorDevice> device_request);
+
+  RegisterNewDevicesObserver
+      @3(pending_remote<SensorServiceNewDevicesObserver> observer);
+};
+
+[Extensible]
+enum SensorDeviceDisconnectReason {
+  [Default] IIOSERVICE_CRASHED = 0,
+  DEVICE_REMOVED = 1,
+};
+
+interface SensorDevice {
+  SetTimeout@0(uint32 timeout);
+
+  GetAttributes@1(array<string> attr_names) => (array<string?> values);
+
+  SetFrequency@2(double frequency) => (double result_freq);
+
+  StartReadingSamples@3(pending_remote<SensorDeviceSamplesObserver> observer);
+
+  StopReadingSamples@4();
+
+  GetAllChannelIds@5() => (array<string> iio_chn_ids);
+
+  SetChannelsEnabled @6(array<int32> iio_chn_indices, bool en)
+    => (array<int32> failed_indices);
+
+  GetChannelsEnabled@7(array<int32> iio_chn_indices) => (array<bool> enabled);
+
+  GetChannelsAttributes@8(array<int32> iio_chn_indices, string attr_name)
+    => (array<string?> values);
+};
+
+interface SensorDeviceSamplesObserver {
+  OnSampleUpdated@0(map<int32, int64> sample);
+
+  OnErrorOccurred@1(ObserverErrorType type);
+};
+
+interface SensorServiceNewDevicesObserver {
+  OnNewDeviceAdded@0(int32 iio_device_id, array<DeviceType> types);
+};

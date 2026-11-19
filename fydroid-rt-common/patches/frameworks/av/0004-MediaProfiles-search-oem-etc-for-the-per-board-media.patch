@@ -1,0 +1,102 @@
+From 3d877fdef2745591a4d3184016d25decc77fb86c Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 17 Jun 2026 16:04:45 +0800
+Subject: [PATCH 4/5] MediaProfiles: search /oem/etc for the per-board
+ media_profiles
+
+ARC (Chrome OS) bind-mounts the per-board, camera-filtered
+media_profiles.xml to /oem/etc/media_profiles.xml (arc_setup.cc +
+container config.json). Android <= R searched /oem/etc natively, so
+that profile was honoured; AOSP-13's getXmlPaths() dropped /oem from
+the search list.
+
+The board profile is the only one that declares the AMR-WB audio
+encoder (minSampleRate=16000). Without it MediaProfiles falls back to
+its built-in default, which defines only AMR-NB (8000). AMR-WB
+recordings then never get StagefrightRecorder::clipAudioSampleRate() to
+clamp the recorder's 8000 Hz default up to AMR-WB's mandatory 16000 Hz,
+so the 16 kHz encoder packs 8 kHz samples and playback is 2x-fast
+("chipmunk"). Observed via kangtester (AudioSource.MIC + AMR_WB): an
+8 s recording produced a 4 s file.
+
+Re-add "oem/etc/" to the search dirs and also try the non-variant
+"oem/etc/media_profiles.xml" (ARC ships the file without the _V1_0
+suffix). Verified on rk3588: recorder now clamps 8000->16000 and
+a count-to-10 recording yields a real-time-length, correctly-pitched
+clip.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I98d205c91c421c846a1551226d4c619788c01b97
+---
+ media/libmedia/MediaProfiles.cpp | 43 +++++++++++++++++++-------------
+ 1 file changed, 26 insertions(+), 17 deletions(-)
+
+diff --git a/media/libmedia/MediaProfiles.cpp b/media/libmedia/MediaProfiles.cpp
+index 85768bda1f..577f58ab40 100644
+--- a/media/libmedia/MediaProfiles.cpp
++++ b/media/libmedia/MediaProfiles.cpp
+@@ -40,14 +40,19 @@ namespace android {
+ namespace /* unnamed */ {
+ 
+ // Returns a list of possible paths for the media_profiles XML file.
+-std::array<char const*, 5> const& getXmlPaths() {
+-    static std::array<std::string const, 5> const paths =
+-        []() -> decltype(paths) {
++std::vector<char const*> const& getXmlPaths() {
++    static std::vector<std::string> const paths =
++        []() -> std::vector<std::string> {
+             // Directories for XML file that will be searched (in this order).
+-            constexpr std::array<char const*, 4> searchDirs = {
++            // "oem/etc/" is where ARC (Chrome OS) bind-mounts the per-board,
++            // camera-filtered media_profiles. Android <= R searched it natively;
++            // T dropped it, which silently broke AMR-WB recording (the board
++            // profile carries amrwb minSampleRate=16000). Restore it here.
++            constexpr std::array<char const*, 5> searchDirs = {
+                 "product/etc/",
+                 "odm/etc/",
+                 "vendor/etc/",
++                "oem/etc/",
+                 "system/etc/",
+             };
+ 
+@@ -61,20 +66,24 @@ std::array<char const*, 5> const& getXmlPaths() {
+             std::string fileName =
+                 std::string("media_profiles") + variant + ".xml";
+ 
+-            return { searchDirs[0] + fileName,
+-                     searchDirs[1] + fileName,
+-                     searchDirs[2] + fileName,
+-                     searchDirs[3] + fileName,
+-                     "system/etc/media_profiles.xml" // System fallback
+-                   };
++            std::vector<std::string> result;
++            for (char const* dir : searchDirs) {
++                result.push_back(std::string(dir) + fileName);
++            }
++            // ARC's per-board profile ships without the variant suffix.
++            result.push_back("oem/etc/media_profiles.xml");
++            result.push_back("system/etc/media_profiles.xml"); // System fallback
++            return result;
++        }();
++    static std::vector<char const*> const cPaths =
++        [&]() -> std::vector<char const*> {
++            std::vector<char const*> v;
++            v.reserve(paths.size());
++            for (std::string const& p : paths) {
++                v.push_back(p.c_str());
++            }
++            return v;
+         }();
+-    static std::array<char const*, 5> const cPaths = {
+-            paths[0].data(),
+-            paths[1].data(),
+-            paths[2].data(),
+-            paths[3].data(),
+-            paths[4].data()
+-        };
+     return cPaths;
+ }
+ 
+-- 
+2.43.0
+

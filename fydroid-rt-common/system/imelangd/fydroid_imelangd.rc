@@ -1,0 +1,13 @@
+# Reads Gboard's current language from its preferences file and publishes it
+# as arc.fydroid.gboard_entry. Read-only access to app data: uid system with
+# CAP_DAC_READ_SEARCH only, no write capability. Runs whether or not Gboard is
+# installed; it starts watching when Gboard's data directory appears.
+service fydroid-imelangd /system/bin/imelangd
+    class late_start
+    user system
+    group system
+    capabilities DAC_READ_SEARCH
+    disabled
+
+on property:sys.boot_completed=1
+    start fydroid-imelangd

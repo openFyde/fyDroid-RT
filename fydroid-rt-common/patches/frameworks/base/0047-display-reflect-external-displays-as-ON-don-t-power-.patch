@@ -1,0 +1,56 @@
+From 762bc880130c4ada14bc0b4832066a72f5988500 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 21 Jul 2026 16:43:00 +0800
+Subject: [PATCH 47/75] display: reflect external displays as ON, don't
+ power-manage them (ARC)
+
+On fydroid the external HDMI panel is owned and powered by Chrome OS,
+which surfaces it to SurfaceFlinger (via the wayland-backed composer)
+only while it is connected and on. Android must reflect that state, not
+drive it. Previously the external display's DisplayPowerController was
+never handed a power request (mPowerRequest=null), so its state stayed
+STATE_UNKNOWN; DisplayManagerService then set the viewport isActive=false
+and apps (e.g. a customer-facing Presentation on the second screen) could
+not target the display.
+
+For external displays only, mark the device FLAG_NEVER_BLANK so DMS skips
+both the DPC power request and the state push against the Chrome-owned
+panel, and report STATE_ON so getDisplays()/Presentation see a usable
+display. The internal panel is untouched and keeps normal power
+management.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: If632deec2b9a68ef97f7db4e71863f1e4ae97ec7
+---
+ .../server/display/LocalDisplayAdapter.java       | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/services/core/java/com/android/server/display/LocalDisplayAdapter.java b/services/core/java/com/android/server/display/LocalDisplayAdapter.java
+index 58a182a61e44..59a37a8ed7a6 100644
+--- a/services/core/java/com/android/server/display/LocalDisplayAdapter.java
++++ b/services/core/java/com/android/server/display/LocalDisplayAdapter.java
+@@ -704,6 +704,21 @@ final class LocalDisplayAdapter extends DisplayAdapter {
+                     mInfo.flags |= DisplayDeviceInfo.FLAG_PRESENTATION;
+                     mInfo.name = getContext().getResources().getString(
+                             com.android.internal.R.string.display_manager_hdmi_display_name);
++                    // FydeOS/fydroid: external displays are owned and powered by Chrome
++                    // OS, which surfaces them to SurfaceFlinger (via the wayland-backed
++                    // composer) only while they are connected and turned on. Android must
++                    // reflect that state, never drive it: without this, the display's
++                    // DisplayPowerController is never handed a power request, so its state
++                    // stays STATE_UNKNOWN, its viewport reports isActive=false, and apps
++                    // (e.g. a Presentation on the second screen) cannot target it.
++                    //
++                    // Mark the display never-blank so PowerManager/DMS skip running power
++                    // management (setPowerMode) against the Chrome-owned panel, and report
++                    // it as ON so getDisplays()/Presentation see a usable display. Chrome
++                    // hot-unplugs the display when it powers off, so "surfaced" == "on".
++                    mInfo.flags |= DisplayDeviceInfo.FLAG_NEVER_BLANK;
++                    mInfo.state = Display.STATE_ON;
++                    mInfo.committedState = Display.STATE_ON;
+                 }
+                 mInfo.frameRateOverrides = mFrameRateOverrides;
+ 
+-- 
+2.43.0
+

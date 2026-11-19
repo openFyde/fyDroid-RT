@@ -1,0 +1,44 @@
+From 0375de79e9fdfd6eaa13dfdada050ebd24e83553 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 2 Jul 2026 19:24:32 +0800
+Subject: [PATCH 6/7] build: let BoardConfig override fingerprint
+ brand/product/device
+
+BUILD_FINGERPRINT hardcoded PRODUCT_BRAND/TARGET_PRODUCT/TARGET_DEVICE as
+the fingerprint's brand/product/device triplet. Make each independently
+overridable via BUILD_FINGERPRINT_{BRAND,PRODUCT,DEVICE} (set in
+BoardConfig), defaulting to the previous values when unset.
+
+fydroid amd64 sets fyde/fydroid_rt/fydroid_rt_amd64 to keep
+ro.build.fingerprint under the 91-char legacy __system_property_get()
+limit that WeChat and other apps enforce, without renaming the product
+or device.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Change-Id: I262232135631c0497b3c5b5017f5c97d96a71ae0
+---
+ core/sysprop.mk | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/core/sysprop.mk b/core/sysprop.mk
+index 570702a679..2b51a5d47f 100644
+--- a/core/sysprop.mk
++++ b/core/sysprop.mk
+@@ -172,7 +172,13 @@ ifeq (,$(strip $(BUILD_FINGERPRINT)))
+   else
+     BF_BUILD_NUMBER := $(file <$(BUILD_NUMBER_FILE))
+   endif
+-  BUILD_FINGERPRINT := $(PRODUCT_BRAND)/$(TARGET_PRODUCT)/$(TARGET_DEVICE):$(PLATFORM_VERSION)/$(BUILD_ID)/$(BF_BUILD_NUMBER):$(TARGET_BUILD_VARIANT)/$(BUILD_VERSION_TAGS)
++  # fydeos: the fingerprint's brand/product/device default to
++  # $(PRODUCT_BRAND)/$(TARGET_PRODUCT)/$(TARGET_DEVICE), but a board may override
++  # each via BUILD_FINGERPRINT_{BRAND,PRODUCT,DEVICE} (set in BoardConfig) to get
++  # a shorter/cleaner fingerprint without renaming the product/device. fydroid
++  # amd64 uses fyde/fydroid_rt/fydroid_rt_amd64 to keep ro.build.fingerprint under
++  # the 91-char legacy __system_property_get limit (WeChat et al.).
++  BUILD_FINGERPRINT := $(if $(BUILD_FINGERPRINT_BRAND),$(BUILD_FINGERPRINT_BRAND),$(PRODUCT_BRAND))/$(if $(BUILD_FINGERPRINT_PRODUCT),$(BUILD_FINGERPRINT_PRODUCT),$(TARGET_PRODUCT))/$(if $(BUILD_FINGERPRINT_DEVICE),$(BUILD_FINGERPRINT_DEVICE),$(TARGET_DEVICE)):$(PLATFORM_VERSION)/$(BUILD_ID)/$(BF_BUILD_NUMBER):$(TARGET_BUILD_VARIANT)/$(BUILD_VERSION_TAGS)
+ endif
+ # unset it for safety.
+ BF_BUILD_NUMBER :=
+-- 
+2.43.0
+

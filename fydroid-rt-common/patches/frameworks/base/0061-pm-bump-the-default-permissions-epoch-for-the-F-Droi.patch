@@ -1,0 +1,28 @@
+From a8bd5d9604e681a6141b48df974f769a13916dc9 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 8 Sep 2026 11:38:29 +0800
+Subject: [PATCH 61/75] pm: bump the default-permissions epoch for the F-Droid
+ notification grant
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Change-Id: I7aa837a734dac778fe24662c8786c9f79f90071e
+---
+ services/core/java/com/android/server/pm/Settings.java | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/pm/Settings.java b/services/core/java/com/android/server/pm/Settings.java
+index 57fdfec89fbb..e66a2ef518a3 100644
+--- a/services/core/java/com/android/server/pm/Settings.java
++++ b/services/core/java/com/android/server/pm/Settings.java
+@@ -5440,7 +5440,7 @@ public final class Settings implements Watchable, Snappable {
+         //
+         // Bump this whenever the default-permission content we ship changes; that
+         // makes the next boot run exactly one more grant pass per user.
+-        private static final int FYDROID_DEFAULT_PERMISSIONS_EPOCH = 1;
++        private static final int FYDROID_DEFAULT_PERMISSIONS_EPOCH = 2;
+ 
+         private static final Random sRandom = new Random();
+ 
+-- 
+2.43.0
+

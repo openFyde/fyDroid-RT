@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Менеджер политик</string>
+    <string name="channel_name">Менеджер политик</string>
+    <string name="channel_description">Управление политиками подсистемы Android</string>
+    <string name="install_title">Установка приложений вашей организации</string>
+    <string name="install_finished">установлено политикой</string>
+    <string name="blocked_by_policy">заблокировано вашим администратором</string>
+    <string name="managed_info">Подсистема Android находится под управлением администратора</string>
+</resources>

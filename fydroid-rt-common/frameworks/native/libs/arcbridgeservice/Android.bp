@@ -1,0 +1,63 @@
+// Copyright (C) 2024 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Open-source replacement for prebuilt libarcbridgeservice.so.
+//
+// Provides MojoThread, MojoProcessSupport (singleton), ArcService (abstract base),
+// ArcBridgeSupport (HIDL bootstrap client), and Mojo Java system native methods
+// (CoreImpl, BaseRunLoop, WatcherImpl) needed by Java Mojo bindings.
+
+cc_library_shared {
+    name: "libarcbridgeservice",
+    defaults: ["fydroid_perf_defaults"],
+
+    srcs: [
+        "MojoThread.cpp",
+        "MojoProcessSupport.cpp",
+        "ArcBridgeSupport.cpp",
+        "ArcBridgeSupportJni.cpp",
+        "Future.cpp",
+        // Mojo Java system native methods — the proprietary libarcbridgeservice
+        // bundled these so Java Mojo bindings (CoreImpl etc.) work without a
+        // separate libmojo_system_java.so.
+        ":libmojo_java_system_srcs",
+    ],
+
+    local_include_dirs: ["include"],
+    export_include_dirs: ["include"],
+
+    shared_libs: [
+        "libbase",
+        "libchrome",
+        "libhidlbase",
+        "liblog",
+        "libmojo",
+        "libutils",
+        "libarcbridge",
+        "vendor.google_arc.arcbridge@1.0",
+    ],
+
+    generated_headers: [
+        "libmojo_jni_headers",
+        "libmojo_jni_registration_headers",
+    ],
+
+    // Export libhidlbase headers for consumers that include ArcBridgeSupport.h
+    // (it inherits from hidl_death_recipient).
+    export_shared_lib_headers: ["libhidlbase"],
+
+    cflags: [
+        "-Wno-unused-parameter",
+    ],
+}

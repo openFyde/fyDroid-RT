@@ -1,0 +1,5 @@
+service fydroid-arcpower /vendor/bin/hw/arcpower
+    class main
+    disabled
+    user system
+    group system

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">Cài đặt gói</string>
+    <string name="notification_channel_description">Tiến trình cài đặt APK</string>
+    <string name="mode_user">[Người dùng]</string>
+    <string name="mode_policy">[Chính sách]</string>
+    <string name="installing">%1$s Đang cài đặt: %2$s</string>
+    <string name="installed">%1$s Đã cài đặt: %2$s</string>
+    <string name="install_failed">%1$s Cài đặt thất bại: %2$s</string>
+</resources>

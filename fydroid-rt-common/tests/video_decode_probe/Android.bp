@@ -1,0 +1,42 @@
+// Copyright (C) 2026 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Decodes a clip through a named MediaCodec into an ImageReader surface and
+// reports what happened: whether the codec started, how many frames came out,
+// the gralloc layout of those frames, and whether their luma looks like a
+// picture. Written for ARC hardware decode, where the c2 mojo decoders hand
+// Android-allocated buffers to Chrome's VA-API decoder.
+//
+// Deliberately NOT in PRODUCT_PACKAGES — it is a developer tool, not part of the
+// image. Build and push it explicitly:
+//
+//   m fydroid_video_decode_probe
+//   push $OUT/system/bin/fydroid_video_decode_probe and a clip to /data/local/tmp
+//
+// See video_decode_probe.cpp for options.
+cc_binary {
+    name: "fydroid_video_decode_probe",
+    srcs: ["video_decode_probe.cpp"],
+    shared_libs: [
+        "libcutils",
+        "libhardware",
+        "liblog",
+        "libmediandk",
+        "libnativewindow",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+}

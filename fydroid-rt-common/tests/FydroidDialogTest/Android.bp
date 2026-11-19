@@ -1,0 +1,45 @@
+// Copyright (C) 2026 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Minimal modal-dialog client, for regression-testing input on Android dialogs
+// under fydroid.
+//
+// Deliberately NOT in PRODUCT_PACKAGES — it is a developer tool, not part of the
+// image. Build and install it explicitly:
+//
+//   m FydroidDialogTest
+//   push the apk and `pm install -r` it inside the container
+//
+// Drive it with (each mode logs every touch/key it receives, tag FydroidDialogTest):
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode perm      # POST_NOTIFICATIONS prompt
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode alert     # AlertDialog
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode dialogact # dialog-themed activity
+// The dialog activity's "Use" buttons start a full-screen page (same task or a new
+// task) while the dialog stays up: the shape of the TapTap SDK login in Phigros.
+//
+// Hardware-key typing: the main screen has a text, a password and an
+// autocorrect field, and WebActivity has the same three as WebView inputs; each
+// logs its value on every change (tag FydroidDialogTest).
+//   am start -n io.fydeos.dialogtest/.WebActivity                      # WebView fields
+//   am start -n io.fydeos.dialogtest/.MainActivity -e mode translucentweb
+//     # translucent WebView activity over MainActivity in the same task
+// Run modes from a cold start (am force-stop first).
+android_app {
+    name: "FydroidDialogTest",
+    srcs: ["src/**/*.java"],
+    sdk_version: "current",
+    dex_preopt: {
+        enabled: false,
+    },
+}

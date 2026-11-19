@@ -1,0 +1,125 @@
+diff --git a/android/Android.mk b/android/Android.mk
+index 944ceb5b129..1aaed44d2d5 100644
+--- a/android/Android.mk
++++ b/android/Android.mk
+@@ -49,6 +49,7 @@ MESA_VK_LIB_SUFFIX_intel_hasvk := intel_hasvk
+ MESA_VK_LIB_SUFFIX_freedreno := freedreno
+ MESA_VK_LIB_SUFFIX_broadcom := broadcom
+ MESA_VK_LIB_SUFFIX_panfrost := panfrost
++MESA_VK_LIB_SUFFIX_nouveau := nouveau
+ MESA_VK_LIB_SUFFIX_virtio := virtio
+ MESA_VK_LIB_SUFFIX_swrast := lvp
+ 
+diff --git a/android/mesa3d_cross.mk b/android/mesa3d_cross.mk
+index 128a7313dfd..a209867cb90 100644
+--- a/android/mesa3d_cross.mk
++++ b/android/mesa3d_cross.mk
+@@ -59,6 +59,70 @@ M_TARGET_PREFIX := $(my_2nd_arch_prefix)
+ 
+ MESA3D_LIB_DIR := lib$(subst 32,,$(LOCAL_MULTILIB))
+ 
++# NVK (vulkan-drivers=nouveau) and any other Rust-backed driver need a modern
++# Rust toolchain + bindgen cross-compiling to Android. AOSP-13's in-tree prebuilt
++# Rust is 1.59 (too old, and reserved for the platform), so prepare_build_env.sh
++# provisions a dedicated pinned toolchain via rustup into out/host/rust and
++# bindgen's libclang comes from the host LLVM-18 install. These are consumed only
++# when a Rust-backed driver is enabled; the env/PATH additions below are harmless
++# no-ops for boards that build none (the dirs simply don't exist).
++MESA3D_RUST_NEEDED := $(if $(filter nouveau,$(BOARD_MESA3D_VULKAN_DRIVERS) $(BOARD_MESA3D_GALLIUM_DRIVERS)),true,)
++MESA3D_RUST_BIN := $(abspath out/host/rust/cargo/bin)
++MESA3D_LIBCLANG_PATH := /usr/lib/llvm-18/lib
++# rustc/cargo here are rustup proxies: they need RUSTUP_HOME/CARGO_HOME pointed at
++# the tree-local toolchain (rather than ~/.rustup) to resolve the pinned rustc.
++MESA3D_RUST_ENV := RUSTUP_HOME=$(abspath out/host/rust/rustup) CARGO_HOME=$(abspath out/host/rust/cargo) LIBCLANG_PATH=$(MESA3D_LIBCLANG_PATH)
++# Android NDK sysroot (provisioned by prepare_build_env.sh). This build compiles
++# the AOSP driver .so files with the in-tree AOSP clang and links them against
++# AOSP bionic, so the NDK is used for two Rust-only, throwaway purposes:
++#   - meson's rustc sanity check links a scratch executable for the Android target
++#     (rustc's std pulls in -llog/-ldl/-lc/... which only the NDK sysroot provides
++#     on the link path). meson forces the rust linker to the in-tree AOSP clang, so
++#     we pass that clang the Android -target and the NDK --sysroot via -Clink-arg.
++#   - bindgen parses Mesa's C headers for the Android target and needs the NDK
++#     sysroot headers (bindgen_clang_arguments below).
++# The shipped NAK/NIL code compiles to Rust static libraries (no linker invoked)
++# and is linked into vulkan.nouveau.so by the AOSP linker, so nothing from the NDK
++# ends up in the image.
++MESA3D_NDK := $(abspath out/host/android-ndk-r27c)
++MESA3D_NDK_TOOLCHAIN := $(MESA3D_NDK)/toolchains/llvm/prebuilt/linux-x86_64
++MESA3D_NDK_SYSROOT := $(MESA3D_NDK_TOOLCHAIN)/sysroot
++MESA3D_NDK_API := 31
++# Rust target triple keyed by meson cpu_family (which is TARGET_{,2ND_}ARCH with
++# arm64->aarch64). Differs from the bare cpu_family for 32-bit x86 (i686) and arm.
++# The same triple, suffixed with the NDK API level, is a valid clang -target for
++# the sanity-check link (meson forces its own -Clinker=<aosp clang>, so we can't
++# hand rustc the NDK clang wrapper; instead we pass that clang the Android target
++# and NDK --sysroot as -Clink-arg so it can link the throwaway sanity binary).
++MESA3D_RUST_TRIPLE_x86_64  := x86_64-linux-android
++MESA3D_RUST_TRIPLE_x86     := i686-linux-android
++MESA3D_RUST_TRIPLE_aarch64 := aarch64-linux-android
++MESA3D_RUST_TRIPLE_arm     := armv7-linux-androideabi
++# When a Rust target links C++, meson probes the C++ stdlib with find_library('c++')
++# using the cross C++ compiler's search dirs. That AOSP clang has no bionic sysroot,
++# so libc++ is not on any -l search path (the real link pulls it in by explicit
++# path via m-lld-flags), and the probe raises "Could not detect ... libc++". Add a
++# -L to the AOSP-built libc++ intermediates so the probe finds libc++.so; because
++# it has soname libc++.so — the same lib m-lld-flags already links — the redundant
++# -lc++ meson then adds dedups instead of pulling a second C++ runtime.
++MESA3D_LIBCXX_LDIR := $(abspath $($(M_TARGET_PREFIX)TARGET_OUT_INTERMEDIATES)/SHARED_LIBRARIES/libc++_intermediates)
++# clang runtime arch dir name (differs from the meson cpu_family for 32-bit x86).
++MESA3D_NDK_RTARCH_x86_64  := x86_64
++MESA3D_NDK_RTARCH_x86     := i386
++MESA3D_NDK_RTARCH_aarch64 := aarch64
++MESA3D_NDK_RTARCH_arm     := arm
++# Extra -L search dirs for Rust-backed drivers. rustc's std for Android appends
++# -ldl/-lm/-llog/-lunwind as bare -l flags to the final link; this build links
++# bionic by explicit path (no -l search dir), so lld can't find them. Point at the
++# NDK sysroot (libc/dl/m/log .so — sonames match the device libs, so the ones also
++# linked by path dedup) and the NDK clang runtime (libunwind.a, statically linked).
++# Plus the AOSP libc++ dir (see MESA3D_LIBCXX_LDIR). Recursively expanded (`=`) so
++# MESON_CPU_FAMILY resolves per-arch inside the cross-file recipe.
++MESA3D_RUST_LDIRS = \
++    $(MESA3D_LIBCXX_LDIR) \
++    $(MESA3D_NDK_SYSROOT)/usr/lib/$(MESA3D_RUST_TRIPLE_$(MESON_CPU_FAMILY))/$(MESA3D_NDK_API) \
++    $(patsubst %/,%,$(dir $(firstword $(wildcard $(MESA3D_NDK_TOOLCHAIN)/lib/clang/*/lib/linux/$(MESA3D_NDK_RTARCH_$(MESON_CPU_FAMILY))/libunwind.a))))
++
+ MESON_OUT_DIR                            := $($(M_TARGET_PREFIX)TARGET_OUT_INTERMEDIATES)/MESON_MESA3D
+ MESON_GEN_DIR                            := $(MESON_OUT_DIR)_GEN
+ MESON_GEN_FILES_TARGET                   := $(MESON_GEN_DIR)/.timestamp
+@@ -90,7 +154,7 @@ MESA3D_GLES_BINS := \
+ #                                 shaders. find_program() only requires each when a
+ #                                 driver that needs it is enabled.
+ MESON_GEN_NINJA := \
+-  cd $(MESON_OUT_DIR) && PATH=$(abspath out/host/mesa-clc/bin):/usr/bin:/usr/local/bin:$$PATH meson ./build \
++  cd $(MESON_OUT_DIR) && $(MESA3D_RUST_ENV) PATH=$(abspath out/host/mesa-clc/bin):$(MESA3D_RUST_BIN):/usr/bin:/usr/local/bin:$$PATH meson ./build \
+ 	--cross-file $(call relative-to-absolute,$(MESON_GEN_DIR))/aosp_cross        \
+ 	--buildtype=release                                                          \
+ 	-Dplatforms=android                                                          \
+@@ -107,7 +171,7 @@ MESON_GEN_NINJA := \
+ 	-Dandroid-libbacktrace=disabled                                              \
+ 	$(BOARD_MESA3D_MESON_ARGS)                                                   \
+ 
+-MESON_BUILD := PATH=/usr/bin:/bin:/sbin:$$PATH ninja -C $(MESON_OUT_DIR)/build
++MESON_BUILD := $(MESA3D_RUST_ENV) PATH=$(MESA3D_RUST_BIN):/usr/bin:/bin:/sbin:$$PATH ninja -C $(MESON_OUT_DIR)/build
+ 
+ $(MESON_GEN_FILES_TARGET): MESON_CPU_FAMILY := $(subst arm64,aarch64,$(TARGET_$(M_TARGET_PREFIX)ARCH))
+ 
+@@ -256,15 +320,17 @@ $(MESON_GEN_FILES_TARGET): $(sort $(shell find -L $(MESA3D_TOP) -not -path '*/\.
+                            $(foreach inc,$(nospace-includes),'$(call abs-include,$(inc))', )'']\n" \
+ 		"cpp_args = [$(foreach flag,$(call filter-c-flags,$(m-cpp-flags)),'$(flag)', ) \
+                              $(foreach inc,$(nospace-includes),'$(call abs-include,$(inc))', )'']\n" \
+-		"c_link_args = [$(foreach flag, $(m-lld-flags-cleaned),'$(flag)',)'']\n"                                          \
+-		"cpp_link_args = [$(foreach flag, $(m-lld-flags-cleaned),'$(flag)',)'']\n"                                        \
++		"c_link_args = [$(if $(MESA3D_RUST_NEEDED),$(foreach d,$(MESA3D_RUST_LDIRS),'-L$(d)'$(comma) ))$(foreach flag, $(m-lld-flags-cleaned),'$(flag)',)'']\n"                                          \
++		"cpp_link_args = [$(if $(MESA3D_RUST_NEEDED),$(foreach d,$(MESA3D_RUST_LDIRS),'-L$(d)'$(comma) ))$(foreach flag, $(m-lld-flags-cleaned),'$(flag)',)'']\n"                                        \
+ 		"needs_exe_wrapper = true\n"                                                                                      \
++		$(if $(MESA3D_RUST_NEEDED),"bindgen_clang_arguments = ['-target'$(comma) '$(MESA3D_RUST_TRIPLE_$(MESON_CPU_FAMILY))'$(comma) '--sysroot'$(comma) '$(MESA3D_NDK_SYSROOT)'$(comma) '-I$(AOSP_ABSOLUTE_PATH)/external/libdrm'$(comma) '-I$(AOSP_ABSOLUTE_PATH)/external/libdrm/include/drm']\n") \
+ 		"[binaries]\n"                                                                                                    \
+ 		"ar = '$(AOSP_ABSOLUTE_PATH)/$($($(M_TARGET_PREFIX))TARGET_AR)'\n"                                                \
+ 		"c = [$(foreach arg,$(PRIVATE_CC),'$(subst prebuilts/,$(AOSP_ABSOLUTE_PATH)/prebuilts/,$(arg))',)'']\n"           \
+ 		"cpp = [$(foreach arg,$(PRIVATE_CXX),'$(subst prebuilts/,$(AOSP_ABSOLUTE_PATH)/prebuilts/,$(arg))',)'']\n"        \
+ 		"c_ld = 'lld'\n"                                                                                                  \
+ 		"cpp_ld = 'lld'\n\n"                                                                                              \
++		$(if $(MESA3D_RUST_NEEDED),"rust = ['$(AOSP_ABSOLUTE_PATH)/out/host/rust/cargo/bin/rustc'$(comma) '--target'$(comma) '$(MESA3D_RUST_TRIPLE_$(MESON_CPU_FAMILY))'$(comma) '-Clink-arg=--target=$(MESA3D_RUST_TRIPLE_$(MESON_CPU_FAMILY))$(MESA3D_NDK_API)'$(comma) '-Clink-arg=--sysroot=$(MESA3D_NDK_SYSROOT)']\n\n") \
+ 		"pkgconfig = ['env', 'PKG_CONFIG_LIBDIR=' + '$(call relative-to-absolute,$(MESON_GEN_DIR))', '/usr/bin/pkg-config']\n\n" \
+ 		"llvm-config = '/dev/null'\n"                                                                                     \
+ 		"[host_machine]\n"                                                                                                \

@@ -1,0 +1,79 @@
+From 14bce0d3f739e735c3cac1450763a704a3ec2af3 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 4 Nov 2026 18:45:01 +0800
+Subject: [PATCH 39/40] fydroid: anchor system modal dialogs' input frame at
+ the origin and crop them to the card, so pointer input lands on them
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: Ibf2ece723fc7e53126adf21dc7091129525ed6ef
+---
+ services/surfaceflinger/Layer.cpp | 37 +++++++++++++++++++++++++++++--
+ 1 file changed, 35 insertions(+), 2 deletions(-)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 85326056cb..43569600be 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -88,6 +88,20 @@ const ui::Transform kIdentityTransform;
+ // this file propagates down a subtree — see setMetadata().
+ constexpr int32_t kFydroidTypeApplicationOverlay = 2038;
+ #endif
++
++// fydroid-rt: system windows the Wayland composer presents as standalone MODAL
++// surfaces — TYPE_PHONE (2002, the AppWarnings dialogs), TYPE_SYSTEM_ALERT
++// (2003, ANR / crash), TYPE_SYSTEM_DIALOG (2008), TYPE_SYSTEM_ERROR (2010) and
++// TYPE_STATUS_BAR_SUB_PANEL (2017, a task-less SystemUIDialog). Chrome's
++// pointer arrives relative to such a surface, exactly as for a floating
++// activity, so both the presented crop (arcFloatingInset) and the input frame
++// have to treat them the same way. MUST match the MODAL types in
++// classifyWindowType() (device/fydeos .../wayland_service/window/
++// WaylandWindowTypes.h).
++bool isArcSystemModalWindowType(int32_t windowType) {
++    return windowType == 2002 || windowType == 2003 || windowType == 2008 ||
++            windowType == 2010 || windowType == 2017;
++}
+ } // namespace
+ 
+ using namespace ftl::flag_operators;
+@@ -462,9 +476,17 @@ void Layer::prepareGeometryCompositionState() {
+     // from the input frame. Covers both the per-window/activity split
+     // (IS_FLOATING_ACTIVITY → standalone output) and the whole-task dialog
+     // (IS_DIALOG → task VD, e.g. PackageInstaller).
++    //
++    // The system modal types are here as well as in fillInputFrameInfo's
++    // origin strip. With only the input side knowing them, a system dialog with
++    // surfaceInsets (DeprecatedTargetSdkVersionDialog: 29 px) was presented with
++    // its shadow padding while its input frame started at the card, so every
++    // pointer event was off by the inset.
+     compositionState->arcFloatingInset =
+             (mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)
+-             || mDrawingState.metadata.has(METADATA_IS_DIALOG))
++             || mDrawingState.metadata.has(METADATA_IS_DIALOG)
++             || isArcSystemModalWindowType(
++                     mDrawingState.metadata.getInt32(METADATA_WINDOW_TYPE, 0)))
+                     ? mDrawingState.inputInfo.surfaceInset
+                     : 0;
+ 
+@@ -2658,7 +2680,18 @@ void Layer::fillInputFrameInfo(WindowInfo& info, const ui::Transform& screenToDi
+             mDrawingState.metadata.getInt32(METADATA_IS_FLOATING_ACTIVITY, 0) != 0;
+     const bool isDialogTaskLayer =
+             mDrawingState.metadata.getInt32(METADATA_IS_DIALOG, 0) != 0;
+-    if (isFloatingActivityLayer || (isDialogTaskLayer && !isTrustedOverlay())) {
++    // System modal windows (AppWarnings, ANR / crash, task-less SystemUIDialog)
++    // are standalone MODAL Wayland windows too, centred by the composer while
++    // WM lays them out centred on display 0: without the strip their input
++    // frame stayed at WM's position while Chrome's pointer arrived relative to
++    // the card. Measured on device with DeprecatedTargetSdkVersionDialog: frame
++    // [358,488][1689,664], a click on OK delivered at (1294,158) — outside the
++    // dialog, so it only "worked" as a cancel-on-touch-outside, and hover never
++    // reached a button (TYPE_PHONE).
++    const bool isSystemModalLayer = isArcSystemModalWindowType(
++            mDrawingState.metadata.getInt32(METADATA_WINDOW_TYPE, 0));
++    if (isFloatingActivityLayer || isSystemModalLayer ||
++        (isDialogTaskLayer && !isTrustedOverlay())) {
+         const Rect screenRect{layerToScreen.transform(croppedInsetBoundsInLayer)};
+         ui::Transform originShift;
+         originShift.set(static_cast<float>(-screenRect.left),
+-- 
+2.43.0
+

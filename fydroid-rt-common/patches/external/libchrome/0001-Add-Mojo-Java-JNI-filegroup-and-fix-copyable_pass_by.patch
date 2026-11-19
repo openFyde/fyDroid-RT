@@ -1,0 +1,71 @@
+From 5b29dc00b5bd8a822fecf428808bbcd0a73b4e28 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 18 Mar 2026 19:28:34 +0800
+Subject: [PATCH 1/2] Add Mojo Java JNI filegroup and fix
+ copyable_pass_by_value for arrays
+
+Add libmojo_java_system_srcs filegroup exposing CoreImpl, BaseRunLoop,
+and WatcherImpl native sources so libarcbridgeservice can compile and
+register the Mojo Java system JNI methods needed by Java Mojo bindings
+in the ARC++ container.
+
+Fix _IsCopyablePassByValue in the mojom C++ generator to also return
+true for arrays of copyable_pass_by_value structs, matching the ABI
+of the original CrOS-built libarcbridge.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ib39cb6ba821123b588a54f77e571f4a4da8827ee
+---
+ Android.bp                                          | 11 +++++++++++
+ .../bindings/generators/mojom_cpp_generator.py      | 13 +++++++++----
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/Android.bp b/Android.bp
+index 3a612893e9..bdf64e6b59 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -1181,6 +1181,17 @@ filegroup {
+     ],
+ }
+ 
++// Mojo Java system native method sources (CoreImpl, BaseRunLoop, WatcherImpl).
++// Used by libarcbridgeservice to provide JNI native methods for Java Mojo bindings.
++filegroup {
++    name: "libmojo_java_system_srcs",
++    srcs: [
++        "mojo/public/java/system/core_impl.cc",
++        "mojo/public/java/system/base_run_loop.cc",
++        "mojo/public/java/system/watcher_impl.cc",
++    ],
++}
++
+ // Python in Chrome repository requires still Python 2.
+ python_defaults {
+     name: "libmojo_scripts",
+diff --git a/mojo/public/tools/bindings/generators/mojom_cpp_generator.py b/mojo/public/tools/bindings/generators/mojom_cpp_generator.py
+index ceded69e1f..b09d905df2 100644
+--- a/mojo/public/tools/bindings/generators/mojom_cpp_generator.py
++++ b/mojo/public/tools/bindings/generators/mojom_cpp_generator.py
+@@ -599,10 +599,15 @@ class Generator(generator.Generator):
+     return False
+ 
+   def _IsCopyablePassByValue(self, kind):
+-    if not self._IsTypemappedKind(kind):
+-      return False
+-    return self.typemap[self._GetFullMojomNameForKind(kind)][
+-        "copyable_pass_by_value"]
++    if self._IsTypemappedKind(kind):
++      return self.typemap[self._GetFullMojomNameForKind(kind)][
++          "copyable_pass_by_value"]
++    # For arrays of copyable_pass_by_value structs, pass the array by value too
++    # (matching the ABI of the original CrOS-built libarcbridge).
++    if mojom.IsArrayKind(kind) and self._IsTypemappedKind(kind.kind):
++      return self.typemap[self._GetFullMojomNameForKind(kind.kind)][
++          "copyable_pass_by_value"]
++    return False
+ 
+   def _ShouldPassParamByValue(self, kind):
+     return ((not mojom.IsReferenceKind(kind)) or self._IsMoveOnlyKind(kind) or
+-- 
+2.43.0
+

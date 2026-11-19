@@ -1,0 +1,44 @@
+From 5d9106abf16784312e41e323800f2a8f445ce3d3 Mon Sep 17 00:00:00 2001
+From: FydeOS <yang@fydeos.io>
+Date: Wed, 29 Apr 2026 18:15:20 +0800
+Subject: [PATCH] Map FAKE_PACKAGE_SIGNATURE to FAKE_PACKAGE permission group
+
+Adapted from lineageos4microg/docker-lineage-cicd
+packages_modules_Permission-S.patch (commit 0f5a279f) for AOSP 11,
+where PermissionController is still in packages/apps/ rather than
+the packages/modules/Permission Mainline split that arrived in S.
+
+Adds FAKE_PACKAGE to the platform permissions map so the toggle for
+android.permission.FAKE_PACKAGE_SIGNATURE renders in the runtime
+permission UI under the spoof-signature group declared by
+frameworks/base. Required for microG GmsCore.
+
+Change-Id: I2eb6a8a886cf73127ffa4cf7dc737c94fa397ac3
+---
+ .../android/permissioncontroller/permission/utils/Utils.java   | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/PermissionController/src/com/android/permissioncontroller/permission/utils/Utils.java b/PermissionController/src/com/android/permissioncontroller/permission/utils/Utils.java
+index 48793ab51e..d75a58360d 100644
+--- a/PermissionController/src/com/android/permissioncontroller/permission/utils/Utils.java
++++ b/PermissionController/src/com/android/permissioncontroller/permission/utils/Utils.java
+@@ -21,6 +21,7 @@ import static android.Manifest.permission_group.CALENDAR;
+ import static android.Manifest.permission_group.CALL_LOG;
+ import static android.Manifest.permission_group.CAMERA;
+ import static android.Manifest.permission_group.CONTACTS;
++import static android.Manifest.permission_group.FAKE_PACKAGE;
+ import static android.Manifest.permission_group.LOCATION;
+ import static android.Manifest.permission_group.MICROPHONE;
+ import static android.Manifest.permission_group.NEARBY_DEVICES;
+@@ -341,6 +342,8 @@ public final class Utils {
+             PLATFORM_PERMISSIONS.put(Manifest.permission.BODY_SENSORS_BACKGROUND, SENSORS);
+         }
+ 
++        PLATFORM_PERMISSIONS.put(Manifest.permission.FAKE_PACKAGE_SIGNATURE, FAKE_PACKAGE);
++
+         PLATFORM_PERMISSION_GROUPS = new ArrayMap<>();
+         int numPlatformPermissions = PLATFORM_PERMISSIONS.size();
+         for (int i = 0; i < numPlatformPermissions; i++) {
+-- 
+2.43.0
+

@@ -1,0 +1,200 @@
+From 1552ea778bfc402f53c19b62b452f1a86837e891 Mon Sep 17 00:00:00 2001
+From: simon <yang@fydeos.io>
+Date: Wed, 13 May 2026 11:05:32 +0800
+Subject: [PATCH 17/40] libgui: import YV12/NV12 cros gralloc buffers via
+ EGL_LINUX_DMA_BUF_EXT
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+GLConsumer::EglImage::createImage() used EGL_NATIVE_BUFFER_ANDROID for
+every buffer it consumes. Mesa rejects that wrapper for DRM_FORMAT_YVU420
+surfaces with EGL_BAD_ACCESS, so any video layer composited through
+SurfaceFlinger silently loses its EGLImage and the frame is dropped.
+
+The AOSP soft video decoders (C2SoftAvcDec.cpp:775 and seven sibling
+codecs) all hardcode HAL_PIXEL_FORMAT_YV12 as their output, so on hosts
+without a HW codec / HW composer take-over for video this happens every
+frame.
+
+Detect cros gralloc buffers (handle magic 0xABCDDCBA) and, for the YUV
+subset, construct an explicit multi-plane EGL_LINUX_DMA_BUF_EXT import
+using fds/offsets/strides from the handle. The DRM plane order per
+drm_fourcc.h for YVU420 is Y/Cr(V)/Cb(U); cros gralloc stores YV12
+internally as DRM_FORMAT_YVU420_ANDROID ('9997'), so accept both that
+fourcc and the standard '9912' YVU420 in the detection.
+
+Protected buffers skip the fast path — the DMA-BUF importer doesn't
+honor EGL_PROTECTED_CONTENT_EXT the way the native-buffer importer does,
+so they continue through eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: Id04f3f0e65e23edd19fe8e5cfd2a707ff85e3278
+---
+ libs/gui/Android.bp     |   9 ++++
+ libs/gui/GLConsumer.cpp | 114 +++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 117 insertions(+), 6 deletions(-)
+
+diff --git a/libs/gui/Android.bp b/libs/gui/Android.bp
+index d634c58c53..7ada13b740 100644
+--- a/libs/gui/Android.bp
++++ b/libs/gui/Android.bp
+@@ -261,6 +261,15 @@ cc_library_shared {
+     lto: {
+         thin: true,
+     },
++
++    // fydroid-rt (NV12 cluster): cros_gralloc handle header + libdrm fourcc consts,
++    // so GLConsumer can detect NV12/YV12 cros_gralloc buffers and import them as
++    // multi-plane EGLImages via EGL_LINUX_DMA_BUF_EXT (Mesa rejects the generic
++    // EGL_NATIVE_BUFFER_ANDROID path with EGL_BAD_ACCESS for YV12).
++    include_dirs: [
++        "external/minigbm",
++        "external/libdrm/include",
++    ],
+ }
+ 
+ // Used by media codec services exclusively as a static lib for
+diff --git a/libs/gui/GLConsumer.cpp b/libs/gui/GLConsumer.cpp
+index b3647d6126..ea27fc2ca0 100644
+--- a/libs/gui/GLConsumer.cpp
++++ b/libs/gui/GLConsumer.cpp
+@@ -28,6 +28,18 @@
+ #include <GLES2/gl2.h>
+ #include <GLES2/gl2ext.h>
+ #include <cutils/compiler.h>
++#include <drm/drm_fourcc.h>
++
++#include <cros_gralloc/cros_gralloc_handle.h>
++
++// Cros gralloc stores HAL_PIXEL_FORMAT_YV12 buffers internally as
++// DRM_FORMAT_YVU420_ANDROID (fourcc '9997'). drv_get_standard_fourcc()
++// converts to standard YVU420 only on info-export — the handle's `format`
++// field still holds the Android variant. Both must be treated as YV12 here.
++#ifndef DRM_FORMAT_YVU420_ANDROID
++#define DRM_FORMAT_YVU420_ANDROID \
++        ((uint32_t)'9' | ((uint32_t)'9' << 8) | ((uint32_t)'9' << 16) | ((uint32_t)'7' << 24))
++#endif
+ 
+ #include <hardware/hardware.h>
+ 
+@@ -988,20 +1000,110 @@ void GLConsumer::EglImage::bindToTextureTarget(uint32_t texTarget) {
+             static_cast<GLeglImageOES>(mEglImage));
+ }
+ 
++// AOSP soft video decoders hardcode HAL_PIXEL_FORMAT_YV12 (C2SoftAvcDec.cpp:775
++// and 7 sibling soft codecs); Mesa's EGL_NATIVE_BUFFER_ANDROID importer rejects
++// DRM_FORMAT_YVU420 buffers with EGL_BAD_ACCESS, so any video layer composited
++// through SurfaceFlinger's GL path drops frames silently. Cros gralloc exposes
++// per-plane fds/offsets/strides on the handle; build an explicit multi-plane
++// EGL_LINUX_DMA_BUF_EXT import for YV12 (and NV12, for symmetry) instead.
++static EGLImageKHR createImageFromCrosYuv(EGLDisplay dpy,
++                                          const cros_gralloc_handle* h,
++                                          uint32_t width, uint32_t height) {
++    const bool isYv12 = (h->format == DRM_FORMAT_YVU420 ||
++                         h->format == DRM_FORMAT_YVU420_ANDROID);
++    const bool isNv12 = (h->format == DRM_FORMAT_NV12);
++    if (!isYv12 && !isNv12) {
++        return EGL_NO_IMAGE_KHR;
++    }
++
++    int fd0 = h->fds[0];
++    if (fd0 < 0) return EGL_NO_IMAGE_KHR;
++
++    if (isNv12) {
++        uint32_t yStride  = h->strides[0];
++        uint32_t uvStride = h->strides[1] ? h->strides[1] : yStride;
++        uint32_t uvOff    = h->offsets[1] ? h->offsets[1] : yStride * height;
++        int fd1 = (h->fds[1] >= 0) ? h->fds[1] : fd0;
++        EGLint attrs[] = {
++            EGL_LINUX_DRM_FOURCC_EXT,      (EGLint)DRM_FORMAT_NV12,
++            EGL_WIDTH,                     (EGLint)width,
++            EGL_HEIGHT,                    (EGLint)height,
++            EGL_DMA_BUF_PLANE0_FD_EXT,     fd0,
++            EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
++            EGL_DMA_BUF_PLANE0_PITCH_EXT,  (EGLint)yStride,
++            EGL_DMA_BUF_PLANE1_FD_EXT,     fd1,
++            EGL_DMA_BUF_PLANE1_OFFSET_EXT, (EGLint)uvOff,
++            EGL_DMA_BUF_PLANE1_PITCH_EXT,  (EGLint)uvStride,
++            EGL_YUV_COLOR_SPACE_HINT_EXT,  EGL_ITU_REC601_EXT,
++            EGL_SAMPLE_RANGE_HINT_EXT,     EGL_YUV_NARROW_RANGE_EXT,
++            EGL_NONE
++        };
++        return eglCreateImageKHR(dpy, EGL_NO_CONTEXT,
++                                 EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
++    }
++
++    // DRM plane order for YVU420 (drm_fourcc.h): 0=Y, 1=Cr(V), 2=Cb(U).
++    uint32_t yStride = h->strides[0];
++    uint32_t vStride = h->strides[1] ? h->strides[1] : yStride / 2;
++    uint32_t uStride = h->strides[2] ? h->strides[2] : yStride / 2;
++    uint32_t vOff    = h->offsets[1] ? h->offsets[1] : yStride * height;
++    uint32_t uOff    = h->offsets[2] ? h->offsets[2] : vOff + vStride * (height / 2);
++    int fd1 = (h->fds[1] >= 0) ? h->fds[1] : fd0;
++    int fd2 = (h->fds[2] >= 0) ? h->fds[2] : fd0;
++    EGLint attrs[] = {
++        EGL_LINUX_DRM_FOURCC_EXT,      (EGLint)DRM_FORMAT_YVU420,
++        EGL_WIDTH,                     (EGLint)width,
++        EGL_HEIGHT,                    (EGLint)height,
++        EGL_DMA_BUF_PLANE0_FD_EXT,     fd0,
++        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
++        EGL_DMA_BUF_PLANE0_PITCH_EXT,  (EGLint)yStride,
++        EGL_DMA_BUF_PLANE1_FD_EXT,     fd1,
++        EGL_DMA_BUF_PLANE1_OFFSET_EXT, (EGLint)vOff,
++        EGL_DMA_BUF_PLANE1_PITCH_EXT,  (EGLint)vStride,
++        EGL_DMA_BUF_PLANE2_FD_EXT,     fd2,
++        EGL_DMA_BUF_PLANE2_OFFSET_EXT, (EGLint)uOff,
++        EGL_DMA_BUF_PLANE2_PITCH_EXT,  (EGLint)uStride,
++        EGL_YUV_COLOR_SPACE_HINT_EXT,  EGL_ITU_REC601_EXT,
++        EGL_SAMPLE_RANGE_HINT_EXT,     EGL_YUV_NARROW_RANGE_EXT,
++        EGL_NONE
++    };
++    return eglCreateImageKHR(dpy, EGL_NO_CONTEXT,
++                             EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
++}
++
+ EGLImageKHR GLConsumer::EglImage::createImage(EGLDisplay dpy,
+         const sp<GraphicBuffer>& graphicBuffer) {
+-    EGLClientBuffer cbuf =
+-            static_cast<EGLClientBuffer>(graphicBuffer->getNativeBuffer());
+-    const bool createProtectedImage =
++    eglInitialize(dpy, nullptr, nullptr);
++
++    // YV12 / NV12 dmabuf fast path. Cros gralloc handles carry a recognizable
++    // magic; protected-content buffers are excluded (the DMA-BUF import does
++    // not honor the EGL_PROTECTED_CONTENT_EXT attribute the way the native-
++    // buffer importer does).
++    const bool isProtected =
+             (graphicBuffer->getUsage() & GRALLOC_USAGE_PROTECTED) &&
+             hasEglProtectedContent();
++    const auto* crosHandle =
++            reinterpret_cast<const cros_gralloc_handle*>(graphicBuffer->handle);
++    if (!isProtected && crosHandle && crosHandle->magic == 0xABCDDCBA) {
++        EGLImageKHR yuvImage = createImageFromCrosYuv(
++                dpy, crosHandle,
++                graphicBuffer->getWidth(), graphicBuffer->getHeight());
++        if (yuvImage != EGL_NO_IMAGE_KHR) {
++            DEBUG_EGL_IMAGE_TRACKER_CREATE();
++            return yuvImage;
++        }
++        // Fall through for non-YUV cros buffers (createImageFromCrosYuv
++        // returns EGL_NO_IMAGE_KHR for those without setting EGL error).
++    }
++
++    EGLClientBuffer cbuf =
++            static_cast<EGLClientBuffer>(graphicBuffer->getNativeBuffer());
+     EGLint attrs[] = {
+         EGL_IMAGE_PRESERVED_KHR, EGL_TRUE,
+-        createProtectedImage ? EGL_PROTECTED_CONTENT_EXT : EGL_NONE,
+-        createProtectedImage ? EGL_TRUE : EGL_NONE,
++        isProtected ? EGL_PROTECTED_CONTENT_EXT : EGL_NONE,
++        isProtected ? EGL_TRUE : EGL_NONE,
+         EGL_NONE,
+     };
+-    eglInitialize(dpy, nullptr, nullptr);
+     EGLImageKHR image = eglCreateImageKHR(dpy, EGL_NO_CONTEXT,
+             EGL_NATIVE_BUFFER_ANDROID, cbuf, attrs);
+     if (image == EGL_NO_IMAGE_KHR) {
+-- 
+2.43.0
+

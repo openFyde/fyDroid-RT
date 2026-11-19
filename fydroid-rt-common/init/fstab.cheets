@@ -1,0 +1,6 @@
+# Android fstab file.
+#<src>        <mnt_point>         <type>    <mnt_flags and options>     <fs_mgr_flags>
+#android needs a non-empty fstab, so this is just a dummy entry
+tmpfs         /dummy              tmpfs     ro,nosuid,nodev,noexec      defaults
+#Placeholder to make CTS happy
+ignored       /data               ext4      defaults                    defaults

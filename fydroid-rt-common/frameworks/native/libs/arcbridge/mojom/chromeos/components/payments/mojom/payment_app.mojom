@@ -1,0 +1,39 @@
+// Stub for chromeos.payments.mojom.PaymentAppInstance.
+// Simplified from chromeos/components/payments/mojom/payment_app.mojom.
+module chromeos.payments.mojom;
+
+// Simplified response types for payment methods.
+union IsPaymentImplementedResult {
+  bool valid;
+  string error;
+};
+
+struct PaymentParameters {
+  string package_name;
+  string? payment_request_id;
+};
+
+union IsReadyToPayResult {
+  bool response;
+  string error;
+};
+
+union InvokePaymentAppResult {
+  bool valid;
+  string error;
+};
+
+// Next method ID: 4
+interface PaymentAppInstance {
+  IsPaymentImplemented@0(string package_name)
+      => (IsPaymentImplementedResult response);
+  [MinVersion=1]
+  IsReadyToPay@1(PaymentParameters parameters)
+      => (IsReadyToPayResult response);
+  [MinVersion=2]
+  InvokePaymentApp@2(PaymentParameters parameters)
+      => (InvokePaymentAppResult response);
+  [MinVersion=3]
+  AbortPaymentApp@3(string request_token)
+      => (bool aborted);
+};

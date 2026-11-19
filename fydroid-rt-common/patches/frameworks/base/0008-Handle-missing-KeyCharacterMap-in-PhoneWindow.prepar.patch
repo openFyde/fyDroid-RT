@@ -1,0 +1,48 @@
+From afabdbfa6215fb759e8bc034839f410c41362d0a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 24 Apr 2026 12:28:08 +0800
+Subject: [PATCH 08/75] Handle missing KeyCharacterMap in
+ PhoneWindow.preparePanel
+
+KeyCharacterMap.load() throws UnavailableException when
+InputManager has no device registered for the given ID. In
+container environments (ARC++/fydroid-rt), InputReaderArc
+uses device ID -1 which is also VIRTUAL_KEYBOARD, so the
+fallback to VIRTUAL_KEYBOARD hits the same error.
+
+Catch UnavailableException and default to qwerty mode instead
+of crashing the app.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Id09f7a8ded4ddda8c80798a77802830fcc0600be
+---
+ .../com/android/internal/policy/PhoneWindow.java    | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/core/java/com/android/internal/policy/PhoneWindow.java b/core/java/com/android/internal/policy/PhoneWindow.java
+index e603e2ed57f1..7f30a777f18c 100644
+--- a/core/java/com/android/internal/policy/PhoneWindow.java
++++ b/core/java/com/android/internal/policy/PhoneWindow.java
+@@ -724,9 +724,16 @@ public class PhoneWindow extends Window implements MenuBuilder.Callback {
+             }
+ 
+             // Set the proper keymap
+-            KeyCharacterMap kmap = KeyCharacterMap.load(
+-                    event != null ? event.getDeviceId() : KeyCharacterMap.VIRTUAL_KEYBOARD);
+-            st.qwertyMode = kmap.getKeyboardType() != KeyCharacterMap.NUMERIC;
++            boolean qwertyMode = true;
++            try {
++                KeyCharacterMap kmap = KeyCharacterMap.load(
++                        event != null ? event.getDeviceId() : KeyCharacterMap.VIRTUAL_KEYBOARD);
++                qwertyMode = kmap.getKeyboardType() != KeyCharacterMap.NUMERIC;
++            } catch (KeyCharacterMap.UnavailableException e) {
++                // No key character map available (e.g. container environment),
++                // default to qwerty mode.
++            }
++            st.qwertyMode = qwertyMode;
+             st.menu.setQwertyMode(st.qwertyMode);
+             st.menu.startDispatchingItemsChanged();
+         }
+-- 
+2.43.0
+

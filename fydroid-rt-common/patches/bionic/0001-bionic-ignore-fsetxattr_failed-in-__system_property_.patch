@@ -1,0 +1,47 @@
+From 8de5950c70b48daadef11f910eece0b7863db79b Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 15 Apr 2026 15:29:54 +0800
+Subject: [PATCH] bionic: ignore fsetxattr_failed in
+ __system_property_area_init
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In a container environment (ARC++ / fydroid-rt), the CrOS host kernel's
+SELinux policy doesn't include all AOSP property context types. This causes
+fsetxattr(security.selinux) to fail for unknown contexts, even in
+permissive mode, because the kernel still validates context strings.
+
+The property areas are created and mapped correctly regardless — only the
+SELinux xattr labels on the property files are wrong. Since the container
+runs with SELinux permissive, this is harmless.
+
+Without this change, __system_property_area_init() returns -1 and init
+aborts with 'Failed to initialize property area'.
+
+Change-Id: Iffddef5fcd8b4197acc22822b094e67e2b063574
+---
+ libc/bionic/system_property_api.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/libc/bionic/system_property_api.cpp b/libc/bionic/system_property_api.cpp
+index a641f12a8..0bd829ddd 100644
+--- a/libc/bionic/system_property_api.cpp
++++ b/libc/bionic/system_property_api.cpp
+@@ -56,7 +56,12 @@ int __system_property_set_filename(const char*) {
+ __BIONIC_WEAK_FOR_NATIVE_BRIDGE
+ int __system_property_area_init() {
+   bool fsetxattr_failed = false;
+-  return system_properties.AreaInit(PROP_FILENAME, &fsetxattr_failed) && !fsetxattr_failed ? 0 : -1;
++  // fydroid-rt: ignore fsetxattr_failed — the CrOS host kernel's SELinux policy
++  // doesn't include all AOSP property context types, so fsetxattr(security.selinux)
++  // fails for unknown contexts even in permissive mode.  The property areas are
++  // still created and mapped correctly; only the SELinux xattr labels are wrong,
++  // which is harmless when SELinux is permissive.
++  return system_properties.AreaInit(PROP_FILENAME, &fsetxattr_failed) ? 0 : -1;
+ }
+ 
+ __BIONIC_WEAK_FOR_NATIVE_BRIDGE
+-- 
+2.43.0
+

@@ -1,0 +1,53 @@
+From e3b4d546ad4dd3cee7e0080025f242c280bfde2f Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 29 Sep 2026 14:59:54 +0800
+Subject: [PATCH 4/5] init: skip tracefs/binderfs/fusectl mounts that the ARC
+ container cannot make
+
+Android init runs in a child user namespace: tracefs and fusectl are not
+userns-mountable, the host kernel has no binderfs, and binder arrives as host
+misc devices. Each attempt only left a Chromium OS LSM sb_mount denial in dmesg.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: Ia43b8f21b2de4af5bbeca60305b4dbb353d972fb
+---
+ rootdir/init.rc | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/rootdir/init.rc b/rootdir/init.rc
+index 2b53d883ea..ae3fe1aa75 100644
+--- a/rootdir/init.rc
++++ b/rootdir/init.rc
+@@ -78,8 +78,9 @@ on early-init
+     mkdir /dev/boringssl 0755 root root
+     mkdir /dev/boringssl/selftest 0755 root root
+ 
+-    # Mount tracefs (with GID=AID_READTRACEFS)
+-    mount tracefs tracefs /sys/kernel/tracing gid=3012
++    # ARC container: tracefs is not mountable from init's child user namespace
++    # (EPERM, plus a Chromium OS LSM denial in dmesg). The host's tracefs is
++    # already visible at /sys/kernel/debug/tracing, which the rules below handle.
+ 
+     # create sys dirctory
+     mkdir /dev/sys 0755 system system
+@@ -239,14 +240,12 @@ on init
+     chmod 0770 /config/sdcardfs
+     chown system package_info /config/sdcardfs
+ 
+-    # Mount binderfs
++    # ARC container: binder, hwbinder and vndbinder are host misc devices bound
++    # into /dev, and binderfs/fusectl cannot be mounted from init's child user
++    # namespace (each attempt left a Chromium OS LSM denial in dmesg).
+     mkdir /dev/binderfs
+-    mount binder binder /dev/binderfs stats=global
+     chmod 0755 /dev/binderfs
+ 
+-    # Mount fusectl
+-    mount fusectl none /sys/fs/fuse/connections
+-
+     symlink /dev/binderfs/binder /dev/binder
+     symlink /dev/binderfs/hwbinder /dev/hwbinder
+     symlink /dev/binderfs/vndbinder /dev/vndbinder
+-- 
+2.43.0
+

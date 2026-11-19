@@ -1,0 +1,53 @@
+From 7b544a8b48fe596322e5cacdcf8c8421f04aa5f9 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 30 Mar 2026 18:03:51 +0800
+Subject: [PATCH 32/75] Allow system_server clipboard access for
+ ArcClipboardService
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+ArcClipboardService runs in system_server and needs to read the
+clipboard to bridge Android→Chrome OS. The ClipboardService
+permission check blocks UID 1000 (system_server) from both
+getPrimaryClip() and PrimaryClipChangedListener dispatch, since
+it requires READ_CLIPBOARD_IN_BACKGROUND or UI focus.
+
+Add an early return for Process.SYSTEM_UID in clipboardAccessAllowed()
+so that system_server components can always access the clipboard.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I08d9487fe0e38fc3d2abc73c92fc2908bd7864d0
+---
+ .../com/android/server/clipboard/ClipboardService.java    | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/services/core/java/com/android/server/clipboard/ClipboardService.java b/services/core/java/com/android/server/clipboard/ClipboardService.java
+index 6f9a17682dd7..758c46ae3706 100644
+--- a/services/core/java/com/android/server/clipboard/ClipboardService.java
++++ b/services/core/java/com/android/server/clipboard/ClipboardService.java
+@@ -50,6 +50,7 @@ import android.os.Bundle;
+ import android.os.Handler;
+ import android.os.HandlerThread;
+ import android.os.IBinder;
++import android.os.Process;
+ import android.os.IUserManager;
+ import android.os.Looper;
+ import android.os.Message;
+@@ -1048,6 +1049,13 @@ public class ClipboardService extends SystemService {
+             @UserIdInt int userId,
+             boolean shouldNoteOp) {
+ 
++        // Allow system_server unconditional clipboard access.
++        // ArcClipboardService runs here and needs to read clipboard
++        // to bridge Android clipboard to Chrome OS.
++        if (uid == Process.SYSTEM_UID) {
++            return true;
++        }
++
+         boolean allowed;
+ 
+         // First, verify package ownership to ensure use below is safe.
+-- 
+2.43.0
+

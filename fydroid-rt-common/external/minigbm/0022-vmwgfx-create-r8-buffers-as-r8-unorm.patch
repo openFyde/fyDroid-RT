@@ -1,0 +1,19 @@
+--- a/vmwgfx.c
++++ b/vmwgfx.c
+@@ -105,8 +105,15 @@
+ static uint32_t drm_format_to_svga_format(uint32_t format)
+ {
+ 	switch (format) {
++	/*
++	 * R8 is what BLOB buffers become (cros_gralloc makes every
++	 * HAL_PIXEL_FORMAT_BLOB an R8 buffer of size x 1), so camera JPEG and other
++	 * byte buffers land here. The host rejects SVGA3D_P8 surfaces at any size
++	 * (-EINVAL), so every such allocation failed; SVGA3D_R8_UNORM is the 8-bit
++	 * format it accepts.
++	 */
+ 	case DRM_FORMAT_R8:
+-		return SVGA3D_P8;
++		return SVGA3D_R8_UNORM;
+ 	case DRM_FORMAT_ARGB8888:
+ 		return SVGA3D_B8G8R8A8_UNORM;
+ 	case DRM_FORMAT_XRGB8888:

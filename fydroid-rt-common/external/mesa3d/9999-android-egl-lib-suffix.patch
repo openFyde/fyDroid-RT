@@ -1,0 +1,17 @@
+diff --git a/android/mesa3d_cross.mk b/android/mesa3d_cross.mk
+index a209867cb90..06ef917126e 100644
+--- a/android/mesa3d_cross.mk
++++ b/android/mesa3d_cross.mk
+@@ -129,9 +129,9 @@ MESON_GEN_FILES_TARGET                   := $(MESON_GEN_DIR)/.timestamp
+ 
+ MESA3D_GALLIUM_DIR                       := $(MESON_OUT_DIR)/install/usr/local/lib
+ $(M_TARGET_PREFIX)MESA3D_GALLIUM_BIN     := $(MESON_OUT_DIR)/install/usr/local/lib/libgallium_dri.so
+-$(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/libEGL.so
+-$(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv1_CM.so
+-$(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv2.so
++$(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/libEGL$(BOARD_MESA3D_EGL_LIB_SUFFIX).so
++$(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv1_CM$(BOARD_MESA3D_GLES_LIB_SUFFIX).so
++$(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv2$(BOARD_MESA3D_GLES_LIB_SUFFIX).so
+ $(M_TARGET_PREFIX)MESA3D_LIBGBM_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/$(MESA_LIBGBM_NAME).so
+ $(M_TARGET_PREFIX)MESA3D_DRI_GBM_BIN     := $(MESON_OUT_DIR)/install/usr/local/lib/gbm/dri_gbm.so
+ 

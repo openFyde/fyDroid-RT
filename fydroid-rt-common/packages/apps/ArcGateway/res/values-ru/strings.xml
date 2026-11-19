@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">Установка пакета</string>
+    <string name="notification_channel_description">Ход установки APK</string>
+    <string name="mode_user">[Пользователь]</string>
+    <string name="mode_policy">[Политика]</string>
+    <string name="installing">%1$s Установка: %2$s</string>
+    <string name="installed">%1$s Установлено: %2$s</string>
+    <string name="install_failed">%1$s Ошибка установки: %2$s</string>
+</resources>

@@ -1,0 +1,95 @@
+From 3934bf55013a086f08c1ab41d55b3c0ed8bbc6ff Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 24 Jun 2026 13:45:43 +0800
+Subject: [PATCH 43/75] wm: launch ARC standalone dialog tasks FULLSCREEN
+ (centered modal)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Complements 0042. A standalone dialog task (floating-themed root activity,
+e.g. SystemUI WifiDebuggingActivity, permission prompts) launched freeform on
+a freeform display: top-aligned at origin (0,0) and shorter than the screen,
+so the card — centered within the task — sat too high (vertically off-center).
+
+The SF dialog-centering path (WaylandTaskOutput, commit b37f8bc) only screen-
+centers a card whose task footprint is the full display (render target larger
+than the card). On r150 Chrome no longer sends an enlarged render target /
+geometry for the ARC modal (confirmed on device: no setRenderTargetSize at all
+for the dialog task), so a freeform dialog never gets centered.
+
+Force FULLSCREEN windowing mode for container tasks whose root activity uses a
+floating theme. WMS then centers the dialog window within the full display, the
+1:1 task composition lands it screen-centered, and the input frame stays
+aligned (the model PackageInstaller already relies on). Bounds are cleared so
+patch 0042's origin-zeroing and applyArcAspectRatio both correctly no-op.
+
+usesFloatingTheme() in ActivityRecord is made package-visible for the check.
+The translucent multi-activity dialog case (non-floating root, e.g.
+PackageInstaller) is not covered here and stays freeform; 0042 keeps its input
+aligned.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Ifed9fafc076d41f2f0ab83cbedfb2fcb595adda7
+---
+ .../com/android/server/wm/ActivityRecord.java |  5 +++-
+ .../server/wm/TaskLaunchParamsModifier.java   | 27 +++++++++++++++++++
+ 2 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/ActivityRecord.java b/services/core/java/com/android/server/wm/ActivityRecord.java
+index a94acd20f222..5d4a12827ed1 100644
+--- a/services/core/java/com/android/server/wm/ActivityRecord.java
++++ b/services/core/java/com/android/server/wm/ActivityRecord.java
+@@ -7565,7 +7565,10 @@ final class ActivityRecord extends WindowToken implements WindowManagerService.A
+     }
+ 
+     /** Whether this activity's theme declares windowIsFloating (dialog theme). */
+-    private boolean usesFloatingTheme() {
++    // fydroid-rt: package-visible so TaskLaunchParamsModifier can force a
++    // standalone dialog task to FULLSCREEN (centered modal). See the
++    // container-dialog-fullscreen block there.
++    boolean usesFloatingTheme() {
+         if (info == null || info.applicationInfo == null) {
+             return false;
+         }
+diff --git a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+index 65aa9083f770..00a3ff45c922 100644
+--- a/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
++++ b/services/core/java/com/android/server/wm/TaskLaunchParamsModifier.java
+@@ -314,6 +314,33 @@ class TaskLaunchParamsModifier implements LaunchParamsModifier {
+         } else {
+             if (DEBUG) appendLog("non-freeform-task-display-area");
+         }
++        // fydroid-rt: A standalone dialog task (floating-themed root activity,
++        // e.g. SystemUI's WifiDebuggingActivity or a permission prompt) must
++        // present as a screen-centered modal. On a freeform display it would
++        // otherwise launch freeform, top-aligned at origin (0,0) and shorter
++        // than the screen, so the centered-in-task card sits too high. The SF
++        // dialog-centering (WaylandTaskOutput) only screen-centers a card whose
++        // task footprint is the full display; on r150 Chrome sends no enlarged
++        // render target to fake that for a freeform task. Force FULLSCREEN so
++        // WMS centers the card within the full display and the 1:1 task
++        // composition lands it screen-centered with the input frame aligned —
++        // the same model PackageInstaller relies on. This MUST run before the
++        // PHASE_WINDOWING_MODE return below (the windowing mode is consumed
++        // there); bounds are then resolved empty for fullscreen in STEP 4. (The
++        // translucent multi-activity dialog case, where the ROOT activity isn't
++        // floating, is not covered here and stays freeform; patch 0042 keeps its
++        // input aligned.)
++        if (android.os.Build.IS_CONTAINER && root != null
++                && root.usesFloatingTheme()) {
++            launchMode = WINDOWING_MODE_FULLSCREEN;
++            // Drop any freeform bounds inherited from the persister/caller and
++            // un-resolve so STEP 4 recomputes empty (fullscreen) bounds; leaving
++            // stale freeform bounds on a FULLSCREEN task is inconsistent.
++            fullyResolvedCurrentParam = false;
++            outParams.mBounds.setEmpty();
++            if (DEBUG) appendLog("container-dialog-fullscreen");
++        }
++
+         // If launch mode matches display windowing mode, let it inherit from display.
+         outParams.mWindowingMode = launchMode == suggestedDisplayArea.getWindowingMode()
+                 ? WINDOWING_MODE_UNDEFINED : launchMode;
+-- 
+2.43.0
+

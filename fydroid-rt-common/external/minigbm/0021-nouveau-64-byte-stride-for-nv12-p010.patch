@@ -1,0 +1,32 @@
+Description: nouveau: give NV12/P010 a 64-byte stride
+ On an Intel iGPU + NVIDIA dGPU laptop, arc-setup 010 renders Android on NVK,
+ so gralloc allocates video decoder output through this backend, but Chrome's
+ VA-API decoder on the Intel iGPU fills those buffers. It writes NV12 at a pitch
+ of ALIGN(width, 64) whatever stride it is handed, so with the 32-byte
+ nouveau_stride() any video whose width is not a multiple of 64 came out sheared
+ (red/green diagonal stripes) and the decoder wrote past the end of the buffer.
+ Seen on device (i5-12450H + RTX 2050): Netflix's 864x288 intro was written at
+ pitch 896 into a buffer laid out at 864; decode tests at 864/832/800 wide all
+ wrote ALIGN(width, 64). 64 is still a whole number of NVK's 32-byte pitch
+ units, so NVK imports are unaffected.
+Author: Yang Tsao <yang@fydeos.io>
+
+--- a/nouveau.c
++++ b/nouveau.c
+@@ -249,6 +249,16 @@
+ 	 */
+ 	if (format == DRM_FORMAT_YVU420 || format == DRM_FORMAT_YVU420_ANDROID)
+ 		align = 64;
++	/*
++	 * NV12/P010 are video decoder output on a dual-GPU laptop, where Chrome's
++	 * VA-API decoder on the Intel iGPU writes into these buffers. It writes at a
++	 * pitch of ALIGN(width, 64) whatever stride it is handed, so a 32-only
++	 * stride left every frame whose width is not a multiple of 64 sheared, and
++	 * overran the buffer (Netflix's 864x288 intro on device: written at pitch
++	 * 896 into a buffer laid out at 864).
++	 */
++	if (format == DRM_FORMAT_NV12 || format == DRM_FORMAT_P010)
++		align = 64;
+ 	while (cpp && align % cpp)
+ 		align += 32;
+ 

@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default runtime permission grants for the Google Play stack: Play services
+  (GmsCore) and the Play Store (Phonesky). Both ship as privileged system apps
+  (/system/product/priv-app/{GmsCore,Phonesky}), so every install-time
+  permission they declare is already granted through privapp-permissions. Their
+  *runtime* (dangerous) permissions are not: on a fresh profile they start
+  denied, and neither app has a foreground moment where asking makes sense, so
+  the subsystems behind them simply fail.
+
+  Play services is the visible case — without location the log fills with
+
+      Appop Denial: Accessing service com.google.android.gms/
+      com.google.android.location.internal.server.GoogleLocationService
+      from ... requires appop COARSE_LOCATION
+
+  and geolocation is dead for every app that goes through Play services.
+
+  The GMS prebuilt ships /product/etc/default-permissions/default-permissions-
+  google.xml, but that file only covers restore, assistant, actionsservice and
+  talkback — it has no entry for com.google.android.gms or com.android.vending.
+
+  Notes on the mechanism (DefaultPermissionGrantPolicy):
+    - Only permissions that are *dangerous* are honoured; anything else is
+      logged as "Ignoring permission ... which isn't dangerous" and skipped.
+      This file therefore lists exactly the dangerous permissions each package
+      declares, and nothing else.
+    - The exceptions path passes whitelistRestrictedPermissions=true, so the
+      restricted permissions here (SMS, call log, WRITE_EXTERNAL_STORAGE — all
+      hardRestricted) are whitelisted as part of the grant and actually take
+      effect. `pm grant` is not a substitute: it no-ops on them silently from
+      the shell. A real default grant reads
+      GRANTED_BY_DEFAULT|RESTRICTION_SYSTEM_EXEMPT|RESTRICTION_UPGRADE_EXEMPT.
+    - A permission the package does not declare is skipped silently, so an
+      entry for one is dead weight rather than an error. See the media block.
+    - fixed="false" grants the permission but leaves the user free to revoke
+      it in Settings. This is a default, not a lock.
+    - Grants are applied when a user is first provisioned, not retroactively
+      to an existing profile. An existing profile only re-reads this directory
+      when the permission-upgrade epoch changes — and because our build
+      fingerprint is pinned, that no longer happens on its own. Whenever you
+      change this file, bump FYDROID_DEFAULT_PERMISSIONS_EPOCH in
+      frameworks/base .../server/pm/Settings.java, or already-provisioned
+      devices will silently keep the old grant state.
+-->
+<exceptions>
+  <exception package="com.google.android.gms">
+
+    <!-- Location. The reason this file exists: Play services fronts
+         geolocation for every app on the device. ACCESS_BACKGROUND_LOCATION is
+         listed after the foreground pair on purpose — the policy sorts
+         foreground permissions ahead of their background counterparts, and a
+         background grant is only valid once its foreground permission is
+         held. -->
+    <permission name="android.permission.ACCESS_COARSE_LOCATION" fixed="false"/>
+    <permission name="android.permission.ACCESS_FINE_LOCATION" fixed="false"/>
+    <permission name="android.permission.ACCESS_BACKGROUND_LOCATION" fixed="false"/>
+
+    <!-- Media. READ_EXTERNAL_STORAGE / WRITE_EXTERNAL_STORAGE are deliberately
+         absent: GmsCore here is targetSdk 37 and does not declare them at all,
+         so they can never be granted —
+
+             SecurityException: Package com.google.android.gms has not requested
+             permission android.permission.READ_EXTERNAL_STORAGE
+
+         and DefaultPermissionGrantPolicy skips unrequested permissions in
+         silence. The granular READ_MEDIA_* permissions below replaced them. -->
+    <permission name="android.permission.ACCESS_MEDIA_LOCATION" fixed="false"/>
+    <permission name="android.permission.READ_MEDIA_AUDIO" fixed="false"/>
+    <permission name="android.permission.READ_MEDIA_IMAGES" fixed="false"/>
+    <permission name="android.permission.READ_MEDIA_VIDEO" fixed="false"/>
+
+    <!-- Accounts and contacts: account sync, People/contacts backup. -->
+    <permission name="android.permission.GET_ACCOUNTS" fixed="false"/>
+    <permission name="android.permission.READ_CONTACTS" fixed="false"/>
+    <permission name="android.permission.WRITE_CONTACTS" fixed="false"/>
+
+    <!-- Nearby / radios: Nearby Share, Fast Pair, exposure notifications,
+         Wi-Fi based location scanning. -->
+    <permission name="android.permission.BLUETOOTH_SCAN" fixed="false"/>
+    <permission name="android.permission.BLUETOOTH_CONNECT" fixed="false"/>
+    <permission name="android.permission.BLUETOOTH_ADVERTISE" fixed="false"/>
+    <permission name="android.permission.NEARBY_WIFI_DEVICES" fixed="false"/>
+    <permission name="android.permission.UWB_RANGING" fixed="false"/>
+
+    <!-- Sensors: activity recognition drives fitness and driving detection. -->
+    <permission name="android.permission.ACTIVITY_RECOGNITION" fixed="false"/>
+    <permission name="android.permission.BODY_SENSORS" fixed="false"/>
+
+    <!-- Media capture: hotword, Duo/Meet style capture paths. -->
+    <permission name="android.permission.CAMERA" fixed="false"/>
+    <permission name="android.permission.RECORD_AUDIO" fixed="false"/>
+
+    <!-- Notifications (runtime-gated since T). -->
+    <permission name="android.permission.POST_NOTIFICATIONS" fixed="false"/>
+
+    <!-- Telephony and messaging. Restricted permissions, whitelisted as
+         above. Retained for SMS-based account verification and device setup;
+         mostly inert on a device with no modem, but GMS declares them and a
+         partial grant is harder to reason about than a complete one. -->
+    <permission name="android.permission.READ_PHONE_STATE" fixed="false"/>
+    <permission name="android.permission.CALL_PHONE" fixed="false"/>
+    <permission name="android.permission.PROCESS_OUTGOING_CALLS" fixed="false"/>
+    <permission name="android.permission.READ_CALL_LOG" fixed="false"/>
+    <permission name="android.permission.WRITE_CALL_LOG" fixed="false"/>
+    <permission name="android.permission.READ_SMS" fixed="false"/>
+    <permission name="android.permission.RECEIVE_SMS" fixed="false"/>
+    <permission name="android.permission.RECEIVE_MMS" fixed="false"/>
+    <permission name="android.permission.SEND_SMS" fixed="false"/>
+
+  </exception>
+
+  <!--
+    Play Store (Phonesky). All fifteen dangerous permissions it declares are
+    granted, which is a deliberate departure from
+    default-permissions-fdroid.xml (one grant, everything else argued down).
+    The store is in a different position from a bundled app:
+
+      - It is a system component the user never installed and cannot reinstall.
+        A permission it lacks does not read as "this app needs access"; it reads
+        as "the Play Store is broken", and there is no second store to fall back
+        to.
+      - Its flows ask at moments where a denial is silent rather than explained:
+        account and device verification (phone state, SMS), catalogue and
+        refunds by region (coarse location), sharing and gifting (contacts),
+        APK and asset downloads plus screenshots (storage, media), Fast Pair and
+        app transfer to a nearby device (Bluetooth).
+      - Play's prompts assume a phone's setup wizard. Inside ARC they surface
+        long after first run, attached to a window the user opened for something
+        else, so "ask later" is a worse experience here than on a phone.
+
+    Verified on device: fourteen of the fifteen read granted=false,
+    the exception being POST_NOTIFICATIONS, which the user had answered a
+    prompt for.
+  -->
+  <exception package="com.android.vending">
+
+    <!-- Catalogue, pricing and refund eligibility are region dependent. -->
+    <permission name="android.permission.ACCESS_COARSE_LOCATION" fixed="false"/>
+
+    <!-- Downloads, install assets and shared screenshots. READ_MEDIA_* are the
+         T split of READ_EXTERNAL_STORAGE and are requested on Play's behalf by
+         the platform. -->
+    <permission name="android.permission.READ_EXTERNAL_STORAGE" fixed="false"/>
+    <permission name="android.permission.WRITE_EXTERNAL_STORAGE" fixed="false"/>
+    <permission name="android.permission.READ_MEDIA_AUDIO" fixed="false"/>
+    <permission name="android.permission.READ_MEDIA_IMAGES" fixed="false"/>
+    <permission name="android.permission.READ_MEDIA_VIDEO" fixed="false"/>
+
+    <!-- Sharing an app, gifting, and the people picker. -->
+    <permission name="android.permission.READ_CONTACTS" fixed="false"/>
+
+    <!-- Fast Pair and app transfer to a nearby device. -->
+    <permission name="android.permission.BLUETOOTH_SCAN" fixed="false"/>
+    <permission name="android.permission.BLUETOOTH_CONNECT" fixed="false"/>
+    <permission name="android.permission.BLUETOOTH_ADVERTISE" fixed="false"/>
+
+    <!-- Update, download-complete and Play Protect notifications. -->
+    <permission name="android.permission.POST_NOTIFICATIONS" fixed="false"/>
+
+    <!-- Account and device verification, carrier billing. Restricted,
+         whitelisted as above; mostly inert without a modem. -->
+    <permission name="android.permission.READ_PHONE_STATE" fixed="false"/>
+    <permission name="android.permission.SEND_SMS" fixed="false"/>
+    <permission name="android.permission.READ_SMS" fixed="false"/>
+    <permission name="android.permission.RECEIVE_SMS" fixed="false"/>
+
+  </exception>
+</exceptions>

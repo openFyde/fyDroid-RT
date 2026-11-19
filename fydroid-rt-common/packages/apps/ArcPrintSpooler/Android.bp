@@ -1,0 +1,44 @@
+// Copyright (C) 2024 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// ARC's print spooler: stock AOSP PrintSpooler (PrintSpoolerLib) plus the
+// ARC print path, the same split stock ARC shipped. It keeps the package name
+// com.android.printspooler because PrintManagerService binds the spooler by
+// that name. Print dialogs go to ArcPrintActivity, which renders the app's
+// document to PDF and hands it to Chrome print preview (CUPS printers on the
+// ChromeOS host) through the print_spooler Mojo bridge.
+android_app {
+    name: "ArcPrintSpooler",
+    srcs: ["src/**/*.java"],
+    resource_dirs: ["res"],
+    platform_apis: true,
+    certificate: "platform",
+    // Needed for the intent filter priority that beats the stock PrintActivity.
+    privileged: true,
+    overrides: ["PrintSpooler"],
+    jni_libs: ["libprintspooler_jni"],
+    static_libs: ["PrintSpoolerLib"],
+    libs: [
+        "org.chromium.arc",
+        "org.chromium.arc.mojom",
+        "org.chromium.arc.bridge",
+        "android.mojo",
+    ],
+    // mojom/bridge auto-resolve as <uses-library> from libs (they declare
+    // provides_uses_lib); android.mojo is declared android:required="false" in
+    // the manifest and provided on-device by the android.mojo.installable
+    // wrapper (stem android.mojo), so list it optional for AOSP-13's
+    // uses-library coherence check.
+    optional_uses_libs: ["android.mojo.installable"],
+}

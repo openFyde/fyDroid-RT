@@ -1,0 +1,3 @@
+# ARC++ HIDL HW service contexts (fydroid-rt)
+vendor.google_arc.arcbridge::IArcBridgeService                  u:object_r:hal_arcbridgeservice_hwservice:s0
+vendor.google_arc.arcvideobridge::IArcVideoBridgeService        u:object_r:hal_omx_hwservice:s0

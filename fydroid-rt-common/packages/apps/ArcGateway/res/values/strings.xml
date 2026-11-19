@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ArcGateway</string>
+    <string name="notification_channel_name">Package Installation</string>
+    <string name="notification_channel_description">APK installation progress</string>
+    <string name="mode_user">[User]</string>
+    <string name="mode_policy">[Policy]</string>
+    <string name="installing">%1$s Installing: %2$s</string>
+    <string name="installed">%1$s Installed: %2$s</string>
+    <string name="install_failed">%1$s Install failed: %2$s</string>
+</resources>

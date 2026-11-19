@@ -1,0 +1,32 @@
+From 86eb3ceee4c672c72c76ffcc9d57f9db017d8176 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 17 Apr 2026 16:22:55 +0800
+Subject: [PATCH] fydroid: Defer credstore start until /data is available
+
+In ARC++ two-stage boot, /data is not mounted in stage 1. credstore
+requires /data/misc/credstore and crash-loops without it. Mark as
+disabled and enable during cheets-post-fs-data (after /data mount).
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I182b0b0ce5144e15ac2088eb37a75e8198bf33a4
+---
+ identity/credstore.rc | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/identity/credstore.rc b/identity/credstore.rc
+index d9e989ac..19b4fac5 100644
+--- a/identity/credstore.rc
++++ b/identity/credstore.rc
+@@ -1,4 +1,9 @@
+ service credstore /system/bin/credstore /data/misc/credstore
+     class core
++    disabled
+     user credstore
+     group credstore
++
++# ARC++: credstore needs /data which isn't available until stage 2.
++on cheets-post-fs-data
++    enable credstore
+-- 
+2.43.0
+

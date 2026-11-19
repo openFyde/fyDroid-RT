@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ArcGateway</string>
+    <string name="notification_channel_name">应用安装</string>
+    <string name="notification_channel_description">APK 安装进度</string>
+    <string name="mode_user">[用户]</string>
+    <string name="mode_policy">[策略]</string>
+    <string name="installing">%1$s 正在安装: %2$s</string>
+    <string name="installed">%1$s 已安装: %2$s</string>
+    <string name="install_failed">%1$s 安装失败: %2$s</string>
+</resources>

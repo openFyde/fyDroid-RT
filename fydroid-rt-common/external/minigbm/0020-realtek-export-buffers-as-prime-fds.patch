@@ -1,0 +1,26 @@
+Description: realtek: export buffers as PRIME fds
+ backend_realtek (0011) sets no bo_export hook, but drv_bo_get_plane_fd() calls
+ backend->bo_export unconditionally. The first gralloc allocation on a Realtek
+ board therefore jumps to address 0: the allocator@4.0-service.minigbm tombstone
+ shows pc 0 called from cros_gralloc_driver::allocate+180 (tail call through
+ drv_bo_get_plane_fd), the service restarts every 5 s, SurfaceFlinger logs
+ "Failed to allocate (1920 x 1080) ... : 5" and the container never reaches
+ sys.boot_completed. The shipped libcros_gralloc.so confirms it: the bo_export
+ slot of backend_realtek carries no relocation.
+ .
+ The Realtek GEM objects export through the generic PRIME path, the same hook
+ the ChromeOS host minigbm Realtek backend uses. Verified on an XpressReal T3
+ (RTD1619B, Mali-G57 panfrost): boot completes, SurfaceFlinger composes on
+ Mesa panfrost and apps launch.
+Author: Wei <wei@fydeos.io>
+
+--- a/realtek.c
++++ b/realtek.c
+@@ -198,6 +198,7 @@
+ 	.bo_create_with_modifiers = realtek_bo_create_with_modifiers,
+ 	.bo_destroy = drv_gem_bo_destroy,
+ 	.bo_import = drv_prime_bo_import,
++	.bo_export = drv_prime_bo_export,
+ 	.bo_map = realtek_bo_map,
+ 	.bo_unmap = drv_bo_munmap,
+ 	.resolve_format_and_use_flags = drv_resolve_format_and_use_flags_helper,

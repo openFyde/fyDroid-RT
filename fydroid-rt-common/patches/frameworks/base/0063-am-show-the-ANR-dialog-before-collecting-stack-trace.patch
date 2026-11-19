@@ -1,0 +1,160 @@
+From 15e1b1d68092cbe89a1dd77bf8ef9bd5d4c57e55 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 9 Sep 2026 16:50:28 +0800
+Subject: [PATCH 63/75] am: show the ANR dialog before collecting stack traces
+
+dumpStackTraces() is budgeted 20 s (PROC_START_TIMEOUT's sibling in
+ActivityManagerService: 20 * 1000 * HW_TIMEOUT_MULTIPLIER) and stock AOSP only
+schedules SHOW_NOT_RESPONDING_UI_MSG once that -- plus the dropbox write -- has
+finished. Where tombstoned is slow to answer, the budget is spent in full:
+measured on an ARC board, 30.0 s between InputDispatcher declaring the window
+unresponsive and AMS logging "ANR in", with nothing drawn and the wedged app
+still holding input focus. The user sees a machine that has stopped answering
+the keyboard, not a slow dialog.
+
+Schedule the dialog first for the interactive path. A silent (background) ANR
+shows no dialog and is killed further down, so it keeps stock ordering and
+still has its traces collected before the kill. The error report is regenerated
+once the dump completes, so the "Report" button still carries the full text.
+
+Measured: ANR detected -> dialog composited and focused, 57.8 s -> 5.5 s.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: Id4c559c0e0a88a5a7104f2cccd4d2cfc037a4ef1
+---
+ .../server/am/ProcessErrorStateRecord.java    | 103 +++++++++++++++---
+ 1 file changed, 88 insertions(+), 15 deletions(-)
+
+diff --git a/services/core/java/com/android/server/am/ProcessErrorStateRecord.java b/services/core/java/com/android/server/am/ProcessErrorStateRecord.java
+index 653ece4a883c..26c6b00fa9be 100644
+--- a/services/core/java/com/android/server/am/ProcessErrorStateRecord.java
++++ b/services/core/java/com/android/server/am/ProcessErrorStateRecord.java
+@@ -400,6 +400,63 @@ class ProcessErrorStateRecord {
+             Slog.i(TAG, "ANR delay of " + anrDialogDelayMs + "ms started for " + packageName);
+         }
+ 
++        // fydroid: bring the ANR dialog up BEFORE the stack dump, not after it.
++        //
++        // dumpStackTraces() below is budgeted 20 s (ActivityManagerService:
++        // remainingTime = 20 * 1000 * Build.HW_TIMEOUT_MULTIPLIER) and stock AOSP
++        // only schedules SHOW_NOT_RESPONDING_UI_MSG once that -- plus the dropbox
++        // write -- has finished. Where tombstoned is slow to answer, that budget is
++        // spent in full: measured on device, 30.0 s between InputDispatcher declaring
++        // the window unresponsive and AMS logging "ANR in", with nothing drawn and
++        // the wedged app still holding input focus for the entire interval. What
++        // the user sees is a machine that has stopped answering the keyboard, with
++        // no dialog to dismiss -- not a slow dialog.
++        //
++        // Only the interactive path moves. A silent (background) ANR shows no
++        // dialog and is killed further down, so it keeps stock ordering and still
++        // has its traces collected before the kill.
++        boolean anrDialogScheduled = false;
++        if (!isSilentAnr || mApp.isDebugging()) {
++            if (mApp.getWindowProcessController().appNotResponding(info.toString(),
++                    () -> {
++                        synchronized (mService) {
++                            mApp.killLocked("anr", ApplicationExitInfo.REASON_ANR, true);
++                        }
++                    },
++                    () -> {
++                        synchronized (mService) {
++                            mService.mServices.scheduleServiceTimeoutLocked(mApp);
++                        }
++                    })) {
++                // An ActivityController (am monitor / instrumentation) owns this
++                // ANR: it either killed the process or asked to keep waiting.
++                // No dialog, and no point dumping a process that may be gone.
++                return;
++            }
++            synchronized (mService) {
++                synchronized (mProcLock) {
++                    // info holds only the ANR header this early; the report is
++                    // regenerated with the full CPU/trace text once the dump
++                    // completes, so the "Report" button still carries everything.
++                    makeAppNotRespondingLSP(activityShortComponentName,
++                            annotation != null ? "ANR " + annotation : "ANR",
++                            info.toString());
++                    mDialogController.setAnrController(anrController);
++                }
++            }
++            // mUiHandler is null only when AMS is built with an injector in tests;
++            // there is no dialog to post then, but the decision and the
++            // not-responding state above have still been taken, so the block after
++            // the dump must not repeat them either way.
++            if (mService.mUiHandler != null) {
++                Message msg = Message.obtain();
++                msg.what = ActivityManagerService.SHOW_NOT_RESPONDING_UI_MSG;
++                msg.obj = new AppNotRespondingDialog.Data(mApp, aInfo, aboveSystem);
++                mService.mUiHandler.sendMessageDelayed(msg, anrDialogDelayMs);
++            }
++            anrDialogScheduled = true;
++        }
++
+         StringBuilder report = new StringBuilder();
+         report.append(MemoryPressureUtil.currentPsiState());
+         ProcessCpuTracker processCpuTracker = new ProcessCpuTracker(true);
+@@ -529,7 +586,8 @@ class ProcessErrorStateRecord {
+                 parentShortComponentName, parentPr, null, report.toString(), tracesFile,
+                 null, new Float(loadingProgress), incrementalMetrics, errorId);
+ 
+-        if (mApp.getWindowProcessController().appNotResponding(info.toString(),
++        if (!anrDialogScheduled && mApp.getWindowProcessController().appNotResponding(
++                info.toString(),
+                 () -> {
+                     synchronized (mService) {
+                         mApp.killLocked("anr", ApplicationExitInfo.REASON_ANR, true);
+@@ -555,22 +613,37 @@ class ProcessErrorStateRecord {
+                 return;
+             }
+ 
+-            synchronized (mProcLock) {
+-                // Set the app's notResponding state, and look up the errorReportReceiver
+-                makeAppNotRespondingLSP(activityShortComponentName,
+-                        annotation != null ? "ANR " + annotation : "ANR", info.toString());
+-                mDialogController.setAnrController(anrController);
+-            }
++            if (anrDialogScheduled) {
++                // The dialog was already put up before the dump. Only the error
++                // report needs catching up, now that info carries the CPU state
++                // and the traces-file exception text.
++                if (mService.mAppErrors != null) {
++                    synchronized (mProcLock) {
++                        setNotRespondingReport(mService.mAppErrors.generateProcessError(mApp,
++                                ActivityManager.ProcessErrorStateInfo.NOT_RESPONDING,
++                                activityShortComponentName,
++                                annotation != null ? "ANR " + annotation : "ANR",
++                                info.toString(), null));
++                    }
++                }
++            } else {
++                synchronized (mProcLock) {
++                    // Set the app's notResponding state, and look up the errorReportReceiver
++                    makeAppNotRespondingLSP(activityShortComponentName,
++                            annotation != null ? "ANR " + annotation : "ANR", info.toString());
++                    mDialogController.setAnrController(anrController);
++                }
+ 
+-            // mUiHandler can be null if the AMS is constructed with injector only. This will only
+-            // happen in tests.
+-            if (mService.mUiHandler != null) {
+-                // Bring up the infamous App Not Responding dialog
+-                Message msg = Message.obtain();
+-                msg.what = ActivityManagerService.SHOW_NOT_RESPONDING_UI_MSG;
+-                msg.obj = new AppNotRespondingDialog.Data(mApp, aInfo, aboveSystem);
++                // mUiHandler can be null if the AMS is constructed with injector only. This will
++                // only happen in tests.
++                if (mService.mUiHandler != null) {
++                    // Bring up the infamous App Not Responding dialog
++                    Message msg = Message.obtain();
++                    msg.what = ActivityManagerService.SHOW_NOT_RESPONDING_UI_MSG;
++                    msg.obj = new AppNotRespondingDialog.Data(mApp, aInfo, aboveSystem);
+ 
+-                mService.mUiHandler.sendMessageDelayed(msg, anrDialogDelayMs);
++                    mService.mUiHandler.sendMessageDelayed(msg, anrDialogDelayMs);
++                }
+             }
+         }
+     }
+-- 
+2.43.0
+

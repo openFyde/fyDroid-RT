@@ -1,0 +1,12 @@
+diff --git a/Android.bp b/Android.bp
+index 4a2bd985..72867eef 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -76,6 +76,7 @@ cc_library {
+     defaults: [
+         "libdrm_defaults",
+         "libdrm_sources",
++        "libdrm_device_config",
+     ],
+ 
+     generated_headers: [

@@ -1,0 +1,32 @@
+# CPU affinity configuration for the ARC++ container — x86_64 (amd64) boards.
+#
+# Overrides fydroid-rt-common/init/init.cpusets.rc, which narrows the background
+# cpusets for RK3588S's 4x A55 + 4x A76 big.LITTLE split ("Android gets the
+# little cores; Chrome OS keeps the big cores"). amd64 hosts are SMP-uniform:
+# there is no little cluster to bank work onto, so narrowing does not hand
+# anything back to Chrome OS, it just pins Android to a subset of identical
+# CPUs. Measured on device (i3-1005G1, 2 cores / 4 threads) the rt-common masks
+# put every background app, every restricted process and every lmkd-forced app
+# restart on cpu0 alone, and all system services on one physical core.
+#
+# So keep AOSP's own default: every cpuset gets every CPU. Copying from the
+# cpuset root rather than writing a literal mask keeps this correct on a
+# 2-thread box and a 32-thread one alike — system/core/rootdir/init.rc:335-361
+# does exactly this at `on init`, leaving it to the device init.rc to narrow it
+# or leave it alone. We leave it alone.
+#
+# Background work is still deprioritised, by cpu.shares in the background
+# scheduling group: proportional, and it yields the CPU under contention
+# instead of being fenced off from it while cores sit idle. That is the right
+# lever on a uniform SMP host; a hard cpuset mask is not.
+
+on post-stune
+    write /dev/stune/foreground/cpu.uclamp.min 20
+    write /dev/stune/foreground/cpu.uclamp.latency_sensitive 1
+
+on property:sys.boot_completed=1
+    copy /dev/cpuset/cpus /dev/cpuset/foreground/cpus
+    copy /dev/cpuset/cpus /dev/cpuset/background/cpus
+    copy /dev/cpuset/cpus /dev/cpuset/system-background/cpus
+    copy /dev/cpuset/cpus /dev/cpuset/restricted/cpus
+    copy /dev/cpuset/cpus /dev/cpuset/top-app/cpus

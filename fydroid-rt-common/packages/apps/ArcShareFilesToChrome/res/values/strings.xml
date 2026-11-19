@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="files_activity">Save to Files</string>
+    <string name="files_app">Files</string>
+    <string name="rollback_toast">Failed to copy files</string>
+</resources>

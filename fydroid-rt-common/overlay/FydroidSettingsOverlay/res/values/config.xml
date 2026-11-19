@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Hide "Connected devices" — no Bluetooth/NFC in container -->
+    <bool name="config_show_top_level_connected_devices">false</bool>
+
+    <!-- Hide wallpaper settings — Chrome OS provides its own wallpaper.
+         Empty picker package/class makes WallpaperPreferenceController return UNSUPPORTED_ON_DEVICE. -->
+    <string name="config_wallpaper_picker_package" translatable="false"></string>
+    <string name="config_wallpaper_picker_class" translatable="false"></string>
+    <bool name="config_show_wallpaper_attribution">false</bool>
+</resources>

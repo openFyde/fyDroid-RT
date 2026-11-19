@@ -1,0 +1,17 @@
+diff --git a/src/mesa/main/fbobject.c b/src/mesa/main/fbobject.c
+index 680bde1d9f5..f06947784f2 100644
+--- a/src/mesa/main/fbobject.c
++++ b/src/mesa/main/fbobject.c
+@@ -265,7 +265,12 @@ get_framebuffer_target(struct gl_context *ctx, GLenum target)
+    bool have_fb_blit = _mesa_is_gles3(ctx) || _mesa_is_desktop_gl(ctx);
+    switch (target) {
+    case GL_DRAW_FRAMEBUFFER:
++#ifdef HAVE_SVGA
++      /* SVGA needs DRAW_FRAMEBUFFER on plain GLES2 contexts too. */
++      return ctx->DrawBuffer;
++#else
+       return have_fb_blit ? ctx->DrawBuffer : NULL;
++#endif
+    case GL_READ_FRAMEBUFFER:
+       return have_fb_blit ? ctx->ReadBuffer : NULL;
+    case GL_FRAMEBUFFER_EXT:

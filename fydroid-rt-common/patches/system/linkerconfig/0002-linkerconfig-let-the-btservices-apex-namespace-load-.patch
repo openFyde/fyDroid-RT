@@ -1,0 +1,62 @@
+From 6db3aba51519f80c446efef1e0befd186087005a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 16:16:58 +0800
+Subject: [PATCH 2/2] linkerconfig: let the btservices apex namespace load
+ libbluetooth_arc from /system
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+fydroid replaces the Fluoride BT stack with the ARC Mojo bridge: libbluetooth_jni
+(built -DDYNAMIC_LOAD_BLUETOOTH) dlopen()s /system/lib64/libbluetooth_arc.so. But
+libbluetooth_jni runs in the isolated com.android.btservices apex namespace, which
+only searches /apex/com.android.btservices/lib, so the dlopen failed
+("library libbluetooth_arc.so not found").
+
+In BaseContext::BuildApexNamespace (the builder used by the permissive [legacy]
+section fydroid uses — its apex namespaces link to "default", which searches
+/system/${LIB}), add libbluetooth_arc.so + the ARC-bridge deps
+(libarcbridge*/libmojo/libchrome/vendor.google_arc.arcbridge@1.0) to the
+com.android.btservices -> default link, so the bridge and its /system deps load.
+
+Verified on device: btservices namespace gains
+"link.default.shared_libs = libbluetooth_arc.so"; libbluetooth_jni dlopens the
+bridge and it connects to Chrome OS.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: Iff05ed83b9575675057d0764258b8e2ed38d1f41
+---
+ modules/basecontext.cc | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/modules/basecontext.cc b/modules/basecontext.cc
+index bf88708..97c7c32 100644
+--- a/modules/basecontext.cc
++++ b/modules/basecontext.cc
+@@ -44,6 +44,23 @@ Namespace BaseContext::BuildApexNamespace(const ApexInfo& apex_info,
+                /*is_isolated=*/true,
+                visible);
+   InitializeWithApex(ns, apex_info);
++  // fydroid/ARC: the Bluetooth stack is replaced by the ARC bridge.
++  // libbluetooth_jni (built with -DDYNAMIC_LOAD_BLUETOOTH) dlopen()s
++  // libbluetooth_arc.so, which lives in /system. The com.android.btservices apex
++  // namespace only searches /apex/.../lib, so allow it to load libbluetooth_arc
++  // via the "default" namespace (which searches /system/${LIB}); the ARC-bridge
++  // deps (libarcbridge*/libmojo/libchrome/vendor.google_arc.arcbridge) then
++  // resolve within "default" from /system as well.
++  if (apex_info.name == "com.android.btservices") {
++    ns.GetLink("default").AddSharedLib(std::vector<std::string>{
++        "libbluetooth_arc.so",
++        "libarcbridge.so",
++        "libarcbridgeservice.so",
++        "libmojo.so",
++        "libchrome.so",
++        "vendor.google_arc.arcbridge@1.0.so",
++    });
++  }
+   return ns;
+ }
+ 
+-- 
+2.43.0
+

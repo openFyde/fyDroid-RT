@@ -1,0 +1,62 @@
+From 7614b7416b2a68f93e8a18ce64839674c8c72c0c Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 3 Jun 2026 15:55:20 +0800
+Subject: [PATCH 06/40] CompositionEngine: re-add LayerFECompositionState
+ type/appId/cornerRadius for ARC
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+AOSP-12 dropped the HWC2 layer type/appId fields from LayerFECompositionState
+(along with Composer::setLayerInfo). fydroid's per-task composition and dialog
+detection (CompositionEngineArc/WaylandTaskOutput + the dialog cluster) read
+these, so re-introduce them: type/appId (default 0) + cornerRadius (populated
+from getRoundedCornerState().radius.x — 13's radius is a vec2). frameworks/native
+side of Workstream D.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I4aa4ab42db6fadbe3fc29545879979843cee8a51
+---
+ .../compositionengine/LayerFECompositionState.h       | 11 +++++++++++
+ services/surfaceflinger/Layer.cpp                     |  3 +++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+index 974f7c6134..bdc1b74782 100644
+--- a/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
++++ b/services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+@@ -115,6 +115,17 @@ struct LayerFECompositionState {
+     // Background blur in pixels
+     int backgroundBlurRadius{0};
+ 
++    // fydroid-rt (AOSP-13): re-introduce the HWC2 layer type/appId that 12 dropped
++    // along with Composer::setLayerInfo. WaylandHwc2Composer (window-type
++    // classification) + the dialog-detection cluster read these; OutputLayer
++    // forwards them to the Wayland HWC.
++    uint32_t type{0};
++    uint32_t appId{0};
++
++    // fydroid-rt: corner radius (>0 indicates rounded corners, used for dialog
++    // detection of floating activities). (frameworks/native patch 0008)
++    float cornerRadius{0.f};
++
+     // The transform from layer local coordinates to composition coordinates
+     ui::Transform geomLayerTransform;
+ 
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index aff94d132e..2546ea6cf1 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -419,6 +419,9 @@ void Layer::prepareBasicGeometryCompositionState() {
+     compositionState->isVisible = isVisible();
+     compositionState->isOpaque = opaque && !usesRoundedCorners && alpha == 1.f;
+     compositionState->shadowRadius = mEffectiveShadowRadius;
++    // fydroid-rt (patch 0008): expose corner radius for dialog detection
++    // (13 RoundedCornerState.radius is a vec2).
++    compositionState->cornerRadius = getRoundedCornerState().radius.x;
+ 
+     compositionState->contentDirty = contentDirty;
+     contentDirty = false;
+-- 
+2.43.0
+

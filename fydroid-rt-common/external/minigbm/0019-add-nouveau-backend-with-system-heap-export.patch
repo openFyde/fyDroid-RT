@@ -1,0 +1,540 @@
+Description: nouveau: add a render backend that exports Chrome's buffers from the system dma-heap
+ Lets Android render on an NVIDIA dGPU (zink on NVK) while Chrome keeps the Intel
+ iGPU that drives the panel, on the dual-GPU openfyde_iris boards. Until now the
+ only nouveau "backend" was the dumb allocator, which cannot create buffers on a
+ render node, and gralloc always opened the first render node (i915). i915's
+ default layouts are Y/X_TILED; imported into NVK they do not fail, they read as
+ garbage (platform_android retries the modifier as MOD_INVALID and zink treats
+ that as LINEAR on NVK), about 47% of the pixels wrong in a readback probe.
+ .
+ The backend makes the same split as v3d on Raspberry Pi. Buffers that stay in
+ Android are nouveau GEM objects (VRAM); an importer on the same GPU gets the
+ same object back from PRIME. Buffers another device reads -- TaskRenderSurface's
+ BO_USE_ARC_COMPOSER_EXPORT buffers, video and camera -- come from
+ /dev/dma_heap/system and are PRIME-imported into nouveau, so Chrome's i915
+ imports plain system memory. The heap is opened lazily, since only the
+ allocator ever allocates. CPU mapping goes through a dma-buf fd, because TTM
+ refuses to fault in pages of an imported object (TTM_TT_FLAG_EXTERNAL).
+ .
+ Row strides are padded to a multiple of 32 bytes. NVK imports a LINEAR buffer
+ with exactly the stride gralloc reports, and its texture header can only
+ express 32-byte pitches; anything else trips an assertion in nil
+ (descriptor.rs, nvb097_fill_image_view_desc) under an extern "C" boundary and
+ aborts the process. org.chromium.arc.home did exactly that on its first frame
+ at 1366 px (5464 B), which 1920/3200 px tests never show.
+ .
+ cros_gralloc now honours drm.gpu.vendor_name, the property Mesa's Android EGL
+ uses to pick its GPU (droid_open_device), so gralloc and EGL always agree.
+ Unset, nothing changes. arc-setup emits it when an NVK-capable NVIDIA GPU is
+ present (project-fydroid arc-setup 010).
+ .
+ Verified on device (i915 ADL-P + RTX 2050): SF on "zink Vulkan 1.4(NVIDIA GeForce
+ RTX 2050 (NVK GA107))", boot_completed, Settings on the panel checked by the
+ user; its TaskRenderSurface buffers are system-heap dma-bufs with a nouveau
+ write fence and i915 read fences, 0 Chrome PRIME errors; readback probe PASS at
+ 1366x769/1365x767/3200x2000 for app, texture, export and linear usages. Intel
+ regression on device (UHD 620 only): SF on iris, probe matrix byte-identical to
+ the previous gralloc.
+diff --git a/cros_gralloc/cros_gralloc_driver.cc b/cros_gralloc/cros_gralloc_driver.cc
+index 799d395..49c11ad 100644
+--- a/cros_gralloc/cros_gralloc_driver.cc
++++ b/cros_gralloc/cros_gralloc_driver.cc
+@@ -114,6 +114,47 @@ static struct driver *init_try_node(int idx, char const *str)
+ 	return drv;
+ }
+ 
++/*
++ * On a machine with more than one GPU, Mesa's Android EGL renders on the DRM
++ * driver named by drm.gpu.vendor_name (droid_open_device in
++ * platform_android.c) and otherwise on the first render node that works.
++ * Buffers must come from that same GPU's backend, or the renderer is handed
++ * layouts only the other GPU can read (i915's tiled buffers read as garbage on
++ * nouveau, with no error). Follow the same property, so gralloc and EGL always
++ * pick the same GPU. When the property is unset nothing changes.
++ */
++static struct driver *init_try_vendor_render_node()
++{
++	char vendor[PROPERTY_VALUE_MAX];
++	char node[64];
++
++	if (property_get("drm.gpu.vendor_name", vendor, "") <= 0)
++		return nullptr;
++
++	for (uint32_t i = DRM_RENDER_NODE_START; i < DRM_RENDER_NODE_START + DRM_NUM_NODES; i++) {
++		snprintf(node, sizeof(node), "%s/renderD%u", DRM_DIR_NAME, i);
++		int fd = open(node, O_RDWR, 0);
++		if (fd < 0)
++			continue;
++
++		drmVersionPtr version = drmGetVersion(fd);
++		bool match = version && !strcmp(version->name, vendor);
++		drmFreeVersion(version);
++		if (match) {
++			struct driver *drv = drv_create(fd, NULL);
++			if (drv) {
++				ALOGI("Using %s (drm.gpu.vendor_name) for gralloc.", node);
++				return drv;
++			}
++		}
++		close(fd);
++	}
++
++	ALOGE("drm.gpu.vendor_name=%s matches no usable render node; using the first GPU.",
++	      vendor);
++	return nullptr;
++}
++
+ static struct driver *init_try_nodes()
+ {
+ 	/*
+@@ -123,7 +164,10 @@ static struct driver *init_try_nodes()
+ 	 * TODO(gsingh): Enable render nodes on udl/evdi.
+ 	 */
+ 
+-	struct driver *drv;
++	struct driver *drv = init_try_vendor_render_node();
++	if (drv)
++		return drv;
++
+ 	char const *render_nodes_fmt = "%s/renderD%d";
+ 	char const *card_nodes_fmt = "%s/card%d";
+ 	uint32_t num_nodes = DRM_NUM_NODES;
+diff --git a/dumb_driver.c b/dumb_driver.c
+index 85aeeed..690e15e 100644
+--- a/dumb_driver.c
++++ b/dumb_driver.c
+@@ -86,7 +86,9 @@ INIT_DUMB_DRIVER(evdi)
+ INIT_DUMB_DRIVER(komeda)
+ INIT_DUMB_DRIVER(marvell)
+ INIT_DUMB_DRIVER(meson)
++#ifndef DRV_NOUVEAU
+ INIT_DUMB_DRIVER(nouveau)
++#endif
+ INIT_DUMB_DRIVER(radeon)
+ INIT_DUMB_DRIVER_WITH_NAME(sun4i_drm, "sun4i-drm")
+ INIT_DUMB_DRIVER(synaptics)
+diff --git a/nouveau.c b/nouveau.c
+new file mode 100644
+index 0000000..c989bf4
+--- /dev/null
++++ b/nouveau.c
+@@ -0,0 +1,419 @@
++/*
++ * Copyright 2026 Fyde Innovations
++ * Use of this source code is governed by a BSD-style license that can be
++ * found in the LICENSE file.
++ */
++
++#ifdef DRV_NOUVEAU
++
++/*
++ * nouveau (NVIDIA) render backend, for boards where Android renders on an
++ * NVIDIA GPU through zink on NVK while Chrome keeps rendering and scanning out
++ * on another GPU (the dual-GPU openfyde_iris boards: Intel iGPU drives the
++ * panel, the GeForce dGPU renders Android).
++ *
++ * Two kinds of buffer, the same split the v3d backend makes on Raspberry Pi:
++ *
++ *  - Buffers that stay inside Android (app windows, textures, SurfaceFlinger's
++ *    intermediate targets) are ordinary nouveau GEM objects, so they live in
++ *    VRAM. An importing process on the same GPU gets the very same object
++ *    back from PRIME, so nothing is copied or pinned on the way.
++ *
++ *  - Buffers another device has to read (NOUVEAU_HEAP_USE below) come from the
++ *    system dma-buf heap and are PRIME-imported into nouveau. Chrome imports
++ *    those on the other GPU. Exporting a nouveau GEM object to a foreign
++ *    device would also work, but nouveau then pins it into GART for as long as
++ *    it is attached; a heap buffer is plain system memory that every driver
++ *    on the machine imports on equal terms.
++ *
++ * Every layout is LINEAR, with the row stride padded to a multiple of 32 bytes
++ * (see nouveau_stride). NVK imports a buffer with exactly the stride gralloc
++ * reports, and its texture headers can only express 32-byte-aligned pitches.
++ *
++ * CPU mapping of an imported object cannot use nouveau's own mmap offset: TTM
++ * refuses to fault in pages it does not own (TTM_TT_FLAG_EXTERNAL,
++ * ttm_bo_vm.c), which covers every heap buffer in every process. Mapping
++ * always goes through a dma-buf fd instead, which works for native and
++ * imported objects alike.
++ */
++
++#include <errno.h>
++#include <fcntl.h>
++#include <nouveau_drm.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <xf86drm.h>
++
++#include "drv_helpers.h"
++#include "drv_priv.h"
++#include "external/dma-buf.h"
++#include "external/dma-heap.h"
++#include "util.h"
++
++/*
++ * Buffers another device reads: Chrome's composition buffers
++ * (TaskRenderSurface), and whatever the video and camera stacks hand to the
++ * host. These come from the system heap.
++ */
++#define NOUVEAU_HEAP_USE                                                                           \
++	(BO_USE_ARC_COMPOSER_EXPORT | BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |           \
++	 BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_SENSOR_DIRECT_DATA)
++
++static const uint32_t render_target_formats[] = { DRM_FORMAT_ABGR2101010, DRM_FORMAT_ABGR8888,
++						  DRM_FORMAT_ARGB2101010, DRM_FORMAT_ARGB8888,
++						  DRM_FORMAT_RGB565,	  DRM_FORMAT_XBGR2101010,
++						  DRM_FORMAT_XBGR8888,	  DRM_FORMAT_XRGB2101010,
++						  DRM_FORMAT_XRGB8888 };
++
++static const uint32_t render_only_formats[] = { DRM_FORMAT_ABGR16161616F };
++
++static const uint32_t texture_only_formats[] = { DRM_FORMAT_R8,	    DRM_FORMAT_NV12,
++						 DRM_FORMAT_NV21,   DRM_FORMAT_P010,
++						 DRM_FORMAT_YVU420, DRM_FORMAT_YVU420_ANDROID };
++
++#define NOUVEAU_HEAP_NOT_OPENED (-2)
++
++struct nouveau_driver_priv {
++	/* /dev/dma_heap/system; NOUVEAU_HEAP_NOT_OPENED until first needed, -1 if unavailable */
++	int heap_fd;
++};
++
++struct nouveau_bo_priv {
++	int dmabuf_fd; /* the heap dma-buf this BO was allocated from */
++};
++
++struct nouveau_vma_priv {
++	int dmabuf_fd; /* the dma-buf this mapping was made through, for CPU sync */
++};
++
++static int nouveau_init(struct driver *drv)
++{
++	struct nouveau_driver_priv *priv;
++
++	drv_add_combinations(drv, render_target_formats, ARRAY_SIZE(render_target_formats),
++			     &LINEAR_METADATA, BO_USE_RENDER_MASK | BO_USE_SCANOUT);
++	drv_add_combinations(drv, render_only_formats, ARRAY_SIZE(render_only_formats),
++			     &LINEAR_METADATA, BO_USE_RENDER_MASK);
++	drv_add_combinations(drv, texture_only_formats, ARRAY_SIZE(texture_only_formats),
++			     &LINEAR_METADATA, BO_USE_TEXTURE_MASK);
++
++	drv_modify_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |
++				   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_SCANOUT);
++	drv_modify_combination(drv, DRM_FORMAT_P010, &LINEAR_METADATA,
++			       BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER | BO_USE_SCANOUT);
++	drv_modify_combination(drv, DRM_FORMAT_NV21, &LINEAR_METADATA, BO_USE_HW_VIDEO_ENCODER);
++	drv_modify_combination(drv, DRM_FORMAT_YVU420_ANDROID, &LINEAR_METADATA,
++			       BO_USE_CAMERA_WRITE);
++
++	/* Android's HAL_PIXEL_FORMAT_BLOB: JPEG snapshots, codec and sensor data. */
++	drv_modify_combination(drv, DRM_FORMAT_R8, &LINEAR_METADATA,
++			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_HW_VIDEO_DECODER |
++				   BO_USE_HW_VIDEO_ENCODER | BO_USE_GPU_DATA_BUFFER |
++				   BO_USE_SENSOR_DIRECT_DATA);
++
++	/* Android CTS tests require this. */
++	drv_add_combination(drv, DRM_FORMAT_BGR888, &LINEAR_METADATA, BO_USE_SW_MASK);
++
++	priv = calloc(1, sizeof(*priv));
++	if (!priv)
++		return -ENOMEM;
++
++	/*
++	 * The heap is opened on the first allocation that needs it, not here: this
++	 * backend is also loaded by the gralloc mapper into SurfaceFlinger and every
++	 * app, which never allocate and whose SELinux domains are not all granted
++	 * the heap. Only the allocator (hal_graphics_allocator) is.
++	 */
++	priv->heap_fd = NOUVEAU_HEAP_NOT_OPENED;
++	drv->priv = priv;
++
++	return drv_modify_linear_combinations(drv);
++}
++
++static int nouveau_heap_fd(struct nouveau_driver_priv *priv)
++{
++	int fd = priv->heap_fd;
++
++	if (fd != NOUVEAU_HEAP_NOT_OPENED)
++		return fd;
++
++	fd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
++	if (fd < 0)
++		drv_logi("nouveau: no system dma-heap (%s); buffers other devices read will be "
++			 "exported nouveau GEM objects instead\n",
++			 strerror(errno));
++	/* Allocations can race here; keep whichever open won. */
++	if (!__sync_bool_compare_and_swap(&priv->heap_fd, NOUVEAU_HEAP_NOT_OPENED, fd) && fd >= 0)
++		close(fd);
++	return priv->heap_fd;
++}
++
++static void nouveau_close(struct driver *drv)
++{
++	struct nouveau_driver_priv *priv = drv->priv;
++
++	if (!priv)
++		return;
++	if (priv->heap_fd >= 0)
++		close(priv->heap_fd);
++	free(priv);
++	drv->priv = NULL;
++}
++
++static int nouveau_alloc_from_heap(struct bo *bo, int heap_fd)
++{
++	struct dma_heap_allocation_data alloc = {
++		.len = bo->meta.total_size,
++		.fd_flags = O_RDWR | O_CLOEXEC,
++	};
++	struct nouveau_bo_priv *priv;
++	uint32_t handle = 0;
++
++	if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &alloc)) {
++		int err = errno;
++		drv_loge("nouveau: DMA_HEAP_IOCTL_ALLOC(%zu) failed: %s\n", bo->meta.total_size,
++			 strerror(err));
++		return -err;
++	}
++
++	if (drmPrimeFDToHandle(bo->drv->fd, alloc.fd, &handle)) {
++		int err = errno;
++		drv_loge("nouveau: PRIME import of a heap buffer failed: %s\n", strerror(err));
++		close(alloc.fd);
++		return -err;
++	}
++
++	priv = calloc(1, sizeof(*priv));
++	if (!priv) {
++		drv_gem_close(bo->drv, handle);
++		close(alloc.fd);
++		return -ENOMEM;
++	}
++
++	priv->dmabuf_fd = alloc.fd;
++	bo->priv = priv;
++	bo->handle.u32 = handle;
++	return 0;
++}
++
++static int nouveau_alloc_gem(struct bo *bo, uint64_t use_flags)
++{
++	struct drm_nouveau_gem_new gem_new = { 0 };
++
++	gem_new.info.size = bo->meta.total_size;
++	/*
++	 * GPU-only buffers prefer VRAM and may be evicted to GART under pressure.
++	 * Buffers the CPU touches often start in GART, where a mapping does not
++	 * have to go through the (small) BAR window.
++	 */
++	if (use_flags & (BO_USE_SW_READ_OFTEN | BO_USE_SW_WRITE_OFTEN))
++		gem_new.info.domain = NOUVEAU_GEM_DOMAIN_GART | NOUVEAU_GEM_DOMAIN_MAPPABLE;
++	else
++		gem_new.info.domain = NOUVEAU_GEM_DOMAIN_VRAM | NOUVEAU_GEM_DOMAIN_GART;
++	if (use_flags & BO_USE_SW_MASK)
++		gem_new.info.domain |= NOUVEAU_GEM_DOMAIN_MAPPABLE;
++
++	/* libdrm's nouveau_drm.h carries no DRM_IOCTL_NOUVEAU_* macros. */
++	int ret = drmCommandWriteRead(bo->drv->fd, DRM_NOUVEAU_GEM_NEW, &gem_new, sizeof(gem_new));
++	if (ret) {
++		drv_loge("nouveau: GEM_NEW(%zu, domain 0x%x) failed: %s\n", bo->meta.total_size,
++			 gem_new.info.domain, strerror(-ret));
++		return ret;
++	}
++
++	bo->handle.u32 = gem_new.info.handle;
++	return 0;
++}
++
++/*
++ * Row stride of plane 0, in bytes. NVK takes a LINEAR import's pitch from the
++ * explicit layout, and the texture header stores it in 32-byte units: any other
++ * pitch trips an assertion in nil (nvb097_fill_image_view_desc) when the first
++ * image view is created. That assertion sits under an extern "C" boundary, so
++ * the whole process aborts. An app window 1366 px wide (5464 B) did exactly
++ * that on its first eglSwapBuffers. The pad must also be a whole number of
++ * pixels, so for a 3-byte format it is 96 bytes.
++ */
++static uint32_t nouveau_stride(uint32_t format, uint32_t width)
++{
++	const uint32_t cpp = drv_bytes_per_pixel_from_format(format, 0);
++	uint32_t align = 32;
++
++	/*
++	 * YV12's chroma planes get half the luma stride, and they have to stay
++	 * 32-byte aligned too.
++	 */
++	if (format == DRM_FORMAT_YVU420 || format == DRM_FORMAT_YVU420_ANDROID)
++		align = 64;
++	while (cpp && align % cpp)
++		align += 32;
++
++	return ALIGN(drv_stride_from_format(format, width, 0), align);
++}
++
++static int nouveau_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
++			     uint64_t use_flags)
++{
++	struct nouveau_driver_priv *dpriv = bo->drv->priv;
++	int ret;
++
++	ret = drv_bo_from_format(bo, nouveau_stride(format, width), 32, height, format);
++	if (ret)
++		return ret;
++	bo->meta.total_size = ALIGN(bo->meta.total_size, getpagesize());
++	bo->meta.format_modifier = DRM_FORMAT_MOD_LINEAR;
++
++	if (use_flags & NOUVEAU_HEAP_USE) {
++		int heap_fd = dpriv ? nouveau_heap_fd(dpriv) : -1;
++		if (heap_fd >= 0) {
++			ret = nouveau_alloc_from_heap(bo, heap_fd);
++			if (!ret) {
++				drv_logv("nouveau bo path=HEAP %ux%u %4.4s size=%zu handle=%u use=0x%llx\n",
++					 width, height, (char *)&format, bo->meta.total_size,
++					 bo->handle.u32, (unsigned long long)use_flags);
++				return 0;
++			}
++		}
++		/*
++		 * Still usable: a foreign device can import an exported GEM object,
++		 * nouveau just pins it into GART while it is attached.
++		 */
++		drv_logi("nouveau: %ux%u %4.4s buffer for another device (use=0x%llx) is not "
++			 "heap-backed; falling back to an exported GEM object\n",
++			 width, height, (char *)&format, (unsigned long long)use_flags);
++	}
++
++	ret = nouveau_alloc_gem(bo, use_flags);
++	if (!ret)
++		drv_logv("nouveau bo path=GEM %ux%u %4.4s size=%zu handle=%u use=0x%llx\n", width,
++			 height, (char *)&format, bo->meta.total_size, bo->handle.u32,
++			 (unsigned long long)use_flags);
++	return ret;
++}
++
++static int nouveau_bo_destroy(struct bo *bo)
++{
++	struct nouveau_bo_priv *priv = bo->priv;
++
++	if (priv) {
++		close(priv->dmabuf_fd);
++		free(priv);
++		bo->priv = NULL;
++	}
++	return drv_gem_bo_destroy(bo);
++}
++
++static int nouveau_bo_export(struct bo *bo, size_t plane)
++{
++	struct nouveau_bo_priv *priv = bo->priv;
++
++	/* Heap-backed: hand out the heap dma-buf itself, never a nouveau re-export. */
++	if (priv) {
++		int fd = fcntl(priv->dmabuf_fd, F_DUPFD_CLOEXEC, 0);
++		return fd >= 0 ? fd : -errno;
++	}
++	return drv_prime_bo_export(bo, plane);
++}
++
++static void *nouveau_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags)
++{
++	struct nouveau_bo_priv *bpriv = bo->priv;
++	struct nouveau_vma_priv *vpriv;
++	void *addr;
++	int fd;
++
++	fd = bpriv ? fcntl(bpriv->dmabuf_fd, F_DUPFD_CLOEXEC, 0) : drv_prime_bo_export(bo, 0);
++	if (fd < 0) {
++		drv_loge("nouveau: no dma-buf to map handle %u through\n", bo->handle.u32);
++		return MAP_FAILED;
++	}
++
++	vma->length = bo->meta.total_size;
++	addr = mmap(NULL, vma->length, drv_get_prot(map_flags), MAP_SHARED, fd, 0);
++	if (addr == MAP_FAILED) {
++		drv_loge("nouveau: mmap of %zu bytes failed: %s\n", vma->length, strerror(errno));
++		close(fd);
++		return MAP_FAILED;
++	}
++
++	vpriv = calloc(1, sizeof(*vpriv));
++	if (!vpriv) {
++		munmap(addr, vma->length);
++		close(fd);
++		return MAP_FAILED;
++	}
++	vpriv->dmabuf_fd = fd;
++	vma->priv = vpriv;
++	return addr;
++}
++
++static int nouveau_bo_unmap(struct bo *bo, struct vma *vma)
++{
++	struct nouveau_vma_priv *vpriv = vma->priv;
++
++	if (vpriv) {
++		close(vpriv->dmabuf_fd);
++		free(vpriv);
++		vma->priv = NULL;
++	}
++	return munmap(vma->addr, vma->length);
++}
++
++static int nouveau_dmabuf_sync(struct mapping *mapping, uint64_t start_or_end)
++{
++	struct nouveau_vma_priv *vpriv = mapping->vma->priv;
++	struct dma_buf_sync sync = { .flags = start_or_end };
++
++	if (!vpriv)
++		return 0;
++	if (mapping->vma->map_flags & BO_MAP_READ)
++		sync.flags |= DMA_BUF_SYNC_READ;
++	if (mapping->vma->map_flags & BO_MAP_WRITE)
++		sync.flags |= DMA_BUF_SYNC_WRITE;
++	return ioctl(vpriv->dmabuf_fd, DMA_BUF_IOCTL_SYNC, &sync) ? -errno : 0;
++}
++
++static int nouveau_bo_invalidate(struct bo *bo, struct mapping *mapping)
++{
++	/*
++	 * Wait for GPU work on the buffer, whichever device queued it: CPU_PREP
++	 * waits on the object's reservation, which also carries the fences of
++	 * other drivers for an imported buffer.
++	 */
++	struct drm_nouveau_gem_cpu_prep prep = {
++		.handle = bo->handle.u32,
++		.flags = (mapping->vma->map_flags & BO_MAP_WRITE) ? NOUVEAU_GEM_CPU_PREP_WRITE : 0,
++	};
++
++	int ret = drmCommandWrite(bo->drv->fd, DRM_NOUVEAU_GEM_CPU_PREP, &prep, sizeof(prep));
++	if (ret)
++		drv_logi("nouveau: GEM_CPU_PREP(handle %u) failed: %s\n", bo->handle.u32,
++			 strerror(-ret));
++	return nouveau_dmabuf_sync(mapping, DMA_BUF_SYNC_START);
++}
++
++static int nouveau_bo_flush(struct bo *bo, struct mapping *mapping)
++{
++	return nouveau_dmabuf_sync(mapping, DMA_BUF_SYNC_END);
++}
++
++const struct backend backend_nouveau = {
++	.name = "nouveau",
++	.init = nouveau_init,
++	.close = nouveau_close,
++	.bo_create = nouveau_bo_create,
++	.bo_destroy = nouveau_bo_destroy,
++	.bo_import = drv_prime_bo_import,
++	.bo_export = nouveau_bo_export,
++	.bo_map = nouveau_bo_map,
++	.bo_unmap = nouveau_bo_unmap,
++	.bo_invalidate = nouveau_bo_invalidate,
++	.bo_flush = nouveau_bo_flush,
++	.resolve_format_and_use_flags = drv_resolve_format_and_use_flags_helper,
++};
++
++#endif // DRV_NOUVEAU

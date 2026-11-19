@@ -1,0 +1,3 @@
+# The build.prop default is set by init (blanket property allow). Also let
+# vendor_init set it, so Chrome OS can switch the GL driver via a vendor prop.
+set_prop(vendor_init, vendor_mesa_prop)

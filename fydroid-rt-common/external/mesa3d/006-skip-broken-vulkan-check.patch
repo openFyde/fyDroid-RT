@@ -1,0 +1,15 @@
+diff --git a/src/panfrost/vulkan/panvk_physical_device.c b/src/panfrost/vulkan/panvk_physical_device.c
+index 433a3a80e3d..c4a2f51f069 100644
+--- a/src/panfrost/vulkan/panvk_physical_device.c
++++ b/src/panfrost/vulkan/panvk_physical_device.c
+@@ -415,6 +415,10 @@ panvk_physical_device_init(struct panvk_physical_device *device,
+    switch (arch) {
+    case 6:
+    case 7:
++      /* FydeOS: allow Bifrost v6/v7 without requiring
++       * PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1 (shipped on real hardware). */
++      break;
++
+    case 14:
+       if (!os_get_option("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER")) {
+          result = panvk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,

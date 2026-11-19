@@ -1,0 +1,39 @@
+// Copyright (C) 2026 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Shared build defaults for fydroid-rt.
+
+// Performance build flags, opt-in via a module's `defaults`. Scoped to the
+// x86 arches with arch{} blocks, so adding this to a module is a no-op on the
+// arm64 / apple boards — they keep building byte-for-byte unchanged. -O3 and
+// ThinLTO are safe with AOSP 11's clang 11 and run on every Intel/AMD CPU: we
+// keep the generic x86-64 baseline (no AVX2), so nothing here raises the ISA
+// floor below the older Atom-class Chromebooks the project targets.
+cc_defaults {
+    name: "fydroid_perf_defaults",
+    arch: {
+        x86_64: {
+            cflags: ["-O3"],
+            lto: {
+                thin: true,
+            },
+        },
+        x86: {
+            cflags: ["-O3"],
+            lto: {
+                thin: true,
+            },
+        },
+    },
+}

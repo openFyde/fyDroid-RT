@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The stock spooler's own components (PrintSpoolerService, PrintActivity,
+     ...) come from PrintSpoolerLib's manifest, merged in at build time. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.android.printspooler">
+
+    <application>
+
+        <uses-library android:name="org.chromium.arc" android:required="true"/>
+        <uses-library android:name="org.chromium.arc.mojom" android:required="true"/>
+        <uses-library android:name="org.chromium.arc.bridge" android:required="true"/>
+        <uses-library android:name="android.mojo" android:required="false"/>
+
+        <!-- Registers PrintSpoolerInstance with the ARC bridge while a print
+             dialog has it bound. -->
+        <service
+            android:name="org.chromium.arc.printspooler.ArcPrintSpoolerService"
+            android:exported="false">
+        </service>
+
+        <!-- Same filter as the stock PrintActivity; the priority makes this one
+             win instead of a chooser. PrintActivity stays as the fallback when
+             Chrome's print spooler is not connected. -->
+        <activity
+            android:name="org.chromium.arc.printspooler.ui.ArcPrintActivity"
+            android:configChanges="mcc|mnc|touchscreen|navigation|screenLayout|screenSize|smallestScreenSize|orientation|locale|keyboard|keyboardHidden|fontScale|uiMode|layoutDirection|density"
+            android:permission="android.permission.BIND_PRINT_SPOOLER_SERVICE"
+            android:theme="@style/Theme.PrintActivity"
+            android:exported="true">
+            <intent-filter android:priority="1">
+                <action android:name="android.print.PRINT_DIALOG" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="printjob" android:pathPattern="*" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>

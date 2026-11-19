@@ -1,0 +1,87 @@
+From dd19fd555f36ed87b8b663b2f480501bb19af989 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 3 Aug 2026 15:07:05 +0800
+Subject: [PATCH 31/40] SF: back-fill ARC task metadata into a re-parented
+ layer's subtree
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Layer::addChild inherits TaskId / IsDialog / IsGame / IsFloatingActivity
+from the new parent's ancestry, but stamps only the layer it is handed.
+setMetadata's downward traverse is deep, yet it only fires when the WM
+writes metadata. So a layer that was given children while still detached
+from the task tree keeps a subtree that nothing ever revisits.
+
+That is exactly how a media SurfaceView is built: the app creates its
+player SurfaceControl, BLASTBufferQueue attaches the "bbq-wrapper" child
+that carries the decoded video buffers, and only afterwards is the player
+reparented under the task. The player picks up TaskId here; the wrapper
+never does. WaylandTaskOutput::includesLayer claims layers purely by
+TaskId, so the video layer is dropped from the task's virtual display —
+TikTok played audio and drew its UI overlays while the video frame never
+reached the screen. Android's own screencap looked correct, because the
+screenshot pass renders the layer stack without the ARC task filter.
+
+Back-fill the subtree at the end of addChild. Floating is stamped first
+so the TaskId pass still skips split-out floating subtrees.
+
+Verified on device (arm64/panfrost): the task VD goes from layers=1 to
+layers=2, bbq-wrapper reports taskId, and the video renders in the
+ChromeOS window.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I0bf58bc6850e34c072a5b1f5384eb4cdaf1fdd6c
+---
+ services/surfaceflinger/Layer.cpp | 35 +++++++++++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 7560b549f0..9946e525a8 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1734,6 +1734,41 @@ void Layer::addChild(const sp<Layer>& layer) {
+             }
+         }
+     }
++
++    // Back-fill the newly-added layer's EXISTING subtree.
++    //
++    // The stamps above only touch `layer` itself, and setMetadata only fires
++    // when the WM writes metadata — so a layer that was given children while
++    // still detached from the task tree keeps a subtree that nobody revisits.
++    // That is exactly how a media SurfaceView is built: the app creates its
++    // player SurfaceControl, BLASTBufferQueue attaches the "bbq-wrapper" child
++    // that carries the actual video buffers, and only afterwards is the player
++    // reparented under the task. The player picks up TaskId here; the wrapper
++    // never does — and WaylandTaskOutput::includesLayer drops any layer with no
++    // TaskId, so the video is excluded from the task's virtual display. Audio
++    // plays and the UI draws, but the video frame never reaches the screen.
++    auto inheritToSubtree = [&](uint32_t key, bool skipFloating) {
++        if (!layer->mDrawingState.metadata.has(key)) return;
++        const int32_t value = layer->mDrawingState.metadata.getInt32(key, 0);
++        layer->mCurrentChildren.traverse([&](Layer* child) {
++            if (skipFloating &&
++                child->mDrawingState.metadata.has(METADATA_IS_FLOATING_ACTIVITY)) {
++                return;
++            }
++            if (child->mDrawingState.metadata.has(key)) return;
++            child->mDrawingState.metadata.setInt32(key, value);
++            child->mDrawingState.sequence++;
++            child->mDrawingState.modified = true;
++            child->setTransactionFlags(eTransactionNeeded);
++        });
++    };
++    // Floating first, so the TaskId pass below sees the freshly-stamped flag
++    // and leaves split-out floating subtrees WITHOUT the host task's id — they
++    // are routed to their own standalone output, not folded into the host.
++    inheritToSubtree(METADATA_IS_FLOATING_ACTIVITY, false /* skipFloating */);
++    inheritToSubtree(METADATA_TASK_ID, true /* skipFloating */);
++    inheritToSubtree(METADATA_IS_DIALOG, false /* skipFloating */);
++    inheritToSubtree(METADATA_IS_GAME, false /* skipFloating */);
+ #endif
+ }
+ 
+-- 
+2.43.0
+

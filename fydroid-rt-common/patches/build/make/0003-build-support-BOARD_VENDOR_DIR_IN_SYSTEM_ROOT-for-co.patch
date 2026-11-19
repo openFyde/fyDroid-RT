@@ -1,0 +1,71 @@
+From 0fb5be79be7d86332ece3daa17e788eba951f632 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 12:35:26 +0800
+Subject: [PATCH 3/7] build: support BOARD_VENDOR_DIR_IN_SYSTEM_ROOT for
+ container builds
+
+When BOARD_VENDOR_DIR_IN_SYSTEM_ROOT is set, keep an empty /system/vendor
+directory in the system image root instead of a symlink to /vendor. The
+ARC++ container's overlay mounts vendor separately over that empty mount
+point. Ported from the AOSP 11 fydroid-rt patch.
+
+AOSP 13 replaced the AOSP 11 create-system-vendor-symlink recipe define
+with the rule-emitting create-partition-compat-symlink macro (added to
+INTERNAL_SYSTEMIMAGE_FILES). This adds a parallel create-partition-compat-dir
+macro that emits an empty-directory rule, and gates the vendor block on
+BOARD_VENDOR_DIR_IN_SYSTEM_ROOT. (mk_raw_image.sh already normalizes a
+symlink to an empty dir for the squashfs artifact; this makes the ext4
+system.img match too.)
+
+Note: not yet exercised by a full image build; verify on first m systemimage.
+
+Change-Id: Ie262a7ebda5e20efb92fa23a8c3690cc177cccf6
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ core/Makefile | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/core/Makefile b/core/Makefile
+index bf81b0ee11..5708f9d1b1 100644
+--- a/core/Makefile
++++ b/core/Makefile
+@@ -3016,6 +3016,21 @@ $1: .KATI_SYMLINK_OUTPUTS := $1
+ $1
+ endef
+ 
++# Creates an empty compatibility directory (instead of a /system/<x> symlink)
++# for a partition that the ARC++ container mounts separately at runtime. With
++# BOARD_VENDOR_DIR_IN_SYSTEM_ROOT the container's overlay mounts vendor over an
++# empty /system/vendor mount point rather than following a symlink to /vendor.
++# $1: location (e.g $(TARGET_OUT)/vendor)
++define create-partition-compat-dir
++$(eval \
++$1:
++	@echo Empty dir $(patsubst $(PRODUCT_OUT)/%,%,$1)
++	rm -rf $1
++	mkdir -p $1
++)
++$1
++endef
++
+ 
+ # -----------------------------------------------------------------
+ # system image
+@@ -3084,8 +3099,14 @@ INTERNAL_SYSTEMIMAGE_FILES := $(sort $(filter $(TARGET_OUT)/%, \
+ 
+ # Create symlink /system/vendor to /vendor if necessary.
+ ifdef BOARD_USES_VENDORIMAGE
++ifdef BOARD_VENDOR_DIR_IN_SYSTEM_ROOT
++# ARC++ container: keep an empty /system/vendor directory (overlay mount point)
++# instead of a symlink to /vendor, because the container mounts vendor separately.
++  INTERNAL_SYSTEMIMAGE_FILES += $(call create-partition-compat-dir,$(TARGET_OUT)/vendor)
++else
+   INTERNAL_SYSTEMIMAGE_FILES += $(call create-partition-compat-symlink,$(TARGET_OUT)/vendor,/vendor,vendor.img)
+ endif
++endif
+ 
+ # Create symlink /system/product to /product if necessary.
+ ifdef BOARD_USES_PRODUCTIMAGE
+-- 
+2.43.0
+

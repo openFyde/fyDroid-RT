@@ -1,0 +1,121 @@
+# SELinux rules for fydroid-rt ARC++ services
+
+# --- Domain transitions from init ---
+init_daemon_domain(arc_wake_lock)
+init_daemon_domain(arc_trace_service)
+init_daemon_domain(arc_boot_continue)
+init_daemon_domain(arc_imelang)
+init_daemon_domain(arc_bridge)
+
+# --- arc_bridge (fydroid_arcbridge — vendor.google_arc.arcbridge@1.0-service) ---
+# HIDL server: registers IArcBridgeService and bridges Mojo IPC to Chrome.
+hwbinder_use(arc_bridge)
+allow arc_bridge hal_arcbridgeservice_hwservice:hwservice_manager { add find };
+allow arc_bridge hidl_base_hwservice:hwservice_manager add;
+allow arc_bridge hwservicemanager:binder { call transfer };
+
+# Connect to Chrome via /var/run/chrome/arc_bridge.sock (Unix domain socket).
+allow arc_bridge arc_bridge_socket:sock_file { read write getattr open };
+allow arc_bridge self:unix_stream_socket { create connect read write getattr setopt };
+# Search /var/run/chrome to reach the socket. CrOS labels that dir `arc_dir`
+# (see chromeos.cil cros_browser.te filetrans_pattern). chrome_file is the
+# AOSP-side label our file_contexts attempts to apply; keep both for safety.
+allow arc_bridge arc_dir:dir { search getattr };
+allow arc_bridge chrome_file:dir { search getattr };
+
+# --- Clients of IArcBridgeService ---
+# fydroid_arcvideobridge runs in `mediacodec` (its binary is labeled
+# mediacodec_exec); the camera passthrough HAL lives in hal_camera_default;
+# sensors HAL similarly. system_server / platform_app reach the bridge via
+# Mojo through libarcbridgeservice. hal_drm_widevine is the Widevine DRM HAL,
+# which forwards the whole key exchange to Chrome's CDM (see
+# hal_drm_widevine.te, where its own client rules live).
+allow {
+    bluetooth
+    mediacodec
+    hal_camera_default
+    hal_sensors_default
+    system_server
+    platform_app
+} hal_arcbridgeservice_hwservice:hwservice_manager find;
+
+binder_call(bluetooth, arc_bridge)
+binder_call(mediacodec, arc_bridge)
+binder_call(hal_camera_default, arc_bridge)
+binder_call(hal_sensors_default, arc_bridge)
+binder_call(system_server, arc_bridge)
+binder_call(platform_app, arc_bridge)
+
+# --- arc_wake_lock (arcwlservice — wake-lock bridge) ---
+# Kept for arcwlservice; it goes through hwservicemanager during init, even
+# though it does not register IArcBridgeService itself.
+hwbinder_use(arc_wake_lock)
+allow arc_wake_lock hal_arcbridgeservice_hwservice:hwservice_manager { add find };
+allow arc_wake_lock hidl_base_hwservice:hwservice_manager add;
+allow arc_wake_lock hwservicemanager:binder { call transfer };
+
+# --- arc_trace_service (fydroid_arcvideobridge) ---
+# HIDL server: registers IArcVideoBridgeService under hal_omx
+hwbinder_use(arc_trace_service)
+hal_server_domain(arc_trace_service, hal_omx)
+allow arc_trace_service hidl_base_hwservice:hwservice_manager add;
+allow arc_trace_service hwservicemanager:binder { call transfer };
+
+# --- hal_power_default (fydroid_arcpower) ---
+# Registers both IPower and IPowerStats
+hal_server_domain(hal_power_default, hal_power_stats)
+
+# --- surfaceflinger ---
+# fydroid_surfaceflinger registers the Wayland binder service and looks up
+# activity_task_service for task management. arc_data_device_service is the
+# clipboard / drag-drop bridge surfaceflinger reaches into during DND.
+# arc_task_controller is arc-services' IArcTaskController: WaylandTaskResizer
+# looks it up for every resizeTask / setTaskWindowingMode / setFocusedTask, i.e.
+# on the window-geometry hot path.
+allow surfaceflinger activity_task_service:service_manager find;
+allow surfaceflinger arc_data_device_service:service_manager find;
+allow surfaceflinger arc_task_controller_service:service_manager find;
+allow surfaceflinger wayland_service:service_manager add;
+
+# --- arc_wake_lock ---
+# arcwlservice registers its own binder service.
+allow arc_wake_lock arc_wake_lock_service:service_manager add;
+
+# --- system_server ---
+# All ARC system services that the framework registers and consumes. Mirrors
+# the entries in service_contexts; expand here when adding new types in
+# arc_00_types.te.
+allow system_server {
+    arc_anr_messenger_service
+    arc_data_device_provider_service
+    arc_data_device_service
+    arc_disk_space_service
+    arc_display_layout_service
+    arc_ime_service
+    arc_metrics_service
+    arc_screen_capture_service
+    arc_task_controller_service
+    arc_volume_mounter_service
+    arc_window_manager_service
+}:service_manager { add find };
+allow system_server wayland_service:service_manager find;
+
+# ArcUsbSysfsScanner enumerates USB input devices out of /sys/bus/usb/devices,
+# because permission_broker never releases a kernel-claimed HID interface to
+# Chrome and so the USB host bridge never announces one. The container mounts a
+# full sysfs, and those attribute files land on the default `sysfs` label (no
+# genfscon covers the per-device /devices/... paths they resolve to). AOSP grants
+# system_server sysfs_type:dir r_dir_perms already, but only w_file_perms on
+# sysfs_usb -- nothing lets it read the descriptors, so add that here.
+allow system_server sysfs:file r_file_perms;
+
+# --- platform_app ---
+# Apps inside the container reach ARC bridge services via binder. FydroidIME
+# uses arc_ime; data-mover needs arc_data_device_provider; shelf/launcher use
+# arc_display_layout.
+allow platform_app {
+    arc_data_device_provider_service
+    arc_display_layout_service
+    arc_ime_service
+    wayland_service
+}:service_manager find;

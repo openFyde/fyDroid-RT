@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">Paketinstallation</string>
+    <string name="notification_channel_description">APK-Installationsfortschritt</string>
+    <string name="mode_user">[Benutzer]</string>
+    <string name="mode_policy">[Richtlinie]</string>
+    <string name="installing">%1$s Installiere: %2$s</string>
+    <string name="installed">%1$s Installiert: %2$s</string>
+    <string name="install_failed">%1$s Installation fehlgeschlagen: %2$s</string>
+</resources>

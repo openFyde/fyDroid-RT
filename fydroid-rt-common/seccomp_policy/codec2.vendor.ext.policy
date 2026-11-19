@@ -1,0 +1,25 @@
+# device specific syscalls
+pselect6: 1
+eventfd2: 1
+_llseek: 1
+sysinfo: 1
+getcwd: 1
+getdents64: 1
+epoll_create1: 1
+epoll_ctl: 1
+epoll_pwait: 1
+
+# arm64 android.hardware.media.c2@1.0-service-v4l2 b/160439368, b/202471768
+fstat64: 1
+fstatat64: 1
+fstatfs64: 1
+getegid32: 1
+geteuid32: 1
+getgid32: 1
+getuid32: 1
+mmap2: 1
+sendmsg: 1
+sendto: 1
+statfs64: 1
+ugetrlimit: 1
+sched_getaffinity: 1

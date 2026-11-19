@@ -1,0 +1,125 @@
+From 89782b1688ee7e138e11060a0727198f3dc2aa35 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 4 Nov 2026 18:45:01 +0800
+Subject: [PATCH 38/40] fydroid: forward each window's accessibility id to the
+ composer and inherit it down to the buffer layer
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: Iaf846c78215ff47b20e80f67bc3714c709e71ac9
+---
+ services/surfaceflinger/Layer.cpp          | 56 ++++++++++++++++++++++
+ services/surfaceflinger/SurfaceFlinger.cpp |  5 ++
+ 2 files changed, 61 insertions(+)
+
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index 83f7da1dd5..85326056cb 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -59,6 +59,7 @@
+ #include <utils/Trace.h>
+ 
+ #include <algorithm>
++#include <functional>
+ #include <mutex>
+ #include <sstream>
+ 
+@@ -1049,11 +1050,51 @@ bool Layer::setCrop(const Rect& crop) {
+ }
+ 
+ bool Layer::setMetadata(const LayerMetadata& data) {
++#ifdef FYDROID_WAYLAND_COMPOSER
++    // Captured before the merge: descendants still holding this value got it
++    // by inheritance (see the AccessibilityId propagation below).
++    const bool hadA11yId = mDrawingState.metadata.has(METADATA_ACCESSIBILITY_ID);
++    const int32_t oldA11yId = mDrawingState.metadata.getInt32(METADATA_ACCESSIBILITY_ID, -1);
++#endif
+     if (!mDrawingState.metadata.merge(data, true /* eraseEmpty */)) return false;
+     mDrawingState.modified = true;
+     setTransactionFlags(eTransactionNeeded);
+ 
+ #ifdef FYDROID_WAYLAND_COMPOSER
++    // Carry the accessibility window id down to the layer that has a buffer.
++    //
++    // AccessibilityWindowManager stamps METADATA_ACCESSIBILITY_ID on a
++    // window's own SurfaceControl (WindowState.mSurfaceControl), which is a
++    // container; the buffer lives on the WindowSurfaceController child below
++    // it, and only that one reaches the composer. The composer turns the id
++    // into zaura_surface.set_accessibility_id for toast / overlay / task-less
++    // modal surfaces — the only exact way to tell Chrome which accessibility
++    // window a task-less surface shows.
++    //
++    // A child with an id of its OWN (a sub-window's WindowState) keeps it, and
++    // so does its subtree. "Own" = anything other than what this layer held
++    // before, which is what an inherited value looks like; so a change, and
++    // the -1 AccessibilityWindowManager writes when the connection goes away,
++    // both replace the inherited copy instead of leaving a stale one behind.
++    if (data.has(METADATA_ACCESSIBILITY_ID)) {
++        const int32_t a11yId = data.getInt32(METADATA_ACCESSIBILITY_ID, -1);
++        std::function<void(Layer*)> push = [&](Layer* parent) {
++            for (const sp<Layer>& child : parent->mCurrentChildren) {
++                auto& md = child->mDrawingState.metadata;
++                if (md.has(METADATA_ACCESSIBILITY_ID)) {
++                    const int32_t cur = md.getInt32(METADATA_ACCESSIBILITY_ID, -1);
++                    if (!hadA11yId || cur != oldA11yId) continue;  // its own
++                    if (cur == a11yId) continue;
++                }
++                md.setInt32(METADATA_ACCESSIBILITY_ID, a11yId);
++                child->mDrawingState.sequence++;
++                child->mDrawingState.modified = true;
++                child->setTransactionFlags(eTransactionNeeded);
++                push(child.get());
++            }
++        };
++        push(this);
++    }
+     // Propagate TaskId to all descendants for per-task GPU composition.
+     // WaylandTaskOutput::belongsInOutput() checks TaskId metadata to claim
+     // layers. Only the Task's root layer gets TaskId from the WM, so we
+@@ -1818,6 +1859,20 @@ void Layer::addChild(const sp<Layer>& layer) {
+             break;  // nearest ancestor with a type decides, whatever it is
+         }
+     }
++    // Inherit the accessibility window id from the nearest ancestor that has
++    // one: the buffer layer is created under the WindowState surface the id
++    // was stamped on. See setMetadata().
++    if (!layer->mDrawingState.metadata.has(METADATA_ACCESSIBILITY_ID)) {
++        for (sp<Layer> ancestor = this; ancestor != nullptr;
++             ancestor = ancestor->mCurrentParent.promote()) {
++            if (ancestor->mDrawingState.metadata.has(METADATA_ACCESSIBILITY_ID)) {
++                layer->mDrawingState.metadata.setInt32(METADATA_ACCESSIBILITY_ID,
++                        ancestor->mDrawingState.metadata.getInt32(
++                                METADATA_ACCESSIBILITY_ID, -1));
++                break;
++            }
++        }
++    }
+     // Inherit IsGame from nearest ancestor that has it.
+     if (!layer->mDrawingState.metadata.has(METADATA_IS_GAME)) {
+         for (sp<Layer> ancestor = this; ancestor != nullptr;
+@@ -1864,6 +1919,7 @@ void Layer::addChild(const sp<Layer>& layer) {
+     inheritToSubtree(METADATA_TASK_ID, true /* skipFloating */);
+     inheritToSubtree(METADATA_IS_DIALOG, false /* skipFloating */);
+     inheritToSubtree(METADATA_IS_GAME, false /* skipFloating */);
++    inheritToSubtree(METADATA_ACCESSIBILITY_ID, false /* skipFloating */);
+     // Only carries the value when it is the adopted-overlay one: the block
+     // above never writes any other type, so anything else here came from WMS
+     // and belongs to that layer alone.
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index 9d0ad469d7..187dc00e06 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -7242,6 +7242,11 @@ const std::unordered_map<std::string, uint32_t>& SurfaceFlinger::getGenericLayer
+             // a zcr_toast_surface. WindowManager sets METADATA_WINDOW_TYPE on
+             // every window's SurfaceControl.
+             {"org.chromium.arc.V1_0.WindowType", METADATA_WINDOW_TYPE},
++            // fydroid: the accessibility window id AccessibilityWindowManager
++            // stamps on every window. The composer publishes it as
++            // zaura_surface.set_accessibility_id for task-less surfaces
++            // (overlays, toasts), which nothing else can name.
++            {"org.chromium.arc.V1_0.AccessibilityId", METADATA_ACCESSIBILITY_ID},
+     };
+     return genericLayerMetadataKeyMap;
+ }
+-- 
+2.43.0
+

@@ -1,0 +1,671 @@
+From 11e367c8794bb719ca27d2ac8c040c11167b6314 Mon Sep 17 00:00:00 2001
+From: simon <yang@fydeos.io>
+Date: Wed, 13 May 2026 11:05:45 +0800
+Subject: [PATCH 18/40] RenderEngine: add YV12 binding path with
+ DIRECT/SHADER/CPU probe
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Counterpart to the existing NV12 path (patches 0016/0017). All AOSP soft
+video decoders hardcode HAL_PIXEL_FORMAT_YV12 for their output, so a
+SurfaceFlinger that has to composite video via GLES (no HW composer
+take-over of the video layer) needs a YV12 → RGBA sampling path.
+
+bindYv12() probes three implementations and locks in the winning one:
+
+  1. Direct multi-plane EGL_LINUX_DMA_BUF_EXT import → samplerExternalOES.
+     Works on Mesa Panfrost et al where the driver supports YVU420 dmabuf
+     import and does YUV→RGB at sample time.
+  2. Three single-plane (DRM_FORMAT_R8) imports + GLSL Y/U/V combiner.
+     For drivers that reject multi-plane YUV but accept single-plane
+     dmabuf import.
+  3. Pure-CPU lockYCbCr → scalar BT.601 → single glTexImage2D /
+     glTexSubImage2D upload. Used on Mesa SVGA / vmwgfx (VMware Fusion
+     on Apple Silicon) where every EGL_LINUX_DMA_BUF_EXT path returns
+     EGL_BAD_PARAMETER for these YUV formats and earlier sampler2D-based
+     shader attempts hung the virtual GPU on every frame. The conversion
+     runs in scalar C++ (~5-15 ms at 1280×720) and emits one RGBA tile
+     per frame; no FBO, no shader, no multi-plane sampling.
+
+After every variant fails the path locks in YV12_PATH_FAILED so the
+log doesn't flood with the same failure each vsync.
+
+Also: bindExternalTextureBuffer routes YV12 the same way it routes NV12;
+cacheExternalTextureBufferInternal skips both formats so the cache path
+doesn't keep logging "Failed to create image" for buffers the dmabuf
+import handles directly. Detection accepts both DRM_FORMAT_YVU420 and
+DRM_FORMAT_YVU420_ANDROID because cros gralloc stores HAL_PIXEL_FORMAT_YV12
+buffers internally as the Android-aligned variant.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I675bd7174eaeab91c0c289d16213a4426101b833
+---
+ libs/renderengine/gl/GLESRenderEngine.cpp | 524 +++++++++++++++++++++-
+ libs/renderengine/gl/GLESRenderEngine.h   |  44 ++
+ 2 files changed, 558 insertions(+), 10 deletions(-)
+
+diff --git a/libs/renderengine/gl/GLESRenderEngine.cpp b/libs/renderengine/gl/GLESRenderEngine.cpp
+index 0e2d8c7bef..07e2d9163d 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.cpp
++++ b/libs/renderengine/gl/GLESRenderEngine.cpp
+@@ -55,6 +55,15 @@
+ // fydroid-rt (NV12 cluster): cros-gralloc handle + DRM fourcc for direct NV12/YV12
+ // dmabuf import in the GLES render engine.
+ #include <cros_gralloc/cros_gralloc_handle.h>
++
++// Cros gralloc stores HAL_PIXEL_FORMAT_YV12 buffers internally as
++// DRM_FORMAT_YVU420_ANDROID ('9997'). The handle's `format` field still
++// holds that internal value — only the standard-fourcc info getter
++// converts to plain YVU420. Treat both as YV12 in the format checks below.
++#ifndef DRM_FORMAT_YVU420_ANDROID
++#define DRM_FORMAT_YVU420_ANDROID \
++        ((uint32_t)'9' | ((uint32_t)'9' << 8) | ((uint32_t)'9' << 16) | ((uint32_t)'7' << 24))
++#endif
+ #include <drm_fourcc.h>
+ 
+ extern "C" EGLAPI const char* eglQueryStringImplementationANDROID(EGLDisplay dpy, EGLint name);
+@@ -1005,6 +1014,474 @@ bool GLESRenderEngine::bindNv12ViaShader(const sp<GraphicBuffer>& buffer,
+     return true;
+ }
+ 
++// ---------------------------------------------------------------------------
++// YV12 (DRM_FORMAT_YVU420) → RGBA. Same two-tier strategy as NV12 above, but
++// 3 planes (Y, V, U) instead of NV12's interleaved UV. Needed because all 8
++// AOSP soft video decoders (avc, hevc, vp8/9, mpeg2/4, av1, gav1) hardcode
++// HAL_PIXEL_FORMAT_YV12 as their output (C2SoftAvcDec.cpp:775 et al), and on
++// hosts where SurfaceFlinger does the YUV→RGB composition (no HW composer
++// take-over of video layers) we have to import YV12 dmabufs ourselves.
++// ---------------------------------------------------------------------------
++
++bool GLESRenderEngine::bindYv12(const sp<GraphicBuffer>& buffer, uint32_t texName) {
++    switch (mYv12Path) {
++        case YV12_PATH_DIRECT:     return bindYv12AsExternalImage(buffer, texName);
++        case YV12_PATH_SHADER:     return bindYv12ViaShader(buffer, texName);
++        case YV12_PATH_CPU_UPLOAD: return bindYv12ViaCpuUpload(buffer, texName);
++        case YV12_PATH_FAILED:     return false;
++        case YV12_PATH_UNKNOWN:    break;  // probe below
++    }
++
++    // Probe in order of decreasing performance. The dmabuf paths skip the
++    // CPU readback entirely so we try them first; on drivers that reject
++    // EGL_LINUX_DMA_BUF_EXT for YUV formats (Mesa SVGA on VMware) the third
++    // path locks the buffer and uploads each plane via glTexImage2D.
++    if (bindYv12AsExternalImage(buffer, texName)) {
++        ALOGI("bindYv12: using direct multi-plane dmabuf import");
++        mYv12Path = YV12_PATH_DIRECT;
++        return true;
++    }
++    if (bindYv12ViaShader(buffer, texName)) {
++        ALOGI("bindYv12: direct import unsupported, using dmabuf shader fallback");
++        mYv12Path = YV12_PATH_SHADER;
++        return true;
++    }
++    if (bindYv12ViaCpuUpload(buffer, texName)) {
++        ALOGI("bindYv12: dmabuf import unsupported, using CPU-upload shader fallback");
++        mYv12Path = YV12_PATH_CPU_UPLOAD;
++        return true;
++    }
++    ALOGW("bindYv12: every path failed; locking in YV12_PATH_FAILED");
++    mYv12Path = YV12_PATH_FAILED;
++    return false;
++}
++
++bool GLESRenderEngine::bindYv12AsExternalImage(const sp<GraphicBuffer>& buffer,
++                                                uint32_t texName) {
++    const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
++    if (!h || h->magic != 0xABCDDCBA ||
++        (h->format != DRM_FORMAT_YVU420 && h->format != DRM_FORMAT_YVU420_ANDROID)) {
++        return false;
++    }
++
++    // Single underlying dmabuf with three plane offsets is the common case for
++    // YV12 from cros_gralloc; fall back to fds[i] if the allocator chose to
++    // export distinct fds per plane.
++    int fdY = h->fds[0];
++    int fdV = (h->fds[1] >= 0) ? h->fds[1] : h->fds[0];
++    int fdU = (h->fds[2] >= 0) ? h->fds[2] : h->fds[0];
++    if (fdY < 0 || fdV < 0 || fdU < 0) return false;
++
++    uint32_t w = buffer->getWidth();
++    uint32_t height = buffer->getHeight();
++    uint32_t yStride = h->strides[0];
++    uint32_t vStride = h->strides[1] ? h->strides[1] : yStride / 2;
++    uint32_t uStride = h->strides[2] ? h->strides[2] : yStride / 2;
++    uint32_t vOffset = h->offsets[1] ? h->offsets[1] : yStride * height;
++    uint32_t uOffset = h->offsets[2] ? h->offsets[2] : vOffset + vStride * (height / 2);
++
++    // DRM plane order for YVU420 (per drm_fourcc.h): plane 0 = Y,
++    // plane 1 = Cr (V), plane 2 = Cb (U).
++    EGLint attrs[] = {
++        EGL_LINUX_DRM_FOURCC_EXT,           (EGLint)DRM_FORMAT_YVU420,
++        EGL_WIDTH,                          (EGLint)w,
++        EGL_HEIGHT,                         (EGLint)height,
++        EGL_DMA_BUF_PLANE0_FD_EXT,          fdY,
++        EGL_DMA_BUF_PLANE0_OFFSET_EXT,      0,
++        EGL_DMA_BUF_PLANE0_PITCH_EXT,       (EGLint)yStride,
++        EGL_DMA_BUF_PLANE1_FD_EXT,          fdV,
++        EGL_DMA_BUF_PLANE1_OFFSET_EXT,      (EGLint)vOffset,
++        EGL_DMA_BUF_PLANE1_PITCH_EXT,       (EGLint)vStride,
++        EGL_DMA_BUF_PLANE2_FD_EXT,          fdU,
++        EGL_DMA_BUF_PLANE2_OFFSET_EXT,      (EGLint)uOffset,
++        EGL_DMA_BUF_PLANE2_PITCH_EXT,       (EGLint)uStride,
++        EGL_YUV_COLOR_SPACE_HINT_EXT,       EGL_ITU_REC601_EXT,
++        EGL_SAMPLE_RANGE_HINT_EXT,          EGL_YUV_NARROW_RANGE_EXT,
++        EGL_NONE
++    };
++    EGLImageKHR image = eglCreateImageKHR(mEGLDisplay, EGL_NO_CONTEXT,
++                                           EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
++    if (image == EGL_NO_IMAGE_KHR) {
++        ALOGW("bindYv12: dmabuf import failed: %#x", eglGetError());
++        return false;
++    }
++
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texName);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)image);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++
++    eglDestroyImageKHR(mEGLDisplay, image);
++    return true;
++}
++
++// Shader fallback: YV12 → RGBA via 3 R8 EGLImage imports + GLSL combiner.
++// Same alias-cache workaround as the NV12 path (per-call output EGLImage
++// handle; never disable vertex attrib 0).
++
++namespace {
++
++constexpr const char* kYv12VertexShader = R"(
++    attribute vec2 position;
++    varying vec2 vTexCoord;
++    void main() {
++        vTexCoord = position * 0.5 + 0.5;
++        gl_Position = vec4(position, 0.0, 1.0);
++    }
++)";
++
++constexpr const char* kYv12FragmentShader = R"(
++    #extension GL_OES_EGL_image_external : require
++    precision mediump float;
++    varying vec2 vTexCoord;
++    uniform samplerExternalOES y_tex;
++    uniform samplerExternalOES u_tex;
++    uniform samplerExternalOES v_tex;
++    void main() {
++        vec3 yuv;
++        yuv.x = texture2D(y_tex, vTexCoord).r;
++        yuv.y = texture2D(u_tex, vTexCoord).r - 0.5;
++        yuv.z = texture2D(v_tex, vTexCoord).r - 0.5;
++        // BT.601 limited-range YUV → full-range RGB
++        vec3 rgb = mat3(
++            1.0, 1.0, 1.0,
++            0.0, -0.344, 1.772,
++            1.403, -0.714, 0.0
++        ) * yuv;
++        gl_FragColor = vec4(clamp(rgb, 0.0, 1.0), 1.0);
++    }
++)";
++
++GLuint compileYv12Shader(GLenum type, const char* source) {
++    GLuint shader = glCreateShader(type);
++    glShaderSource(shader, 1, &source, nullptr);
++    glCompileShader(shader);
++    GLint compiled = 0;
++    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
++    if (!compiled) {
++        GLint len = 0;
++        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
++        std::string log(len, '\0');
++        glGetShaderInfoLog(shader, len, nullptr, log.data());
++        ALOGE("YV12 fallback shader compile failed: %s", log.c_str());
++        glDeleteShader(shader);
++        return 0;
++    }
++    return shader;
++}
++
++} // namespace
++
++void GLESRenderEngine::initYv12Shader() {
++    if (mYv12ShaderInited) return;
++    mYv12ShaderInited = true;
++
++    GLuint vs = compileYv12Shader(GL_VERTEX_SHADER, kYv12VertexShader);
++    GLuint fs = compileYv12Shader(GL_FRAGMENT_SHADER, kYv12FragmentShader);
++    if (!vs || !fs) {
++        if (vs) glDeleteShader(vs);
++        if (fs) glDeleteShader(fs);
++        return;
++    }
++
++    mYv12Program = glCreateProgram();
++    glAttachShader(mYv12Program, vs);
++    glAttachShader(mYv12Program, fs);
++    glLinkProgram(mYv12Program);
++    glDeleteShader(vs);
++    glDeleteShader(fs);
++
++    GLint linked = 0;
++    glGetProgramiv(mYv12Program, GL_LINK_STATUS, &linked);
++    if (!linked) {
++        ALOGE("YV12 fallback program link failed");
++        glDeleteProgram(mYv12Program);
++        mYv12Program = 0;
++        return;
++    }
++
++    mYv12PosLoc = glGetAttribLocation(mYv12Program, "position");
++    mYv12YTexLoc = glGetUniformLocation(mYv12Program, "y_tex");
++    mYv12UTexLoc = glGetUniformLocation(mYv12Program, "u_tex");
++    mYv12VTexLoc = glGetUniformLocation(mYv12Program, "v_tex");
++
++    static const GLfloat vertices[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++    glGenBuffers(1, &mYv12VBO);
++    glBindBuffer(GL_ARRAY_BUFFER, mYv12VBO);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glGenFramebuffers(1, &mYv12FBO);
++    glGenTextures(1, &mYv12YTex);
++    glGenTextures(1, &mYv12UTex);
++    glGenTextures(1, &mYv12VTex);
++    glGenTextures(1, &mYv12OutputTex);
++}
++
++bool GLESRenderEngine::bindYv12ViaShader(const sp<GraphicBuffer>& buffer,
++                                          uint32_t texName) {
++    initYv12Shader();
++    if (!mYv12Program) return false;
++
++    const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
++    if (!h || h->magic != 0xABCDDCBA ||
++        (h->format != DRM_FORMAT_YVU420 && h->format != DRM_FORMAT_YVU420_ANDROID)) {
++        return false;
++    }
++
++    int fdY = h->fds[0];
++    int fdV = (h->fds[1] >= 0) ? h->fds[1] : h->fds[0];
++    int fdU = (h->fds[2] >= 0) ? h->fds[2] : h->fds[0];
++    if (fdY < 0 || fdV < 0 || fdU < 0) return false;
++
++    uint32_t w = buffer->getWidth();
++    uint32_t height = buffer->getHeight();
++    uint32_t yStride = h->strides[0];
++    uint32_t vStride = h->strides[1] ? h->strides[1] : yStride / 2;
++    uint32_t uStride = h->strides[2] ? h->strides[2] : yStride / 2;
++    uint32_t vOffset = h->offsets[1] ? h->offsets[1] : yStride * height;
++    uint32_t uOffset = h->offsets[2] ? h->offsets[2] : vOffset + vStride * (height / 2);
++
++    auto importR8 = [&](int fd, uint32_t planeW, uint32_t planeH,
++                        uint32_t offset, uint32_t stride) -> EGLImageKHR {
++        EGLint attrs[] = {
++            EGL_LINUX_DRM_FOURCC_EXT,       (EGLint)DRM_FORMAT_R8,
++            EGL_WIDTH,                      (EGLint)planeW,
++            EGL_HEIGHT,                     (EGLint)planeH,
++            EGL_DMA_BUF_PLANE0_FD_EXT,      fd,
++            EGL_DMA_BUF_PLANE0_OFFSET_EXT,  (EGLint)offset,
++            EGL_DMA_BUF_PLANE0_PITCH_EXT,   (EGLint)stride,
++            EGL_NONE
++        };
++        return eglCreateImageKHR(mEGLDisplay, EGL_NO_CONTEXT,
++                                 EGL_LINUX_DMA_BUF_EXT, nullptr, attrs);
++    };
++
++    EGLImageKHR yImage = importR8(fdY, w, height, 0, yStride);
++    if (yImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("bindYv12ViaShader: Y plane import failed: %#x", eglGetError());
++        return false;
++    }
++    EGLImageKHR vImage = importR8(fdV, w / 2, height / 2, vOffset, vStride);
++    if (vImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("bindYv12ViaShader: V plane import failed: %#x", eglGetError());
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        return false;
++    }
++    EGLImageKHR uImage = importR8(fdU, w / 2, height / 2, uOffset, uStride);
++    if (uImage == EGL_NO_IMAGE_KHR) {
++        ALOGW("bindYv12ViaShader: U plane import failed: %#x", eglGetError());
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        eglDestroyImageKHR(mEGLDisplay, vImage);
++        return false;
++    }
++
++    if (mYv12OutputW != w || mYv12OutputH != height) {
++        glBindTexture(GL_TEXTURE_2D, mYv12OutputTex);
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, height, 0,
++                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++        mYv12OutputW = w;
++        mYv12OutputH = height;
++    }
++
++    GLint prevFBO, prevProg, prevVp[4], prevActiveTex;
++    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
++    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
++    glGetIntegerv(GL_VIEWPORT, prevVp);
++    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
++
++    glBindFramebuffer(GL_FRAMEBUFFER, mYv12FBO);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                           GL_TEXTURE_2D, mYv12OutputTex, 0);
++    GLenum fbStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++    if (fbStatus != GL_FRAMEBUFFER_COMPLETE) {
++        ALOGE("bindYv12ViaShader: FBO incomplete: %#x", fbStatus);
++        glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        eglDestroyImageKHR(mEGLDisplay, uImage);
++        eglDestroyImageKHR(mEGLDisplay, vImage);
++        return false;
++    }
++
++    glViewport(0, 0, w, height);
++    glUseProgram(mYv12Program);
++
++    glActiveTexture(GL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mYv12YTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)yImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glUniform1i(mYv12YTexLoc, 0);
++
++    glActiveTexture(GL_TEXTURE1);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mYv12UTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)uImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glUniform1i(mYv12UTexLoc, 1);
++
++    glActiveTexture(GL_TEXTURE2);
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, mYv12VTex);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)vImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glUniform1i(mYv12VTexLoc, 2);
++
++    glBindBuffer(GL_ARRAY_BUFFER, mYv12VBO);
++    glVertexAttribPointer(mYv12PosLoc, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
++    glEnableVertexAttribArray(mYv12PosLoc);
++    glDisable(GL_BLEND);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++
++    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
++    glUseProgram(prevProg);
++    glViewport(prevVp[0], prevVp[1], prevVp[2], prevVp[3]);
++    glActiveTexture(prevActiveTex);
++
++    EGLImageKHR outImage = eglCreateImageKHR(mEGLDisplay, mEGLContext,
++                                              EGL_GL_TEXTURE_2D_KHR,
++                                              (EGLClientBuffer)(uintptr_t)mYv12OutputTex,
++                                              nullptr);
++    if (outImage == EGL_NO_IMAGE_KHR) {
++        ALOGE("bindYv12ViaShader: output EGLImage creation failed: %#x", eglGetError());
++        eglDestroyImageKHR(mEGLDisplay, yImage);
++        eglDestroyImageKHR(mEGLDisplay, uImage);
++        eglDestroyImageKHR(mEGLDisplay, vImage);
++        return false;
++    }
++
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texName);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)outImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++
++    eglDestroyImageKHR(mEGLDisplay, outImage);
++    eglDestroyImageKHR(mEGLDisplay, yImage);
++    eglDestroyImageKHR(mEGLDisplay, uImage);
++    eglDestroyImageKHR(mEGLDisplay, vImage);
++
++    return true;
++}
++
++// ---------------------------------------------------------------------------
++// YV12 pure-CPU path. lockYCbCr → BT.601 YUV→RGB on the CPU → one RGBA
++// glTexImage2D upload per frame. Used when EGL_LINUX_DMA_BUF_EXT rejects
++// the YUV buffer (Mesa SVGA / vmwgfx, VMware Fusion on Apple Silicon).
++// The earlier sampler2D/FBO shader attempt hung the SVGA "GPU" on every
++// frame; doing the conversion in scalar C++ keeps RenderEngine inside the
++// single textured-quad it always emits for any other layer.
++//
++// Performance: 1280×720 YV12 is ~921 K pixels. Scalar BT.601 conversion
++// runs in roughly 5–15 ms per frame on a guest VM CPU — fine for the test
++// app and bounded by gralloc lock + glTexImage2D upload anyway.
++// ---------------------------------------------------------------------------
++
++namespace {
++
++// Integer BT.601 limited-range YUV → full-range RGB. Coefficients × 256:
++//   R = Y                  + 1.403 (V−128)
++//   G = Y − 0.344 (U−128)  − 0.714 (V−128)
++//   B = Y + 1.772 (U−128)
++inline uint8_t clamp_u8(int v) {
++    return (v < 0) ? 0 : (v > 255 ? 255 : (uint8_t)v);
++}
++
++inline void yuv_to_rgb_pixel(int y, int u, int v, uint8_t* out) {
++    const int c = y;
++    const int d = u - 128;
++    const int e = v - 128;
++    out[0] = clamp_u8(c + ((359 * e) >> 8));            // R
++    out[1] = clamp_u8(c - (( 88 * d + 183 * e) >> 8));  // G
++    out[2] = clamp_u8(c + ((454 * d) >> 8));            // B
++    out[3] = 0xFF;
++}
++
++}  // namespace
++
++bool GLESRenderEngine::bindYv12ViaCpuUpload(const sp<GraphicBuffer>& buffer,
++                                             uint32_t texName) {
++    const uint32_t w = buffer->getWidth();
++    const uint32_t height = buffer->getHeight();
++    if (w == 0 || height == 0) return false;
++
++    android_ycbcr ycbcr = {};
++    status_t s = buffer->lockYCbCr(GRALLOC_USAGE_SW_READ_OFTEN, &ycbcr);
++    if (s != NO_ERROR || !ycbcr.y || !ycbcr.cb || !ycbcr.cr) {
++        ALOGW("bindYv12ViaCpuUpload: lockYCbCr failed (%d)", s);
++        if (s == NO_ERROR) buffer->unlock();
++        return false;
++    }
++
++    const size_t rgbaSize = (size_t)w * height * 4;
++    if (mYv12CpuRgbaBuf.size() < rgbaSize) {
++        mYv12CpuRgbaBuf.resize(rgbaSize);
++    }
++    uint8_t* dst = mYv12CpuRgbaBuf.data();
++    const uint8_t* yPlane  = (const uint8_t*)ycbcr.y;
++    const uint8_t* cbPlane = (const uint8_t*)ycbcr.cb;
++    const uint8_t* crPlane = (const uint8_t*)ycbcr.cr;
++    const size_t ystride = ycbcr.ystride;
++    const size_t cstride = ycbcr.cstride;
++    const size_t cstep   = ycbcr.chroma_step ? ycbcr.chroma_step : 1;
++
++    for (uint32_t row = 0; row < height; ++row) {
++        const uint8_t* yRow  = yPlane + row * ystride;
++        const uint8_t* cbRow = cbPlane + (row / 2) * cstride;
++        const uint8_t* crRow = crPlane + (row / 2) * cstride;
++        uint8_t* outRow = dst + row * w * 4;
++        for (uint32_t col = 0; col < w; ++col) {
++            const int y = yRow[col];
++            const int u = cbRow[(col / 2) * cstep];
++            const int v = crRow[(col / 2) * cstep];
++            yuv_to_rgb_pixel(y, u, v, outRow + col * 4);
++        }
++    }
++
++    buffer->unlock();
++
++    if (!mYv12OutputTex) glGenTextures(1, &mYv12OutputTex);
++    glBindTexture(GL_TEXTURE_2D, mYv12OutputTex);
++    if (mYv12OutputW != w || mYv12OutputH != height) {
++        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)height, 0,
++                     GL_RGBA, GL_UNSIGNED_BYTE, dst);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++        mYv12OutputW = w;
++        mYv12OutputH = height;
++    } else {
++        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (GLsizei)w, (GLsizei)height,
++                        GL_RGBA, GL_UNSIGNED_BYTE, dst);
++    }
++
++    EGLImageKHR outImage = eglCreateImageKHR(mEGLDisplay, mEGLContext,
++                                              EGL_GL_TEXTURE_2D_KHR,
++                                              (EGLClientBuffer)(uintptr_t)mYv12OutputTex,
++                                              nullptr);
++    if (outImage == EGL_NO_IMAGE_KHR) {
++        ALOGE("bindYv12ViaCpuUpload: output EGLImage failed: %#x", eglGetError());
++        return false;
++    }
++
++    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texName);
++    glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, (GLeglImageOES)outImage);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++
++    eglDestroyImageKHR(mEGLDisplay, outImage);
++    return true;
++}
++
+ void GLESRenderEngine::bindExternalTextureImage(uint32_t texName, const Image& image) {
+     ATRACE_CALL();
+     const GLImage& glImage = static_cast<const GLImage&>(image);
+@@ -1020,19 +1497,30 @@ void GLESRenderEngine::bindExternalTextureBuffer(uint32_t texName, const sp<Grap
+                                                  const sp<Fence>& bufferFence) {
+     ATRACE_CALL();
+ 
+-    // NV12/YCbCr path. Must check BEFORE the normal cache path since NV12
+-    // buffers change content each frame (same buffer ID, new pixel data) and
+-    // the NV12 path doesn't go through mImageCache.
++    // NV12/YCbCr and YV12 paths. Must check BEFORE the normal cache path
++    // since these buffers change content each frame (same buffer ID, new
++    // pixel data) and the YUV bypass doesn't go through mImageCache.
+     {
+         const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
+-        if (h && h->magic == 0xABCDDCBA && h->format == DRM_FORMAT_NV12) {
+-            if (bufferFence != nullptr && bufferFence->isValid()) {
+-                bufferFence->waitForever("RenderEngine::bindNV12");
+-            }
+-            if (bindNv12(buffer, texName)) {
+-                return NO_ERROR;
++        if (h && h->magic == 0xABCDDCBA) {
++            if (h->format == DRM_FORMAT_NV12) {
++                if (bufferFence != nullptr && bufferFence->isValid()) {
++                    bufferFence->waitForever("RenderEngine::bindNV12");
++                }
++                if (bindNv12(buffer, texName)) {
++                    return NO_ERROR;
++                }
++                ALOGW("NV12 import failed, falling through to normal path");
++            } else if (h->format == DRM_FORMAT_YVU420 ||
++                       h->format == DRM_FORMAT_YVU420_ANDROID) {
++                if (bufferFence != nullptr && bufferFence->isValid()) {
++                    bufferFence->waitForever("RenderEngine::bindYV12");
++                }
++                if (bindYv12(buffer, texName)) {
++                    return NO_ERROR;
++                }
++                ALOGW("YV12 import failed, falling through to normal path");
+             }
+-            ALOGW("NV12 import failed, falling through to normal path");
+         }
+     }
+ 
+@@ -1116,6 +1604,22 @@ status_t GLESRenderEngine::cacheExternalTextureBufferInternal(const sp<GraphicBu
+         return BAD_VALUE;
+     }
+ 
++    // NV12 and YV12 buffers bypass mImageCache entirely — bindNv12 /
++    // bindYv12 import them via EGL_LINUX_DMA_BUF_EXT directly each frame
++    // (same buffer id, new pixel content). setNativeWindowBuffer below
++    // routes through EGL_NATIVE_BUFFER_ANDROID which Mesa rejects for
++    // these YUV formats with EGL_BAD_ACCESS, polluting the log every
++    // frame; skip the cache attempt and let the bind path handle it.
++    {
++        const auto* h = reinterpret_cast<const cros_gralloc_handle*>(buffer->handle);
++        if (h && h->magic == 0xABCDDCBA &&
++            (h->format == DRM_FORMAT_NV12 ||
++             h->format == DRM_FORMAT_YVU420 ||
++             h->format == DRM_FORMAT_YVU420_ANDROID)) {
++            return NO_ERROR;
++        }
++    }
++
+     {
+         std::lock_guard<std::mutex> lock(mRenderingMutex);
+         if (mImageCache.count(buffer->getId()) > 0) {
+diff --git a/libs/renderengine/gl/GLESRenderEngine.h b/libs/renderengine/gl/GLESRenderEngine.h
+index 20e2828e99..fb3a1dea63 100644
+--- a/libs/renderengine/gl/GLESRenderEngine.h
++++ b/libs/renderengine/gl/GLESRenderEngine.h
+@@ -23,6 +23,7 @@
+ #include <queue>
+ #include <thread>
+ #include <unordered_map>
++#include <vector>
+ 
+ #include <EGL/egl.h>
+ #include <EGL/eglext.h>
+@@ -304,6 +305,49 @@ private:
+     GLint mNv12UVTexLoc = -1;
+     void initNv12Shader();
+ 
++    // YV12 (DRM_FORMAT_YVU420) — three planes (Y, V, U) instead of NV12's
++    // two. AOSP soft video decoders (C2SoftAvcDec et al, ~8 codecs) hardcode
++    // HAL_PIXEL_FORMAT_YV12 for their output, so on hosts where the GPU
++    // composition path is required (no HW composer take-over of video
++    // layers — Apple/VMware fydroid-rt), RenderEngine has to import YV12
++    // dmabufs the same way it imports NV12. Same two-tier shape: direct
++    // multi-plane EGL_LINUX_DMA_BUF_EXT first, 3×R8 shader fallback if
++    // the driver rejects fourcc YVU420 import.
++    enum Yv12Path {
++        YV12_PATH_UNKNOWN,
++        YV12_PATH_DIRECT,      // EGL_LINUX_DMA_BUF_EXT, single 3-plane EGLImage
++        YV12_PATH_SHADER,      // EGL_LINUX_DMA_BUF_EXT, 3×R8 + GLSL combine
++        YV12_PATH_CPU_UPLOAD,  // lockYCbCr + glTexImage2D + GLSL combine
++        YV12_PATH_FAILED,      // every variant rejected; stop retrying
++    };
++    Yv12Path mYv12Path = YV12_PATH_UNKNOWN;
++    bool bindYv12(const sp<GraphicBuffer>& buffer, uint32_t texName);
++    bool bindYv12AsExternalImage(const sp<GraphicBuffer>& buffer, uint32_t texName);
++    bool bindYv12ViaShader(const sp<GraphicBuffer>& buffer, uint32_t texName);
++    bool bindYv12ViaCpuUpload(const sp<GraphicBuffer>& buffer, uint32_t texName);
++
++    bool mYv12ShaderInited = false;
++    GLuint mYv12Program = 0;     // EGLImage / samplerExternalOES path
++    GLuint mYv12VBO = 0;
++    GLuint mYv12FBO = 0;
++    GLuint mYv12YTex = 0;        // EGLImage Y (TEXTURE_EXTERNAL_OES)
++    GLuint mYv12UTex = 0;
++    GLuint mYv12VTex = 0;
++    GLuint mYv12OutputTex = 0;   // RGBA output (CPU upload writes directly to this)
++    uint32_t mYv12OutputW = 0;
++    uint32_t mYv12OutputH = 0;
++    GLint mYv12PosLoc = -1;
++    GLint mYv12YTexLoc = -1;
++    GLint mYv12UTexLoc = -1;
++    GLint mYv12VTexLoc = -1;
++    void initYv12Shader();
++
++    // CPU-upload path: YUV→RGB conversion runs on the CPU, output is one
++    // RGBA glTexImage2D per frame. No FBO, no shader, no multi-plane
++    // sampling — avoids the Mesa SVGA / vmwgfx hangs we hit trying to run
++    // the sampler2D Y/U/V combine shader on a guest VM with no real GPU.
++    std::vector<uint8_t> mYv12CpuRgbaBuf;
++
+     // Blur effect processor, only instantiated when a layer requests it.
+     BlurFilter* mBlurFilter = nullptr;
+ 
+-- 
+2.43.0
+

@@ -1,0 +1,67 @@
+From f462848ea0043823470ed45c3e62a02bc1f864dc Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 16:43:34 +0800
+Subject: [PATCH 6/6] audio.service: drop the Bluetooth Audio HAL probes (ARC
+ routes BT audio via CRAS)
+
+In fydroid/ARC all classic Bluetooth profiles are disabled in Android (only GATT)
+and BT audio is owned by the Chrome OS host (BlueZ + CRAS), routed through the
+normal CRAS audio HAL. Android never does A2DP, so the optional
+android.hardware.bluetooth.audio@2.x / bluetooth.a2dp@1.0 offload HALs and the
+android.hardware.bluetooth.audio-impl provider lib are not shipped. Probing them
+only logged benign warnings ("Could not register Bluetooth Audio API",
+"Failed to dlopen android.hardware.bluetooth.audio-impl.so", and the BT stack's
+"HalVersionManager No supported HAL version").
+
+Remove the Bluetooth Audio / Offload entries from optionalInterfaces and empty
+optionalInterfaceSharedLibs so the audio HAL service stops probing them.
+
+Verified on device: those warnings are gone; audio-hal + audioserver still
+come up; the BT adapter is unaffected.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I9f5ac4ab58935a9c7c31b4a2d5c22269aa01f536
+---
+ .../all-versions/default/service/service.cpp  | 24 ++++++-------------
+ 1 file changed, 7 insertions(+), 17 deletions(-)
+
+diff --git a/audio/common/all-versions/default/service/service.cpp b/audio/common/all-versions/default/service/service.cpp
+index 9959687094..a24dd4872c 100644
+--- a/audio/common/all-versions/default/service/service.cpp
++++ b/audio/common/all-versions/default/service/service.cpp
+@@ -131,25 +131,15 @@ int main(int /* argc */, char* /* argv */ []) {
+             "android.hardware.soundtrigger@2.1::ISoundTriggerHw",
+             "android.hardware.soundtrigger@2.0::ISoundTriggerHw",
+         },
+-        {
+-            "Bluetooth Audio API",
+-            "android.hardware.bluetooth.audio@2.2::IBluetoothAudioProvidersFactory",
+-            "android.hardware.bluetooth.audio@2.1::IBluetoothAudioProvidersFactory",
+-            "android.hardware.bluetooth.audio@2.0::IBluetoothAudioProvidersFactory",
+-        },
+-        // remove the old HIDL when Bluetooth Audio Hal V2 has offloading supported
+-        {
+-            "Bluetooth Audio Offload API",
+-            "android.hardware.bluetooth.a2dp@1.0::IBluetoothAudioOffload"
+-        }
++        // fydroid/ARC: the Bluetooth Audio (A2DP) and Offload HALs are intentionally
++        // omitted. Android does no A2DP here — all classic BT profiles are disabled
++        // and BT audio is owned by the Chrome OS host (BlueZ + CRAS), routed through
++        // the normal CRAS audio HAL. Probing these only logged benign
++        // "Could not register Bluetooth Audio API" warnings.
+     };
+ 
+-    const std::vector<std::pair<std::string,std::string>> optionalInterfaceSharedLibs = {
+-        {
+-            "android.hardware.bluetooth.audio-impl",
+-            "createIBluetoothAudioProviderFactory",
+-        },
+-    };
++    // fydroid/ARC: no external BT audio provider library (see above).
++    const std::vector<std::pair<std::string,std::string>> optionalInterfaceSharedLibs = {};
+     // clang-format on
+ 
+     for (const auto& listIter : mandatoryInterfaces) {
+-- 
+2.43.0
+

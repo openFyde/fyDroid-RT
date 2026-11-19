@@ -1,0 +1,105 @@
+// Copyright (C) 2024 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// external/v4l2_codec2 declares its own soong_namespace (AOSP-13 refactor), so
+// any module here that links libv4l2_codec2_* must live in a namespace that
+// imports it. This dir's namespace is activated via PRODUCT_SOONG_NAMESPACES
+// in fydroid_rt_common.mk.
+soong_namespace {
+    imports: [
+        "external/v4l2_codec2",
+    ],
+}
+
+// fydroid Mojo-backed C2 video pipeline. Holds the fydroid component store and
+// (as the port proceeds) the Mojo decode/encode backends + encode component, so
+// external/v4l2_codec2 stays near-pristine. Reuses upstream decode components
+// from libv4l2_codec2_components with a Mojo VideoDecoder injected at runtime.
+cc_library {
+    name: "libfydroid_c2_mojo",
+    vendor: true,
+
+    defaults: [
+        "libcodec2-hidl-defaults",
+    ],
+
+    srcs: [
+        "MojoComponentStore.cpp",
+        "MojoDecoder.cpp",
+        "MojoEncoder.cpp",
+    ],
+    export_include_dirs: ["."],
+
+    // For cros_gralloc_handle.h (NV12 plane offsets/strides/modifier).
+    include_dirs: [
+        "external/minigbm/cros_gralloc",
+    ],
+
+    header_libs: [
+        "libcodec2_internal",
+    ],
+    shared_libs: [
+        "libchrome",
+        "libcodec2_soft_common",
+        "libcutils",
+        "liblog",
+        "libstagefright_foundation",
+        "libui",
+        "libv4l2_codec2_common",
+        "libv4l2_codec2_components",
+        // Mojo IPC to Chrome's VideoDecodeAccelerator (arcbridge, Tier-3).
+        "libarcbridge",
+        "libarcbridgeservice",
+        "libmojo",
+        "libhidlbase",
+        "vendor.google_arc.arcvideobridge@1.0",
+    ],
+
+    cflags: [
+        "-Werror",
+        "-Wall",
+        "-Wno-unused-parameter",  // needed for libchrome/base codes
+        "-Wthread-safety",
+    ],
+
+    // Only consumed by the 64-bit fydroid_c2_service_mojo; avoid pulling the
+    // entire 32-bit codec2 stack.
+    compile_multilib: "64",
+}
+
+cc_binary {
+    name: "fydroid_c2_service_mojo",
+    stem: "android.hardware.media.c2@1.0-service-mojo",
+
+    defaults: [
+        "hidl_defaults",
+        "libcodec2-hidl-defaults",
+        "fydroid_perf_defaults",
+    ],
+    vendor: true,
+    relative_install_path: "hw",
+
+    srcs: [
+        "service.cpp",
+    ],
+
+    init_rc: ["fydroid_c2_service_mojo.rc"],
+
+    shared_libs: [
+        "liblog",
+        "libfydroid_c2_mojo",
+    ],
+
+    compile_multilib: "64",
+}

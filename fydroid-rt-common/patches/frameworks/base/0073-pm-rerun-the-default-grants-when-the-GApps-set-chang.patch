@@ -1,0 +1,151 @@
+From bd490ceec48ca174595b6476a425565d6c4fb195 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 14 Oct 2026 12:00:44 +0800
+Subject: [PATCH 73/75] pm: rerun the default grants when the GApps set
+ changes, not only on a new build
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Change-Id: Id409784a2b674154e56a4c59bff88b0a4cde44e2
+---
+ .../java/com/android/server/pm/Settings.java  | 80 +++++++++++++++++--
+ 1 file changed, 74 insertions(+), 6 deletions(-)
+
+diff --git a/services/core/java/com/android/server/pm/Settings.java b/services/core/java/com/android/server/pm/Settings.java
+index 792e623bcbb0..1a2a35fc2294 100644
+--- a/services/core/java/com/android/server/pm/Settings.java
++++ b/services/core/java/com/android/server/pm/Settings.java
+@@ -138,6 +138,7 @@ import com.android.server.utils.Watcher;
+ import dalvik.annotation.optimization.NeverCompile;
+ 
+ import libcore.io.IoUtils;
++import libcore.util.HexEncoding;
+ 
+ import org.xmlpull.v1.XmlPullParser;
+ import org.xmlpull.v1.XmlPullParserException;
+@@ -154,6 +155,8 @@ import java.io.OutputStreamWriter;
+ import java.io.PrintWriter;
+ import java.nio.charset.Charset;
+ import java.nio.charset.StandardCharsets;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
+ import java.text.SimpleDateFormat;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+@@ -166,6 +169,7 @@ import java.util.Map.Entry;
+ import java.util.Objects;
+ import java.util.Random;
+ import java.util.Set;
++import java.util.TreeSet;
+ import java.util.UUID;
+ import java.util.function.Consumer;
+ 
+@@ -1521,7 +1525,67 @@ public final class Settings implements Watchable, Snappable {
+     }
+ 
+     void setPermissionControllerVersion(long version) {
+-        mRuntimePermissionsPersistence.setPermissionControllerVersion(version);
++        mRuntimePermissionsPersistence.setPermissionControllerVersion(version,
++                computeDefaultGrantPackagesToken());
++    }
++
++    // fydroid: a short token for which packages named in
++    // /etc/default-permissions/ exceptions are installed as system apps, and at
++    // which version. It is part of the permission-upgrade fingerprint, so a
++    // change to that set -- GApps installed or reinstalled after the image's
++    // first boot, which is how they reach a board -- makes the next boot run
++    // DefaultPermissionGrantPolicy again. That pass is the only thing that
++    // applies the exceptions files, including the restricted permissions a
++    // shell `pm grant` cannot, and it leaves user-set permissions alone.
++    // Reads the same directories as
++    // DefaultPermissionGrantPolicy.getDefaultPermissionFiles().
++    private String computeDefaultGrantPackagesToken() {
++        final File[] partitions = {
++                Environment.getRootDirectory(), Environment.getVendorDirectory(),
++                Environment.getOdmDirectory(), Environment.getProductDirectory(),
++                Environment.getSystemExtDirectory(), Environment.getOemDirectory()};
++        final TreeSet<String> names = new TreeSet<>();
++        for (File partition : partitions) {
++            final File[] files = new File(partition, "etc/default-permissions").listFiles();
++            if (files == null) {
++                continue;
++            }
++            for (File file : files) {
++                if (!file.getName().endsWith(".xml")) {
++                    continue;
++                }
++                try (InputStream in = new FileInputStream(file)) {
++                    final XmlPullParser parser = Xml.newPullParser();
++                    parser.setInput(in, null);
++                    int type;
++                    while ((type = parser.next()) != XmlPullParser.END_DOCUMENT) {
++                        if (type == XmlPullParser.START_TAG
++                                && "exception".equals(parser.getName())) {
++                            final String pkg = parser.getAttributeValue(null, "package");
++                            if (pkg != null) {
++                                names.add(pkg);
++                            }
++                        }
++                    }
++                } catch (IOException | XmlPullParserException e) {
++                    Slog.w(TAG, "Cannot read default permissions file " + file, e);
++                }
++            }
++        }
++        final StringBuilder installed = new StringBuilder();
++        for (String name : names) {
++            final PackageSetting ps = mPackages.get(name);
++            if (ps != null && ps.isSystem()) {
++                installed.append(name).append(':').append(ps.getVersionCode()).append(';');
++            }
++        }
++        try {
++            final byte[] digest = MessageDigest.getInstance("SHA-256")
++                    .digest(installed.toString().getBytes(StandardCharsets.UTF_8));
++            return HexEncoding.encodeToString(Arrays.copyOf(digest, 6), false);
++        } catch (NoSuchAlgorithmException e) {
++            return Integer.toHexString(installed.toString().hashCode());
++        }
+     }
+ 
+     public VersionInfo findOrCreateVersion(String volumeUuid) {
+@@ -5439,7 +5503,10 @@ public final class Settings implements Watchable, Snappable {
+         // — GmsCore shipped with none of its dangerous permissions granted.
+         //
+         // Bump this whenever the default-permission content we ship changes; that
+-        // makes the next boot run exactly one more grant pass per user.
++        // makes the next boot run exactly one more grant pass per user. Changes
++        // to which exception packages are installed (GApps added after first
++        // boot) move the fingerprint on their own: see
++        // computeDefaultGrantPackagesToken().
+         private static final int FYDROID_DEFAULT_PERMISSIONS_EPOCH = 3;
+ 
+         private static final Random sRandom = new Random();
+@@ -5527,10 +5594,10 @@ public final class Settings implements Watchable, Snappable {
+             }
+         }
+ 
+-        public void setPermissionControllerVersion(long version) {
++        public void setPermissionControllerVersion(long version, String grantPackagesToken) {
+             synchronized (mLock) {
+                 int numUser = mFingerprints.size();
+-                mExtendedFingerprint = getExtendedFingerprint(version);
++                mExtendedFingerprint = getExtendedFingerprint(version, grantPackagesToken);
+ 
+                 for (int i = 0; i < numUser; i++) {
+                     int userId = mFingerprints.keyAt(i);
+@@ -5541,9 +5608,10 @@ public final class Settings implements Watchable, Snappable {
+             }
+         }
+ 
+-        private String getExtendedFingerprint(long version) {
++        private String getExtendedFingerprint(long version, String grantPackagesToken) {
+             return PackagePartitions.FINGERPRINT + "?pc_version=" + version
+-                    + "?fydroid_default_permissions=" + FYDROID_DEFAULT_PERMISSIONS_EPOCH;
++                    + "?fydroid_default_permissions=" + FYDROID_DEFAULT_PERMISSIONS_EPOCH
++                    + "?fydroid_grant_packages=" + grantPackagesToken;
+         }
+ 
+         private static long uniformRandom(double low, double high) {
+-- 
+2.43.0
+

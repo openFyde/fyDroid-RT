@@ -1,0 +1,53 @@
+From 909730a26a501f5003c670a48ce53bbe783e72ae Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 8 May 2026 15:25:35 +0800
+Subject: [PATCH] resolv_gold_test: build for primary arch only, not
+ 32-bit-only
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The original cc_test pinned compile_multilib: "32" as an MTS coverage
+workaround (b/151392634). On a 64-bit-only ARM product (no
+TARGET_2ND_ARCH), Soong produces no variant for the test, leaving
+ALL_MODULES.resolv_gold_test.BUILT_INSTALLED empty. native_test_list.mk
+then feeds that name into package-modules.mk's strict path, which
+aborts ckati with "Unknown installed file for module 'resolv_gold_test'".
+
+Switch to "first" so we always get a primary-arch build — 64-bit on
+both our boards (fydroid-rt_arm64 and fydroid-rt_apple). AOSP 14 later
+went to "both" with multilib suffixes, but that variant relies on
+newer Soong putting the per-arch suffix into cc_test data: install
+paths; in AOSP 11 the data still maps to a single
+testcases/<name>/testdata/pb.zip and dual-build collides with itself.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I79a790a3a2790c8bc059e91696f95c806cfff2c9
+---
+ tests/Android.bp | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/tests/Android.bp b/tests/Android.bp
+index 2c65e45f..f913ed03 100644
+--- a/tests/Android.bp
++++ b/tests/Android.bp
+@@ -116,9 +116,13 @@ cc_test {
+         "server_configurable_flags",
+         "stats_proto",
+     ],
+-    // MTS test binary can't be built under compile_multilib = "both" and having test data.
+-    // However, MTS coverage requires 32 bit test binary to run.
+-    compile_multilib: "prefer32",
++    // Original "compile_multilib: 32" was an MTS coverage workaround
++    // (b/151392634); 13 stock uses "prefer32", AOSP 14 later relaxed it.
++    // We build the primary arch only — which gives us 64-bit installable
++    // test binaries on both 64-bit-only and dual-arch boards, while
++    // sidestepping the AOSP-11 Soong limitation where cc_test data: files
++    // don't take the multilib suffix and conflict if both variants build.
++    compile_multilib: "first",
+ }
+ 
+ cc_test {
+-- 
+2.43.0
+

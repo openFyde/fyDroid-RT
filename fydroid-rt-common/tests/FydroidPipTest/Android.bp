@@ -1,0 +1,36 @@
+// Copyright (C) 2026 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Minimal Picture-in-Picture client, for bringing up and regression-testing the
+// fydroid PIP work (docs/picture-in-picture-plan.md).
+//
+// Deliberately NOT in PRODUCT_PACKAGES — it is a developer tool, not part of the
+// image. Build and install it explicitly:
+//
+//   m FydroidPipTest
+//   adb install -r $OUT/testcases/FydroidPipTest/*/FydroidPipTest.apk
+//     (or push the apk and `pm install -r` it inside the container)
+//
+// Drive it with:
+//   am start -n io.fydeos.piptest/.PipTestActivity            # then it PIPs after 3s
+//   am start -n io.fydeos.piptest/.PipTestActivity -e pip now # PIP immediately
+//   am start -n io.fydeos.piptest/.PipTestActivity -e pip off # stay windowed
+android_app {
+    name: "FydroidPipTest",
+    srcs: ["src/**/*.java"],
+    sdk_version: "current",
+    dex_preopt: {
+        enabled: false,
+    },
+}

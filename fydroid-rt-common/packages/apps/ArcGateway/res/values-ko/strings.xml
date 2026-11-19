@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_channel_name">패키지 설치</string>
+    <string name="notification_channel_description">APK 설치 진행 상황</string>
+    <string name="mode_user">[사용자]</string>
+    <string name="mode_policy">[정책]</string>
+    <string name="installing">%1$s 설치 중: %2$s</string>
+    <string name="installed">%1$s 설치 완료: %2$s</string>
+    <string name="install_failed">%1$s 설치 실패: %2$s</string>
+</resources>

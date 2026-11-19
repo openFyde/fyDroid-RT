@@ -1,0 +1,96 @@
+From f5d2973577cad8ef3a3c42ed1c7f34f50de5d7e1 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 1 Jun 2026 19:05:25 +0800
+Subject: [PATCH] Add armv8-4a as a recognized arm64 architecture variant
+
+Ported from the AOSP 11 fydroid-rt patch to AOSP 13's Soong layout.
+Registers armv8-4a so the apple board (M-series under VMware Fusion,
+ARMv8.4-A) can build; strict allowlist extension, existing armv8-a /
+armv8-2a boards unaffected.
+
+AOSP 13 structural differences handled vs the AOSP 11 patch:
+- archVariants moved android/arch.go -> android/arch_list.go, and the
+  Arm64 variant strings use dash form ("armv8-4a"), not underscore.
+- cc/config/arm64_device.go dropped the "Clang" infix
+  (Arm64Armv8ACflags, not Arm64ClangArmv8ACflags) and switched to
+  exportedVars.ExportStringListStaticVariable; new branchprot/dotprod
+  variants sit alongside. Added the cflags map entry (-march=armv8.4-a),
+  the exported Arm64Armv84ACflags var, the cflagsVar mapping, and the
+  arm64ToolchainFactory switch case.
+- rust/config/arm64_device.go: empty rustflags entry as before.
+
+Change-Id: I2c15efee2fe4e461a4b539bc982218f839945db4
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ android/arch_list.go        | 1 +
+ cc/config/arm64_device.go   | 8 +++++++-
+ rust/config/arm64_device.go | 1 +
+ 3 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/android/arch_list.go b/android/arch_list.go
+index cbf8e7a02..c969adc53 100644
+--- a/android/arch_list.go
++++ b/android/arch_list.go
+@@ -26,6 +26,7 @@ var archVariants = map[ArchType][]string{
+ 		"armv8-a-branchprot",
+ 		"armv8-2a",
+ 		"armv8-2a-dotprod",
++		"armv8-4a",
+ 	},
+ 	X86: {
+ 		"amberlake",
+diff --git a/cc/config/arm64_device.go b/cc/config/arm64_device.go
+index 66087e6f0..74be29be7 100644
+--- a/cc/config/arm64_device.go
++++ b/cc/config/arm64_device.go
+@@ -41,6 +41,9 @@ var (
+ 		"armv8-2a-dotprod": []string{
+ 			"-march=armv8.2-a+dotprod",
+ 		},
++		"armv8-4a": []string{
++			"-march=armv8.4-a",
++		},
+ 	}
+ 
+ 	arm64Ldflags = []string{
+@@ -110,6 +113,7 @@ func init() {
+ 	exportedVars.ExportStringListStaticVariable("Arm64Armv8ABranchProtCflags", arm64ArchVariantCflags["armv8-a-branchprot"])
+ 	exportedVars.ExportStringListStaticVariable("Arm64Armv82ACflags", arm64ArchVariantCflags["armv8-2a"])
+ 	exportedVars.ExportStringListStaticVariable("Arm64Armv82ADotprodCflags", arm64ArchVariantCflags["armv8-2a-dotprod"])
++	exportedVars.ExportStringListStaticVariable("Arm64Armv84ACflags", arm64ArchVariantCflags["armv8-4a"])
+ 
+ 	exportedVars.ExportStringListStaticVariable("Arm64CortexA53Cflags", arm64CpuVariantCflags["cortex-a53"])
+ 	exportedVars.ExportStringListStaticVariable("Arm64CortexA55Cflags", arm64CpuVariantCflags["cortex-a55"])
+@@ -126,6 +130,7 @@ var (
+ 		"armv8-a-branchprot": "${config.Arm64Armv8ABranchProtCflags}",
+ 		"armv8-2a":           "${config.Arm64Armv82ACflags}",
+ 		"armv8-2a-dotprod":   "${config.Arm64Armv82ADotprodCflags}",
++		"armv8-4a":           "${config.Arm64Armv84ACflags}",
+ 	}
+ 
+ 	arm64CpuVariantCflagsVar = map[string]string{
+@@ -214,7 +219,8 @@ func arm64ToolchainFactory(arch android.Arch) Toolchain {
+ 	case "armv8-a-branchprot":
+ 	case "armv8-2a":
+ 	case "armv8-2a-dotprod":
+-		// Nothing extra for armv8-a/armv8-2a
++	case "armv8-4a":
++		// Nothing extra for armv8-a/armv8-2a/armv8-4a
+ 	default:
+ 		panic(fmt.Sprintf("Unknown ARM architecture version: %q", arch.ArchVariant))
+ 	}
+diff --git a/rust/config/arm64_device.go b/rust/config/arm64_device.go
+index 186e571dd..b0ba12373 100644
+--- a/rust/config/arm64_device.go
++++ b/rust/config/arm64_device.go
+@@ -30,6 +30,7 @@ var (
+ 		"armv8-a-branchprot": []string{},
+ 		"armv8-2a":           []string{},
+ 		"armv8-2a-dotprod":   []string{},
++		"armv8-4a":           []string{},
+ 	}
+ )
+ 
+-- 
+2.43.0
+

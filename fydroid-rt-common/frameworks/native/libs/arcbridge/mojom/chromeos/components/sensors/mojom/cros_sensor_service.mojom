@@ -1,0 +1,21 @@
+// Copyright 2020 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// NOTE: This mojom exists in two places and must be kept in sync:
+//       Chromium:  //chromeos/components/sensors/mojom/
+//       Chrome OS: src/platform2/iioservice/mojo/
+
+module chromeos.sensors.mojom;
+
+import "chromeos/components/sensors/mojom/sensor.mojom";
+
+// The CrOS sensor HAL Mojo server.
+interface SensorHalServer {
+  CreateChannel@0(pending_receiver<SensorService> sensor_service_request);
+};
+
+// The CrOS sensor HAL Mojo client.
+interface SensorHalClient {
+  SetUpChannel@0(pending_remote<SensorService> sensor_service_ptr);
+};

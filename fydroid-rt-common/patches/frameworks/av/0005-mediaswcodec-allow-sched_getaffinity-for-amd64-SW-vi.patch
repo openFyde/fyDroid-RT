@@ -1,0 +1,52 @@
+From 7d00a1d7e62d457630cd809e92791a3176404afe Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 30 Jun 2026 16:16:46 +0800
+Subject: [PATCH 5/5] mediaswcodec: allow sched_getaffinity for amd64 SW video
+ decode
+
+On amd64 the SW video decoders allocate their output graphic buffer through
+cros_gralloc/minigbm's amdgpu backend, which dlopens Mesa (libgallium_dri.so).
+Mesa's CPU-topology init calls sched_getaffinity, which the mediaswcodec seccomp
+filter did not permit, so the first SW decode (e.g. c2.android.avc.decoder)
+SIGSYS-crashed media.swcodec. Add sched_getaffinity to the x86/x86_64 policies.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Change-Id: Ic3726758318ed184be8ae9eddda1e12520592982
+---
+ services/mediacodec/seccomp_policy/mediaswcodec-x86.policy    | 4 ++++
+ services/mediacodec/seccomp_policy/mediaswcodec-x86_64.policy | 4 ++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/services/mediacodec/seccomp_policy/mediaswcodec-x86.policy b/services/mediacodec/seccomp_policy/mediaswcodec-x86.policy
+index 9bafe7bc55..c3621300b9 100644
+--- a/services/mediacodec/seccomp_policy/mediaswcodec-x86.policy
++++ b/services/mediacodec/seccomp_policy/mediaswcodec-x86.policy
+@@ -58,6 +58,10 @@ set_tid_address: 1
+ write: 1
+ nanosleep: 1
+ sched_setscheduler: 1
++# minigbm's amdgpu graphic-buffer allocation dlopens Mesa (libgallium_dri.so),
++# whose CPU-topology init calls sched_getaffinity. Without it, SW video decoders
++# (which allocate graphic output buffers) SIGSYS-crash media.swcodec on amd64.
++sched_getaffinity: 1
+ uname: 1
+ memfd_create: 1
+ ftruncate: 1
+diff --git a/services/mediacodec/seccomp_policy/mediaswcodec-x86_64.policy b/services/mediacodec/seccomp_policy/mediaswcodec-x86_64.policy
+index b0ed0402bb..54c3f012ef 100644
+--- a/services/mediacodec/seccomp_policy/mediaswcodec-x86_64.policy
++++ b/services/mediacodec/seccomp_policy/mediaswcodec-x86_64.policy
+@@ -58,6 +58,10 @@ set_tid_address: 1
+ write: 1
+ nanosleep: 1
+ sched_setscheduler: 1
++# minigbm's amdgpu graphic-buffer allocation dlopens Mesa (libgallium_dri.so),
++# whose CPU-topology init calls sched_getaffinity. Without it, SW video decoders
++# (which allocate graphic output buffers) SIGSYS-crash media.swcodec on amd64.
++sched_getaffinity: 1
+ uname: 1
+ memfd_create: 1
+ ftruncate: 1
+-- 
+2.43.0
+

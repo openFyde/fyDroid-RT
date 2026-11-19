@@ -1,0 +1,73 @@
+From 98ac53e9948a68f4b29d8c459c074a0cf709e3d2 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Fri, 4 Sep 2026 14:27:19 +0800
+Subject: [PATCH 60/75] wm: mark system alert, dialog and error windows as
+ standalone modals
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Change-Id: If5a446a86b27942ff69f8ac535996b715a4fd183
+---
+ .../com/android/server/wm/WindowState.java    | 37 ++++++++++++++++++-
+ 1 file changed, 36 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/wm/WindowState.java b/services/core/java/com/android/server/wm/WindowState.java
+index ff5112ee0bce..0fe4ea318bae 100644
+--- a/services/core/java/com/android/server/wm/WindowState.java
++++ b/services/core/java/com/android/server/wm/WindowState.java
+@@ -97,7 +97,9 @@ import static android.view.WindowManager.LayoutParams.TYPE_SEARCH_BAR;
+ import static android.view.WindowManager.LayoutParams.TYPE_STATUS_BAR;
+ import static android.view.WindowManager.LayoutParams.TYPE_STATUS_BAR_ADDITIONAL;
+ import static android.view.WindowManager.LayoutParams.TYPE_STATUS_BAR_SUB_PANEL;
++import static android.view.WindowManager.LayoutParams.TYPE_SYSTEM_ALERT;
+ import static android.view.WindowManager.LayoutParams.TYPE_SYSTEM_DIALOG;
++import static android.view.WindowManager.LayoutParams.TYPE_SYSTEM_ERROR;
+ import static android.view.WindowManager.LayoutParams.TYPE_TOAST;
+ import static android.view.WindowManager.LayoutParams.TYPE_VOLUME_OVERLAY;
+ import static android.view.WindowManager.LayoutParams.TYPE_WALLPAPER;
+@@ -5985,9 +5987,42 @@ class WindowState extends WindowContainer<WindowState> implements WindowManagerP
+         return task != null && !task.isTranslucent(null /* starting */);
+     }
+ 
++    /**
++     * A system modal dialog: the ANR ("isn't responding") and crash ("has
++     * stopped") dialogs, which android.app.BaseErrorDialog gives
++     * TYPE_SYSTEM_ALERT, plus the sibling TYPE_SYSTEM_DIALOG and
++     * TYPE_SYSTEM_ERROR types. system_server owns them, so they belong to no
++     * task and no activity and therefore carry neither IsDialogTask nor the
++     * floating-activity marker above — nothing routed them to a Wayland surface
++     * and the compositor's classifyWindowType() dropped all three on the
++     * SKIP path, which is handled nowhere.
++     *
++     * The window stayed fully live on the Android side while never being drawn:
++     * an ANR dialog is focusable, sits above every app layer and is TOUCH-MODAL,
++     * so InputDispatcher hands it a touchable region covering the whole display
++     * and it claims every MotionEvent. One ANR therefore locked ALL Android
++     * input, invisibly and permanently, with no way to dismiss the dialog that
++     * caused it.
++     *
++     * Marking it here is what makes it a real window: the metadata strips the
++     * TaskId (a no-op for these — they have none), routes the layer to a
++     * standalone MODAL Wayland surface, and — the part that cannot be done from
++     * the compositor alone — anchors the SurfaceFlinger input frame at the
++     * screen origin (Layer#fillInputFrameInfo). That last step is required
++     * because a standalone container's Wayland touch offset is its
++     * containerFrame() == (0,0), so the coordinate injected into Android is
++     * surface-local; without it the dialog would draw correctly and be
++     * completely untappable.
++     */
++    private boolean isSystemModalDialogWindow() {
++        return mAttrs.type == TYPE_SYSTEM_ALERT
++                || mAttrs.type == TYPE_SYSTEM_DIALOG
++                || mAttrs.type == TYPE_SYSTEM_ERROR;
++    }
++
+     @Override
+     void setInitialSurfaceControlProperties(SurfaceControl.Builder b) {
+-        if (isFloatingDialogWindow()) {
++        if (isFloatingDialogWindow() || isSystemModalDialogWindow()) {
+             b.setMetadata(SurfaceControl.METADATA_IS_FLOATING_ACTIVITY, 1);
+         }
+         super.setInitialSurfaceControlProperties(b);
+-- 
+2.43.0
+

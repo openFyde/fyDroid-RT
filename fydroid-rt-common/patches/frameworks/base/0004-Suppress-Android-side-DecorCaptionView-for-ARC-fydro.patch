@@ -1,0 +1,41 @@
+From 552b9cbd4984318c74448adb14c899a3cbec1963 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 16 Apr 2026 16:00:22 +0800
+Subject: [PATCH 04/75] Suppress Android-side DecorCaptionView for ARC/fydroid
+ windows
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Chrome draws the window caption for ARC windows via the aura-shell
+Wayland protocol. When WindowConfiguration.hasWindowDecorCaption()
+returned true for standard freeform activities, Android's DecorView
+would stack its own caption on top — producing a duplicate title bar.
+
+Force the method to return false so only Chrome's caption is visible.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I1cb9a4d096d80a7cba5059bbe8bb7a0bf22e69c5
+---
+ core/java/android/app/WindowConfiguration.java | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/core/java/android/app/WindowConfiguration.java b/core/java/android/app/WindowConfiguration.java
+index 397c8e010bad..87e9bd8936bf 100644
+--- a/core/java/android/app/WindowConfiguration.java
++++ b/core/java/android/app/WindowConfiguration.java
+@@ -791,8 +791,9 @@ public class WindowConfiguration implements Parcelable, Comparable<WindowConfigu
+      * @hide
+      */
+     public boolean hasWindowDecorCaption() {
+-        return mActivityType == ACTIVITY_TYPE_STANDARD && (mWindowingMode == WINDOWING_MODE_FREEFORM
+-                || mDisplayWindowingMode == WINDOWING_MODE_FREEFORM);
++        // ARC/fydroid: Chrome draws the window caption via aura-shell; suppress the
++        // Android-side DecorCaptionView so a second caption isn't stacked on top.
++        return false;
+     }
+ 
+     /**
+-- 
+2.43.0
+

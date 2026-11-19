@@ -1,0 +1,60 @@
+// Copyright (C) 2024 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Mojo-based libbluetooth.so replacement for fydroid-rt.
+//
+// Replaces the standard Fluoride BT stack with a thin proxy that forwards
+// bt_interface_t calls to Chrome OS via Mojo (BluetoothHost), and receives
+// callbacks from Chrome OS via BluetoothInstance.
+//
+// The JNI layer (libbluetooth_jni.so) does dlopen("libbluetooth.so") +
+// dlsym("bluetoothInterface") to get a bt_interface_t*. We export that
+// symbol backed by Mojo instead of the Fluoride stack.
+
+// Built as libbluetooth_arc.so — deployed to device as libbluetooth.so
+// (renaming at deploy time avoids build conflict with AOSP's libbluetooth).
+cc_library_shared {
+    name: "libbluetooth_arc",
+
+    srcs: [
+        "bluetooth_arc_service.cpp",
+        "bt_gatt_arc.cpp",
+        "bt_interface_arc.cpp",
+    ],
+
+    shared_libs: [
+        "libarcbridge",
+        "libarcbridgeservice",
+        "libbase",
+        "libchrome",
+        "libhidlbase",
+        "liblog",
+        "libmojo",
+        "libutils",
+        "vendor.google_arc.arcbridge@1.0",
+    ],
+
+    header_libs: [
+        "libbluetooth_headers",
+    ],
+
+    static_libs: [
+        "libbluetooth-types",
+    ],
+
+    cflags: [
+        "-Wno-unused-parameter",
+        "-DLOG_TAG=\"BluetoothArc\"",
+    ],
+}

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Privileged permissions for the bundled F-Droid store.
+
+    These belong to org.fdroid.fdroid.privileged, NOT to org.fdroid.fdroid.
+
+    F-Droid's own manifest never declares INSTALL_PACKAGES or DELETE_PACKAGES;
+    it asks only for REQUEST_INSTALL_PACKAGES / REQUEST_DELETE_PACKAGES, the
+    variants that prompt the user. Android grants a package only what that
+    package requests, so allowlisting the install permissions against
+    org.fdroid.fdroid granted nothing at all — F-Droid still fell back to
+    SessionInstaller and raised the PackageInstaller confirmation UI for every
+    install and every update.
+
+    The package that does request them is the Privileged Extension, which
+    exports org.fdroid.fdroid.privileged.IPrivilegedService for F-Droid's
+    PrivilegedInstaller to bind. Both permissions below are signature|privileged
+    in AOSP 13, so this allowlist is what lets a priv-app hold them.
+
+    Note this product currently sets ro.control_privapp_permissions=log
+    (fydroid_rt_common.mk), not enforce, and under log the check is both
+    non-fatal and permissive: PermissionManagerServiceImpl ends it with
+    `return !CONTROL_PRIVAPP_PERMISSIONS_ENFORCE`, so a missing entry is granted
+    anyway with only a Slog.w, and the violations set that would abort boot is
+    populated solely under enforce. The entry below therefore does not change
+    behaviour today — it is what keeps the extension working on the day this
+    product moves to enforce, which is the direction of travel. What actually
+    fixes silent install today is shipping the extension apk at all.
+
+    Nothing is listed for org.fdroid.fdroid: checked against
+    frameworks/base/core/res/AndroidManifest.xml, every permission it requests
+    is normal, dangerous, or signature-without-privileged (REQUEST_INSTALL_
+    PACKAGES is signature|appop, MANAGE_EXTERNAL_STORAGE is
+    signature|appop|preinstalled), and none of those are allowlisted here.
+-->
+<permissions>
+    <privapp-permissions package="org.fdroid.fdroid.privileged">
+        <permission name="android.permission.INSTALL_PACKAGES"/>
+        <permission name="android.permission.DELETE_PACKAGES"/>
+    </privapp-permissions>
+</permissions>

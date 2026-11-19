@@ -1,0 +1,1 @@
+../../../common/cras_alsa_card_info.h

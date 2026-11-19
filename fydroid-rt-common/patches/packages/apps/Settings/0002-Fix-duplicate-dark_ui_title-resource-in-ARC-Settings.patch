@@ -1,0 +1,43 @@
+From 596abad886464be97d7a84c50a9bd634daa2cc1e Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 14 Apr 2026 16:50:59 +0800
+Subject: [PATCH 2/5] Fix duplicate dark_ui_title resource in ARC Settings
+
+Rename to arc_dark_theme_title to avoid conflict with existing AOSP string.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I8a6a1ff54df5ee8770d9c6a1273cfd91dd3d2ec5
+---
+ res/values/strings.xml                                          | 2 +-
+ .../settings/development/ArcDarkThemePreferenceController.java  | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/res/values/strings.xml b/res/values/strings.xml
+index 6204c9662b4..a6b9fd96659 100644
+--- a/res/values/strings.xml
++++ b/res/values/strings.xml
+@@ -14553,7 +14553,7 @@
+ 
+     <!-- ARC development settings strings -->
+     <string name="add_caption_description_title">Caption description</string>
+-    <string name="dark_ui_title">Dark theme</string>
++    <string name="arc_dark_theme_title">Dark theme</string>
+     <string name="force_fullscreen_title">Force fullscreen</string>
+     <string name="mouse_touchscreen_compat_title">Mouse touchscreen compatibility</string>
+     <string name="mouse_touchscreen_compat_summary">Enable mouse-to-touchscreen compatibility mode</string>
+diff --git a/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java b/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
+index 489894c09c5..d8c553299a1 100644
+--- a/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
++++ b/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
+@@ -46,7 +46,7 @@ public class ArcDarkThemePreferenceController extends ArcWmFeatureSwitchPreferen
+ 
+     @Override
+     public String getPreferenceTitle() {
+-        return mContext.getResources().getString(R.string.dark_ui_title);
++        return mContext.getResources().getString(R.string.arc_dark_theme_title);
+     }
+ 
+     @Override
+-- 
+2.43.0
+

@@ -1,0 +1,111 @@
+From d58f5800ecc58f68b977e4c5bf99be07159f2e09 Mon Sep 17 00:00:00 2001
+From: simon <yang@fydeos.io>
+Date: Wed, 13 May 2026 12:13:23 +0800
+Subject: [PATCH 4/4] EmulatedVolume: mkdir source before bind to derive
+ FUSE/esdfs subdir
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Patch 0003 added a retry loop for the /Android/obb bind, but the same
+race shows up earlier on /Android/data — and on Apple Silicon under
+VMware Fusion 6 retries × 500 ms (3 s wall-clock) is not enough for
+esdfs to derive the subdir on its own (observed in the field: every
+OBB bind attempt 1..6 ENOENTs, scope_guard tears down the previously
+successful DATA bind, /storage/emulated/0 ends up empty, and
+PackageInstaller fails with EACCES on Files-handed APKs).
+
+What actually triggers the derivation is a write — `mkdir(source, 0771)`
+on the FUSE/esdfs path forces the daemon to materialize the subdir. A
+plain stat() / opendir() does not. The mkdir is idempotent: if the
+subdir already exists it returns EEXIST and we proceed straight to the
+bind, so steady-state behavior is unchanged on hosts where the first
+attempt already succeeds.
+
+Refactor both DATA and OBB through a single bindWithDerive helper that
+mkdir-then-bind with the same 6× / 500 ms backoff, mkdir-ing again on
+each retry. After this change both binds succeed first try in the wild
+on Apple/VMware (observed boot: 04:06:44.666 DATA, 04:06:44.667 OBB,
+04:06:44.667 installer-OBB — no retry warnings).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Change-Id: I781e19db176887ca7ee1db89ee85847f2bc92552
+---
+ model/EmulatedVolume.cpp | 51 ++++++++++++++++++++++++++--------------
+ 1 file changed, 34 insertions(+), 17 deletions(-)
+
+diff --git a/model/EmulatedVolume.cpp b/model/EmulatedVolume.cpp
+index 8d3c3d69..221615ff 100644
+--- a/model/EmulatedVolume.cpp
++++ b/model/EmulatedVolume.cpp
+@@ -120,10 +120,42 @@ status_t EmulatedVolume::mountFuseBindMounts() {
+     status_t status = OK;
+     // Zygote will unmount these dirs if app data isolation is enabled, so apps
+     // cannot access these dirs directly.
++    //
++    // ARC++/fydroid-rt: on faster hosts (Apple Silicon under VMware Fusion)
++    // vold's binds of /Android/data and /Android/obb race the FUSE/esdfs
++    // lazy-derivation path. The bind syscall reaches the kernel before the
++    // daemon has materialized the subdir for that user, so the bind returns
++    // ENOENT and the surrounding scope_guard tears down every previously
++    // successful mount in the chain, leaving /storage/emulated/0 empty and any
++    // Chrome-handoff to PackageInstaller (kant-test.apk from the Files app)
++    // failing with EACCES on open. Slower hosts (RK3588) hide this because the
++    // 1+ second of FUSE-mount setup is enough wall-clock for both subdirs to
++    // exist by the time vold gets here.
++    //
++    // Forcing a mkdir on the source path triggers esdfs to derive the subdir
++    // (observed: stat() / opendir() are not always enough; mkdir is). The mkdir
++    // is idempotent — if the path already exists, mkdir() returns EEXIST and we
++    // proceed. Add a short retry on the bind itself as belt-and-suspenders for
++    // the very edge of the race window. (13 binds these unconditionally — no
++    // mAppDataIsolationEnabled gate — so the lambda is applied at top level.)
++    auto bindWithDerive = [&](const std::string& src, const std::string& dst,
++                              const char* tag) -> status_t {
++        (void)mkdir(src.c_str(), 0771);  // best-effort derive; ignore result
++        for (int attempt = 0; attempt < 6; ++attempt) {
++            status_t s = doFuseBindMount(src, dst, pathsToUnmount);
++            if (s == OK) return OK;
++            LOG(WARNING) << tag << " bind attempt " << (attempt + 1)
++                         << " failed; retrying after 500ms";
++            usleep(500 * 1000);
++            (void)mkdir(src.c_str(), 0771);  // re-derive each round
++        }
++        return -errno;
++    };
++
+     std::string androidDataSource = StringPrintf("%s/data", androidSource.c_str());
+     std::string androidDataTarget(
+             StringPrintf("/mnt/user/%d/%s/%d/Android/data", userId, label.c_str(), userId));
+-    status = doFuseBindMount(androidDataSource, androidDataTarget, pathsToUnmount);
++    status = bindWithDerive(androidDataSource, androidDataTarget, "DATA");
+     if (status != OK) {
+         return status;
+     }
+@@ -131,22 +163,7 @@ status_t EmulatedVolume::mountFuseBindMounts() {
+     std::string androidObbSource = StringPrintf("%s/obb", androidSource.c_str());
+     std::string androidObbTarget(
+             StringPrintf("/mnt/user/%d/%s/%d/Android/obb", userId, label.c_str(), userId));
+-    // ARC++/fydroid-rt: on faster hosts (apple-silicon under VMware Fusion)
+-    // vold's bind of /Android/obb can race the FUSE daemon — at this exact
+-    // instant the FUSE namespace has /Android/data populated (the bind just
+-    // succeeded) but /Android/obb has not yet been derived, and the bind
+-    // returns ENOENT. The same code/path succeeds on slower hosts (RK3588)
+-    // because the 1+ second of FUSE-mount setup gives the daemon enough
+-    // wall-clock to expose obb. Retry the bind with backoff up to ~3 s
+-    // before giving up — the steady-state behavior is unchanged on hosts
+-    // where the first attempt already succeeds.
+-    for (int attempt = 0; attempt < 6; ++attempt) {
+-        status = doFuseBindMount(androidObbSource, androidObbTarget, pathsToUnmount);
+-        if (status == OK) break;
+-        LOG(WARNING) << "OBB bind attempt " << (attempt + 1)
+-                     << " failed; retrying after 500ms";
+-        usleep(500 * 1000);
+-    }
++    status = bindWithDerive(androidObbSource, androidObbTarget, "OBB");
+     if (status != OK) {
+         return status;
+     }
+-- 
+2.43.0
+

@@ -1,0 +1,43 @@
+From 6a01e40597e5729f85aaf92b1b55f549a0f103a1 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 2 Jun 2026 12:31:34 +0800
+Subject: [PATCH 2/7] Remove packages unused in ARC++ container
+
+Remove SecureElement and DynamicSystemInstallationService from
+base_system.mk; not used in the ARC++ container environment:
+- SecureElement: probes for SE HALs that don't exist, wasting boot time
+- DynamicSystemInstallationService: DSU not applicable to the container
+
+Ported from the AOSP 11 fydroid-rt patch. The third package the AOSP 11
+patch removed, iorapd, is already absent from AOSP 13's base_system.mk
+(removed upstream), so that hunk is dropped as obsolete.
+
+Change-Id: I718c6d92bb7e9a3a9c21b2270ee5e8018b05fccf
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ target/product/base_system.mk | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/target/product/base_system.mk b/target/product/base_system.mk
+index b0870c32aa..99f51361fb 100644
+--- a/target/product/base_system.mk
++++ b/target/product/base_system.mk
+@@ -86,7 +86,6 @@ PRODUCT_PACKAGES += \
+     dump.erofs \
+     dumpstate \
+     dumpsys \
+-    DynamicSystemInstallationService \
+     e2fsck \
+     ExtShared \
+     flags_health_check \
+@@ -249,7 +248,6 @@ PRODUCT_PACKAGES += \
+     screencap \
+     sdcard \
+     secdiscard \
+-    SecureElement \
+     selinux_policy_system \
+     sensorservice \
+     service \
+-- 
+2.43.0
+

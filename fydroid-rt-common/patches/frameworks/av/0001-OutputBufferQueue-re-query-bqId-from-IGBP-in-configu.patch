@@ -1,0 +1,70 @@
+From b35607f8122bce670f7ad32a9684e8b488431b40 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Tue, 31 Mar 2026 13:58:43 +0800
+Subject: [PATCH 1/5] OutputBufferQueue: re-query bqId from IGBP in configure()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The proprietary libcodec2_client.so passes a stale bqId (0x900) to
+configure() that was computed with a different getUniqueId() formula
+than our AOSP libgui.so uses. This causes bqId mismatch in
+outputBuffer() — decoded video frames get DEAD_OBJECT instead of
+being queued to the Surface.
+
+Fix by re-querying igbp->getUniqueId() directly in configure() to
+get the correct value from our BufferQueueProducer.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: Ia63237c4b286285387333046f472ec3189629e53
+---
+ media/codec2/hidl/client/output.cpp | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/media/codec2/hidl/client/output.cpp b/media/codec2/hidl/client/output.cpp
+index f789030abb..c82be98741 100644
+--- a/media/codec2/hidl/client/output.cpp
++++ b/media/codec2/hidl/client/output.cpp
+@@ -30,6 +30,7 @@
+ #include <C2PlatformSupport.h>
+ #include <C2SurfaceSyncObj.h>
+ 
++#include <inttypes.h>
+ #include <iomanip>
+ 
+ namespace android {
+@@ -253,6 +254,17 @@ bool OutputBufferQueue::configure(const sp<IGraphicBufferProducer>& igbp,
+ 
+         mIgbp = igbp;
+         mGeneration = generation;
++        // The bqId from the caller (libcodec2_client) may be stale or computed
++        // with a different getUniqueId() formula. Re-query directly.
++        if (igbp) {
++            uint64_t realBqId = 0;
++            if (igbp->getUniqueId(&realBqId) == OK && realBqId != 0) {
++                ALOGI("OutputBufferQueue::configure: overriding bqId %" PRIu64
++                      " (0x%" PRIx64 ") -> %" PRIu64 " (0x%" PRIx64 ")",
++                      bqId, bqId, realBqId, realBqId);
++                bqId = realBqId;
++            }
++        }
+         mBqId = bqId;
+         mOwner = std::make_shared<int>(0);
+         mMaxDequeueBufferCount = maxDequeueBufferCount;
+@@ -446,9 +458,10 @@ status_t OutputBufferQueue::outputBuffer(
+     }
+     if (bqId != outputBqId || generation != outputGeneration) {
+         int32_t diff = (int32_t) outputGeneration - (int32_t) generation;
+-        LOG(WARNING) << "outputBuffer -- buffers from old generation to "
+-                     << outputGeneration << " , diff: " << diff
+-                     << " , slot: " << bqSlot;
++        LOG(WARNING) << "outputBuffer -- bqId mismatch: block bqId=0x" << std::hex << bqId
++                     << " outputBqId=0x" << outputBqId << std::dec
++                     << " gen=" << generation << " outputGen=" << outputGeneration
++                     << " diff=" << diff << " slot=" << bqSlot;
+         return DEAD_OBJECT;
+     }
+ 
+-- 
+2.43.0
+

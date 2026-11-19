@@ -1,0 +1,64 @@
+// Copyright (C) 2026 Fyde Innovations
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// CRAS client library built from Chrome OS source (protocol v7).
+// Replaces AOSP external/adhd/cras/src libcras (protocol v5) which is
+// incompatible with the CRAS server running on our target devices.
+cc_library_static {
+    name: "libcras_fydroid",
+
+    srcs: [
+        "common/cras_audio_format.c",
+        "common/cras_config.c",
+        "common/cras_string.c",
+        "common/cras_file_wait.c",
+        "common/cras_shm.c",
+        "common/cras_util.c",
+        "common/edid_utils.c",
+        "libcras/cras_client.c",
+        "libcras/cras_helpers.c",
+    ],
+
+    // Include search paths (order matters):
+    // 1. "include" — public CRAS headers (cras_client.h, cras_types.h, etc.)
+    // 2. "common" — internal common headers (cras_file_wait.h, cras_string.h, etc.)
+    // 3. "." — for "cras/common/check.h", "cras/src/common/*", "third_party/strlcpy/*"
+    local_include_dirs: [
+        "include",
+        "common",
+        ".",
+    ],
+
+    export_include_dirs: [
+        "include",
+        "common",
+    ],
+
+    shared_libs: [
+        "libcutils",
+        "libtinyalsa",
+    ],
+
+    cflags: [
+        "-DCRAS_SOCKET_FILE_DIR=\"/var/run/cras\"",
+        "-Wall",
+        "-Wno-error=missing-field-initializers",
+        "-Wno-sign-compare",
+        "-Wno-unused-function",
+        "-Wno-unused-parameter",
+        "-Wno-missing-braces",
+    ],
+
+    vendor: true,
+}

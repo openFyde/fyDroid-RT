@@ -1,0 +1,109 @@
+From 1b4930fd84dd24a0333dd88fe7c83da85c7fc91a Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 16 Apr 2026 17:02:19 +0800
+Subject: [PATCH 10/40] Add METADATA_IS_DIALOG / METADATA_IS_HOME for ARC
+ composition filtering
+
+Register two new layer metadata keys used by CompositionEngineArc to
+decide which tasks get their own virtual display:
+
+- METADATA_IS_DIALOG=8 <- "org.chromium.arc.V1_0.IsDialogTask"
+  Task's top activity uses a dialog/floating theme. HWC composer
+  renders these as modal overlay windows.
+
+- METADATA_IS_HOME=9 <- "org.chromium.arc.V1_0.IsHome"
+  Task is the home/launcher (activity type HOME). CompositionEngineArc
+  skips these tasks entirely since Chrome OS provides its own launcher.
+
+Both flags are also propagated from the task root layer to descendant
+layers via Layer::addChild and Layer::setMetadata (behind the
+FYDROID_WAYLAND_COMPOSER ifdef), matching the existing TaskId
+propagation pattern.
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+Change-Id: I393f8027af4f2e90928803883cc29581d83679ca
+---
+ libs/gui/include/gui/LayerMetadata.h       |  4 ++++
+ services/surfaceflinger/Layer.cpp          | 27 ++++++++++++++++++++++
+ services/surfaceflinger/SurfaceFlinger.cpp |  3 +++
+ 3 files changed, 34 insertions(+)
+
+diff --git a/libs/gui/include/gui/LayerMetadata.h b/libs/gui/include/gui/LayerMetadata.h
+index f4ab196065..f933d4ee92 100644
+--- a/libs/gui/include/gui/LayerMetadata.h
++++ b/libs/gui/include/gui/LayerMetadata.h
+@@ -32,8 +32,12 @@ enum {
+     METADATA_DEQUEUE_TIME = 7,
+     METADATA_GAME_MODE = 8,
+     // fydroid-rt ARC keys, renumbered above AOSP 13's keys (AOSP 11 used 6..7).
++    // These serialized ints MUST match SurfaceControl.java (Tier-2 0001/0011).
+     METADATA_SESSION_ID = 9, // window session id for matching restored windows
+     METADATA_IS_GAME = 10,   // app category == CATEGORY_GAME (Chrome full-screen efficiency)
++    METADATA_IS_DIALOG = 11, // Top activity uses dialog/floating theme
++    METADATA_IS_HOME = 12,   // Task is the home/launcher (activity type HOME)
++    METADATA_NOTIFICATION_KEY = 0x40000000,  // ARC++ notification surface key
+ };
+ 
+ struct LayerMetadata : public Parcelable {
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index b9a9878f77..fb5f519adf 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -1054,6 +1054,21 @@ bool Layer::setMetadata(const LayerMetadata& data) {
+             });
+         }
+     }
++    // Propagate IsDialog to descendants so HWC sees the flag on any
++    // task-owned layer. WaylandHwc2Composer activates dialog mode when
++    // any layer in the virtual display carries IsDialogTask=1.
++    if (data.has(METADATA_IS_DIALOG)) {
++        int32_t isDialog = data.getInt32(METADATA_IS_DIALOG, 0);
++        mCurrentChildren.traverse([&](Layer* child) {
++            if (!child->mCurrentState.metadata.has(METADATA_IS_DIALOG)) {
++                child->mCurrentState.metadata.setInt32(METADATA_IS_DIALOG, isDialog);
++                child->mCurrentState.sequence++;
++                child->mCurrentState.modified = true;
++                child->setTransactionFlags(eTransactionNeeded);
++            }
++        });
++        ALOGI("IsDialog propagation: set on '%s' isDialog=%d", mName.c_str(), isDialog);
++    }
+ #endif
+ 
+     return true;
+@@ -1607,6 +1622,18 @@ void Layer::addChild(const sp<Layer>& layer) {
+             }
+         }
+     }
++    // Inherit IsDialog from nearest ancestor that has it.
++    if (!layer->mCurrentState.metadata.has(METADATA_IS_DIALOG)) {
++        for (sp<Layer> ancestor = this; ancestor != nullptr;
++             ancestor = ancestor->mCurrentParent.promote()) {
++            if (ancestor->mCurrentState.metadata.has(METADATA_IS_DIALOG)) {
++                int32_t isDialog =
++                        ancestor->mCurrentState.metadata.getInt32(METADATA_IS_DIALOG, 0);
++                layer->mCurrentState.metadata.setInt32(METADATA_IS_DIALOG, isDialog);
++                break;
++            }
++        }
++    }
+ #endif
+ }
+ 
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index c1c3be72c9..619c4aeaeb 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -7159,6 +7159,9 @@ const std::unordered_map<std::string, uint32_t>& SurfaceFlinger::getGenericLayer
+             {"org.chromium.arc.V1_0.CursorInfo", METADATA_MOUSE_CURSOR},
+             {"org.chromium.arc.V1_0.SessionId", METADATA_SESSION_ID},
+             {"org.chromium.arc.V1_0.IsGame", METADATA_IS_GAME},
++            {"org.chromium.arc.V1_0.IsDialogTask", METADATA_IS_DIALOG},
++            {"org.chromium.arc.V1_0.IsHome", METADATA_IS_HOME},
++            {"org.chromium.arc.V1_0.NotificationKey", METADATA_NOTIFICATION_KEY},
+     };
+     return genericLayerMetadataKeyMap;
+ }
+-- 
+2.43.0
+

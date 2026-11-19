@@ -1,0 +1,83 @@
+From f93c8f1c7b5baa4d603d59d6a55d08e401767ac6 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Wed, 10 Jun 2026 13:56:39 +0800
+Subject: [PATCH 36/75] AlarmManagerService: make the ALARM_EVENT soft-alarm
+ path deliver listener alarms
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In the ARC container the kernel wakealarm is unavailable: timerfd_create with
+CLOCK_BOOTTIME_ALARM / CLOCK_REALTIME_ALARM gates on capable(CAP_WAKE_ALARM)
+against the init user namespace, which a capability held only in the container's
+child userns does not satisfy — so the syscall returns EPERM, the native
+AlarmManagerService.init() fails (mNativeData==0), and the AlarmThread falls back
+to the ALARM_EVENT software-simulation path.
+
+Stock's fallback loop only delivered PendingIntent (operation) alarms and
+unconditionally called getAlarmOperationBundle()/alarm.operation.send(), so it
+NPE'd on the first listener alarm — the per-minute TIME_TICK — crash-looping
+system_server ~60s into boot, on the minute.
+
+Deliver through the standard deliverAlarmsLocked() instead (under mLock, as the
+native path does). It dispatches both operation and listener alarms via
+mDeliveryTracker and catches per-alarm failures, so the soft alarm becomes the
+supported delivery path. WAKE_UP alarms only fire while awake (no suspend
+wakeups), which is fine here — Chrome OS owns power/suspend and the ARC power
+bridge handles time-sensitive wakeups.
+
+Verified on device: 0 getAlarmOperationBundle NPEs, system_server survives
+past the TIME_TICK fires (uptime > 60s/120s), boot completes.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Change-Id: I893855d53e3bae214618aaab5550108f94f406d2
+---
+ .../server/alarm/AlarmManagerService.java     | 32 ++++++++-----------
+ 1 file changed, 13 insertions(+), 19 deletions(-)
+
+diff --git a/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java b/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java
+index f1a39310e2f8..69504cbe5b72 100644
+--- a/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java
++++ b/apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java
+@@ -4915,25 +4915,19 @@ public class AlarmManagerService extends SystemService {
+                         final long nowELAPSED = mInjector.getElapsedRealtime();
+                         triggerAlarmsLocked(triggerList, nowELAPSED);
+                         updateNextAlarmClockLocked();
+-                    }
+-
+-                    // now trigger the alarms without the lock held
+-                    for (int i = 0; i < triggerList.size(); i++) {
+-                        Alarm alarm = triggerList.get(i);
+-                        try {
+-                            // Disallow AlarmManager to start random background activity.
+-                            final Bundle bundle = getAlarmOperationBundle(alarm);
+-                            alarm.operation.send(/* context */ null, /* code */0, /* intent */
+-                                    null, /* onFinished */null, /* handler */
+-                                    null, /* requiredPermission */ null, bundle);
+-                        } catch (PendingIntent.CanceledException e) {
+-                            if (alarm.repeatInterval > 0) {
+-                                // This IntentSender is no longer valid, but this
+-                                // is a repeating alarm, so toss the hoser.
+-                                removeImpl(alarm.operation, null);
+-                            }
+-                        }
+-                        decrementAlarmCount(alarm.uid, 1);
++                        // fydroid/ARC: this software-simulation path is the LIVE alarm
++                        // delivery path in the container — the kernel wakealarm is
++                        // unavailable (timerfd CLOCK_*_ALARM needs CAP_WAKE_ALARM in the
++                        // init user namespace, which a container-userns cap does not
++                        // satisfy), so mNativeData==0 and AlarmThread falls back here.
++                        // The original inline loop only delivered PendingIntent
++                        // (operation) alarms and NPE'd on listener alarms (e.g. the
++                        // per-minute TIME_TICK), crash-looping system_server. Deliver via
++                        // the standard deliverAlarmsLocked(), which dispatches BOTH
++                        // operation and listener alarms (and catches per-alarm failures).
++                        // Note: WAKE_UP alarms only fire while the device is awake (no
++                        // suspend wakeups) — acceptable here as Chrome OS owns power.
++                        deliverAlarmsLocked(triggerList, nowELAPSED);
+                     }
+                     break;
+                 }
+-- 
+2.43.0
+

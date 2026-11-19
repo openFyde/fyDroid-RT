@@ -1,0 +1,6 @@
+# ARC++ app domain mappings (fydroid-rt)
+user=system seinfo=platform name=org.chromium.arc.apkcacheprovider domain=arc_apkcache_app type=system_app_data_file
+user=system seinfo=platform name=org.chromium.arc.applauncher domain=arc_applauncher_app type=system_app_data_file
+user=_app seinfo=platform name=org.chromium.arc.intent_helper domain=arc_intent_helper_app type=app_data_file levelFrom=all
+user=_app seinfo=platform name=com.android.printspooler domain=arc_print_spooler_app type=app_data_file levelFrom=all
+user=_app seinfo=platform name=org.chromium.arc.testapp.input domain=arc_testapp_input_app type=app_data_file levelFrom=all

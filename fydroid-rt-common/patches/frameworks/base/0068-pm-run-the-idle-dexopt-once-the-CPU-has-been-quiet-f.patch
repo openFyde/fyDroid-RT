@@ -1,0 +1,337 @@
+From 6faabe773ac0f8c89dd14198ec862a0957c55951 Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Mon, 14 Sep 2026 14:15:13 +0800
+Subject: [PATCH 68/75] pm: run the idle dexopt once the CPU has been quiet for
+ 3 minutes on power or without a battery
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Change-Id: I90573290e12c8cc672a444be55b64ed1ffaefb5e
+---
+ .../server/pm/BackgroundDexOptService.java    | 224 +++++++++++++++++-
+ .../pm/BackgroundDexOptServiceUnitTest.java   |   6 +-
+ 2 files changed, 224 insertions(+), 6 deletions(-)
+
+diff --git a/services/core/java/com/android/server/pm/BackgroundDexOptService.java b/services/core/java/com/android/server/pm/BackgroundDexOptService.java
+index 70f8be9e8d4c..5841b1cb8234 100644
+--- a/services/core/java/com/android/server/pm/BackgroundDexOptService.java
++++ b/services/core/java/com/android/server/pm/BackgroundDexOptService.java
+@@ -31,9 +31,11 @@ import android.content.Context;
+ import android.content.Intent;
+ import android.content.IntentFilter;
+ import android.content.pm.PackageInfo;
++import android.os.BatteryManager;
+ import android.os.BatteryManagerInternal;
+ import android.os.Binder;
+ import android.os.Environment;
++import android.os.Handler;
+ import android.os.IThermalService;
+ import android.os.PowerManager;
+ import android.os.Process;
+@@ -50,6 +52,7 @@ import android.util.Slog;
+ 
+ import com.android.internal.annotations.GuardedBy;
+ import com.android.internal.annotations.VisibleForTesting;
++import com.android.internal.os.BackgroundThread;
+ import com.android.internal.util.ArrayUtils;
+ import com.android.internal.util.FrameworkStatsLog;
+ import com.android.internal.util.IndentingPrintWriter;
+@@ -60,7 +63,10 @@ import com.android.server.pm.dex.DexManager;
+ import com.android.server.pm.dex.DexoptOptions;
+ import com.android.server.utils.TimingsTraceAndSlog;
+ 
++import java.io.BufferedReader;
+ import java.io.File;
++import java.io.FileReader;
++import java.io.IOException;
+ import java.lang.annotation.Retention;
+ import java.lang.annotation.RetentionPolicy;
+ import java.nio.file.Paths;
+@@ -89,6 +95,17 @@ public final class BackgroundDexOptService {
+      */
+     private static final long POST_BOOT_UPDATE_DELAY_MS = TimeUnit.MINUTES.toMillis(1);
+ 
++    /**
++     * ARC replaces {@link #JOB_IDLE_OPTIMIZE}, which requires device idle and so never runs, with a
++     * CPU trigger: the idle optimization starts once machine-wide CPU usage (/proc/stat is not
++     * namespaced, so Chrome OS load counts) has stayed below this percentage for
++     * {@link #CPU_QUIET_DURATION_MS}, and the device either has no battery or is on external
++     * power (the job it replaces required charging).
++     */
++    private static final int CPU_QUIET_PERCENT = 5;
++    private static final long CPU_QUIET_DURATION_MS = TimeUnit.MINUTES.toMillis(3);
++    private static final long CPU_QUIET_SAMPLE_INTERVAL_MS = TimeUnit.SECONDS.toMillis(10);
++
+     private static final long CANCELLATION_WAIT_CHECK_INTERVAL_MS = 200;
+ 
+     private static ComponentName sDexoptServiceName =
+@@ -174,6 +191,8 @@ public final class BackgroundDexOptService {
+ 
+     private final long mDowngradeUnusedAppsThresholdInMillis;
+ 
++    private final CpuQuietTrigger mCpuQuietTrigger = new CpuQuietTrigger();
++
+     private List<PackagesUpdatedListener> mPackagesUpdatedListeners = new ArrayList<>();
+ 
+     private int mThermalStatusCutoff = THERMAL_CUTOFF_DEFAULT;
+@@ -207,10 +226,10 @@ public final class BackgroundDexOptService {
+             @Override
+             public void onReceive(Context context, Intent intent) {
+                 mInjector.getContext().unregisterReceiver(this);
+-                // queue both job. JOB_IDLE_OPTIMIZE will not start until JOB_POST_BOOT_UPDATE is
+-                // completed.
++                // The CPU-quiet trigger stands in for JOB_IDLE_OPTIMIZE. Like that job, it will not
++                // start an optimization until JOB_POST_BOOT_UPDATE is completed.
+                 scheduleAJob(JOB_POST_BOOT_UPDATE);
+-                scheduleAJob(JOB_IDLE_OPTIMIZE);
++                mCpuQuietTrigger.startAfter(0);
+                 if (DEBUG) {
+                     Slog.d(TAG, "BootBgDexopt scheduled");
+                 }
+@@ -252,6 +271,7 @@ public final class BackgroundDexOptService {
+             writer.print("mFailedPackageNamesSecondary:");
+             writer.println(String.join(",", mFailedPackageNamesSecondary));
+         }
++        mCpuQuietTrigger.dump(writer);
+     }
+ 
+     /** Gets the instance of the service */
+@@ -412,6 +432,73 @@ public final class BackgroundDexOptService {
+         return true;
+     }
+ 
++    /**
++     * Runs the idle optimization for {@link CpuQuietTrigger}, with the same checks as
++     * {@link #onStartJob} for {@link #JOB_IDLE_OPTIMIZE}. When it returns true the trigger is
++     * re-armed by this run: a day later after a completed run, immediately otherwise.
++     *
++     * @return false if nothing was started because post-boot update is pending, another dexopt
++     *         run is active, or a battery is present without external power; the caller keeps
++     *         watching the CPU.
++     */
++    private boolean startCpuQuietOptimization() {
++        synchronized (mLock) {
++            if (!mFinishedPostBootUpdate
++                    || (mDexOptThread != null && mDexOptThread.isAlive())) {
++                return false;
++            }
++        }
++
++        if (!mInjector.isOnPowerOrWithoutBattery()) {
++            mCpuQuietTrigger.logWaitingForPowerOnce();
++            return false;
++        }
++
++        PackageManagerService pm = mInjector.getPackageManagerService();
++        if (pm.isStorageLow()) {
++            Slog.w(TAG, "Low storage, skipping this run");
++            mCpuQuietTrigger.startAfter(IDLE_OPTIMIZATION_PERIOD);
++            return true;
++        }
++
++        List<String> pkgs = mDexOptHelper.getOptimizablePackages(pm.snapshotComputer());
++        if (pkgs.isEmpty()) {
++            Slog.i(TAG, "No packages to optimize");
++            mCpuQuietTrigger.startAfter(IDLE_OPTIMIZATION_PERIOD);
++            return true;
++        }
++
++        mThermalStatusCutoff = mInjector.getDexOptThermalCutoff();
++
++        synchronized (mLock) {
++            if (mDexOptThread != null && mDexOptThread.isAlive()) {
++                return false;
++            }
++            Slog.i(TAG, "CPU below " + CPU_QUIET_PERCENT + "% for "
++                    + TimeUnit.MILLISECONDS.toSeconds(CPU_QUIET_DURATION_MS)
++                    + "s, starting idle optimization");
++            resetStatesForNewDexOptRunLocked(mInjector.createAndStartThread(
++                    "BackgroundDexOptService_CpuQuiet",
++                    () -> {
++                        TimingsTraceAndSlog tr =
++                                new TimingsTraceAndSlog(TAG, Trace.TRACE_TAG_PACKAGE_MANAGER);
++                        tr.traceBegin("cpuQuietExecution");
++                        boolean completed = false;
++                        try {
++                            completed = runIdleOptimization(
++                                    pm, pkgs, /* isPostBootUpdate= */ false);
++                        } finally {
++                            tr.traceEnd();
++                            Slog.i(TAG, "dexopt finishing. cpu-quiet completed:" + completed);
++                            markDexOptCompleted();
++                            mCpuQuietTrigger.startAfter(
++                                    completed ? IDLE_OPTIMIZATION_PERIOD : 0);
++                        }
++                    }));
++        }
++        return true;
++    }
++
+     /**
+      * Cancels pending dexopt and wait for completion of the cancellation. This can block the caller
+      * until cancellation is done.
+@@ -981,6 +1068,123 @@ public final class BackgroundDexOptService {
+         mStatsLogger.write(status, params.getStopReason(), durationMs, durationIncludingSleepMs);
+     }
+ 
++    /**
++     * Samples machine-wide CPU usage from /proc/stat on the background thread and starts the idle
++     * optimization once every sample over {@link #CPU_QUIET_DURATION_MS} stayed below
++     * {@link #CPU_QUIET_PERCENT}. While the CPU stays quiet but the start is refused (for example
++     * on battery power), it retries on every sample. Sampling stops while a run it started is in
++     * progress and until that run re-arms it.
++     */
++    private final class CpuQuietTrigger implements Runnable {
++        private Handler mHandler;
++        // All times are SystemClock.uptimeMillis(), matching Handler#postDelayed.
++        private long mLastSampleMs = -1;
++        private long mLastIdleTicks;
++        private long mLastTotalTicks;
++        private long mQuietSinceMs = -1;
++        private long mNextStartMs = -1;
++        private boolean mLoggedWaitingForPower;
++
++        synchronized void startAfter(long delayMs) {
++            if (mHandler == null) {
++                mHandler = BackgroundThread.getHandler();
++            }
++            mHandler.removeCallbacks(this);
++            mLastSampleMs = -1;
++            mQuietSinceMs = -1;
++            mLoggedWaitingForPower = false;
++            mNextStartMs = SystemClock.uptimeMillis() + delayMs;
++            mHandler.postDelayed(this, delayMs);
++        }
++
++        @Override
++        public void run() {
++            synchronized (this) {
++                if (!sample()) {
++                    mHandler.postDelayed(this, CPU_QUIET_SAMPLE_INTERVAL_MS);
++                    return;
++                }
++            }
++            // Outside this object's lock: a run that finishes at once re-arms via startAfter().
++            if (startCpuQuietOptimization()) {
++                return;
++            }
++            // Keep the quiet window, so the start is retried on the next quiet sample.
++            synchronized (this) {
++                mHandler.postDelayed(this, CPU_QUIET_SAMPLE_INTERVAL_MS);
++            }
++        }
++
++        synchronized void logWaitingForPowerOnce() {
++            if (!mLoggedWaitingForPower) {
++                mLoggedWaitingForPower = true;
++                Slog.i(TAG, "CPU quiet, but on battery power: waiting for a charger");
++            }
++        }
++
++        /** Takes one sample; returns true once the CPU has been quiet for long enough. */
++        private boolean sample() {
++            long[] ticks = readCpuTicks();
++            if (ticks == null) {
++                return false;
++            }
++            long now = SystemClock.uptimeMillis();
++            long idle = ticks[0];
++            long total = ticks[1];
++            if (mLastSampleMs >= 0 && total > mLastTotalTicks) {
++                long busyPermille =
++                        (total - mLastTotalTicks - (idle - mLastIdleTicks)) * 1000
++                                / (total - mLastTotalTicks);
++                if (busyPermille >= CPU_QUIET_PERCENT * 10) {
++                    mQuietSinceMs = -1;
++                    mLoggedWaitingForPower = false;
++                } else if (mQuietSinceMs < 0) {
++                    mQuietSinceMs = mLastSampleMs;
++                }
++            }
++            mLastSampleMs = now;
++            mLastIdleTicks = idle;
++            mLastTotalTicks = total;
++            return mQuietSinceMs >= 0 && now - mQuietSinceMs >= CPU_QUIET_DURATION_MS;
++        }
++
++        /** Returns {idle + iowait, user..steal} from the aggregate cpu line, or null on error. */
++        @Nullable
++        private long[] readCpuTicks() {
++            try (BufferedReader reader = new BufferedReader(new FileReader("/proc/stat"))) {
++                String line = reader.readLine();
++                if (line == null || !line.startsWith("cpu ")) {
++                    return null;
++                }
++                String[] fields = line.trim().split("\\s+");
++                if (fields.length < 9) {
++                    return null;
++                }
++                long total = 0;
++                for (int i = 1; i <= 8; i++) {
++                    total += Long.parseLong(fields[i]);
++                }
++                long idle = Long.parseLong(fields[4]) + Long.parseLong(fields[5]);
++                return new long[] {idle, total};
++            } catch (IOException | NumberFormatException e) {
++                Slog.w(TAG, "Cannot read /proc/stat", e);
++                return null;
++            }
++        }
++
++        synchronized void dump(IndentingPrintWriter writer) {
++            long now = SystemClock.uptimeMillis();
++            writer.print("cpuQuietThresholdPercent:");
++            writer.println(CPU_QUIET_PERCENT);
++            writer.print("cpuQuietDurationMs:");
++            writer.println(CPU_QUIET_DURATION_MS);
++            writer.print("cpuQuietNextStartInMs:");
++            writer.println(mNextStartMs < 0 ? -1 : Math.max(0, mNextStartMs - now));
++            writer.print("cpuQuietForMs:");
++            writer.println(mQuietSinceMs < 0 ? -1 : now - mQuietSinceMs);
++        }
++    }
++
+     /** Injector pattern for testing purpose */
+     @VisibleForTesting
+     static final class Injector {
+@@ -1028,6 +1232,20 @@ public final class BackgroundDexOptService {
+             return LocalServices.getService(BatteryManagerInternal.class).getBatteryLevelLow();
+         }
+ 
++        /**
++         * True when the device has no battery, or is plugged into AC, USB or wireless power
++         * (charging, or already full). False until the first battery broadcast arrives.
++         */
++        boolean isOnPowerOrWithoutBattery() {
++            Intent battery = mContext.registerReceiver(
++                    null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
++            if (battery == null) {
++                return false;
++            }
++            return !battery.getBooleanExtra(BatteryManager.EXTRA_PRESENT, true)
++                    || battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
++        }
++
+         long getDowngradeUnusedAppsThresholdInMillis() {
+             String sysPropKey = "pm.dexopt.downgrade_after_inactive_days";
+             String sysPropValue = SystemProperties.get(sysPropKey);
+diff --git a/services/tests/mockingservicestests/src/com/android/server/pm/BackgroundDexOptServiceUnitTest.java b/services/tests/mockingservicestests/src/com/android/server/pm/BackgroundDexOptServiceUnitTest.java
+index 7516f2b0c817..08b4d5fae0ca 100644
+--- a/services/tests/mockingservicestests/src/com/android/server/pm/BackgroundDexOptServiceUnitTest.java
++++ b/services/tests/mockingservicestests/src/com/android/server/pm/BackgroundDexOptServiceUnitTest.java
+@@ -468,10 +468,10 @@ public final class BackgroundDexOptServiceUnitTest {
+ 
+         verify(mContext).unregisterReceiver(argReceiver.getValue());
+         ArgumentCaptor<JobInfo> argJobs = ArgumentCaptor.forClass(JobInfo.class);
+-        verify(mJobScheduler, times(2)).schedule(argJobs.capture());
++        // JOB_IDLE_OPTIMIZE is not scheduled: the CPU-quiet trigger replaces it on ARC.
++        verify(mJobScheduler, times(1)).schedule(argJobs.capture());
+ 
+-        List<Integer> expectedJobIds = Arrays.asList(BackgroundDexOptService.JOB_IDLE_OPTIMIZE,
+-                BackgroundDexOptService.JOB_POST_BOOT_UPDATE);
++        List<Integer> expectedJobIds = Arrays.asList(BackgroundDexOptService.JOB_POST_BOOT_UPDATE);
+         List<Integer> jobIds = argJobs.getAllValues().stream().map(job -> job.getId()).collect(
+                 Collectors.toList());
+         assertThat(jobIds).containsExactlyElementsIn(expectedJobIds);
+-- 
+2.43.0
+

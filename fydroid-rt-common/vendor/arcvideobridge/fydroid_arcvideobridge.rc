@@ -1,0 +1,9 @@
+# class hal + interface — see fydroid_arcbridge.rc for rationale (the
+# cheets container's class_start main races; class_start hal works).
+service vendor.google_arc.arcvideobridge-1-0 /vendor/bin/hw/vendor.google_arc.arcvideobridge@1.0-service
+    interface vendor.google_arc.arcvideobridge@1.0::IArcVideoBridgeService default
+    class hal
+    user system
+    group mediadrm drmrpc
+    ioprio rt 4
+    writepid /dev/cpuset/foreground/tasks

@@ -1,0 +1,26 @@
+# Probes for HALs that fydroid deliberately does not ship.
+#
+# These are lookups AOSP code makes unconditionally and copes with failing.
+# Nothing is broken by them, but each one logs an avc denial on every boot,
+# which buries the denials that do matter. dontaudit silences the log without
+# granting anything — if one of these ever becomes a real dependency it will
+# still be denied, just quietly, so keep the list short and specific.
+
+# vold probes for boot control to find the current A/B slot. Chrome OS does its
+# own A/B outside the container and ships no android.hardware.boot HAL.
+dontaudit vold hal_bootctl_hwservice:hwservice_manager find;
+
+# configstore@1.0 was removed in T; the graphics and camera stacks still ask
+# for ISurfaceFlingerConfigs and fall back to their compiled-in defaults.
+# hwservicemanager already logs the miss ("Cannot find entry
+# android.hardware.configstore@1.0::ISurfaceFlingerConfigs").
+dontaudit {
+    cameraserver
+    hal_camera_default
+    hal_graphics_allocator_default
+} hal_configstore_ISurfaceFlingerConfigs:hwservice_manager find;
+
+# WebView's sandboxed renderer runs as isolated_app and asks for
+# content_capture on startup. AOSP denies isolated apps every system service by
+# design; the renderer handles the refusal. Granting it would be wrong.
+dontaudit isolated_app content_capture_service:service_manager find;

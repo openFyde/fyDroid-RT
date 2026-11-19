@@ -1,0 +1,147 @@
+From 91db1f4db5aad83bd9f076db0097b45b2380818d Mon Sep 17 00:00:00 2001
+From: Yang Tsao <yang@fydeos.io>
+Date: Thu, 4 Jun 2026 12:57:10 +0800
+Subject: [PATCH 6/6] fydroid: encode plane offsets (0010) + VEA
+ profile-provider hook (0007)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+0010 (V4L2EncodeComponent::getVideoFrameLayout): compute the U/V plane byte
+offsets relative to the Y-plane base instead of truncating the raw mapped
+pointer to uint32_t. On 64-bit the pointer has upper bits set, so the direct
+truncation garbled both the offset and the U-vs-V ordering check; the encoder
+(Chrome's VEA) needs real buffer-relative offsets. Genuine bug fix; also
+benefits the stock V4L2 path.
+
+0007 (V4L2EncodeInterface): add a SetProfileProvider hook so an external
+provider can supply the supported encode profiles. The provider lives in
+libfydroid_c2_mojo (it queries Chrome's VEA over Mojo) — kept out of upstream to
+avoid a components->lib circular dependency. Initialize() now prefers the
+provider, then the V4L2 device query, then the fixed fallback (H8).
+
+Local commit only.
+
+Change-Id: Id8fc9a7ff89dffa253262b4333d3cdec322041e3
+---
+ components/V4L2EncodeComponent.cpp            | 14 ++++++---
+ components/V4L2EncodeInterface.cpp            | 29 +++++++++++++++----
+ .../components/V4L2EncodeInterface.h          | 14 +++++++++
+ 3 files changed, 47 insertions(+), 10 deletions(-)
+
+diff --git a/components/V4L2EncodeComponent.cpp b/components/V4L2EncodeComponent.cpp
+index 2b72299..4a7fd95 100644
+--- a/components/V4L2EncodeComponent.cpp
++++ b/components/V4L2EncodeComponent.cpp
+@@ -76,12 +76,18 @@ std::optional<std::vector<VideoFramePlane>> getVideoFrameLayout(const C2ConstGra
+     switch (layout.type) {
+     case C2PlanarLayout::TYPE_YUV: {
+         android_ycbcr ycbcr = getGraphicBlockInfo(block);
+-        offsets[C2PlanarLayout::PLANE_Y] =
+-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ycbcr.y));
++        // fydroid: the Y plane sits at the start of the mapped region for
++        // I420/NV12/NV21, so it is the natural base for the per-plane byte
++        // offsets forwarded to the encoder (Chrome's VEA). Subtracting the base
++        // before the uint32_t cast keeps the result a real offset on 64-bit,
++        // where the raw pointer often has upper bits set and a direct truncation
++        // would garble both the offset value and the U-vs-V ordering check below.
++        uintptr_t base = reinterpret_cast<uintptr_t>(ycbcr.y);
++        offsets[C2PlanarLayout::PLANE_Y] = 0u;
+         offsets[C2PlanarLayout::PLANE_U] =
+-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ycbcr.cb));
++                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ycbcr.cb) - base);
+         offsets[C2PlanarLayout::PLANE_V] =
+-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ycbcr.cr));
++                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ycbcr.cr) - base);
+         strides[C2PlanarLayout::PLANE_Y] = static_cast<uint32_t>(ycbcr.ystride);
+         strides[C2PlanarLayout::PLANE_U] = static_cast<uint32_t>(ycbcr.cstride);
+         strides[C2PlanarLayout::PLANE_V] = static_cast<uint32_t>(ycbcr.cstride);
+diff --git a/components/V4L2EncodeInterface.cpp b/components/V4L2EncodeInterface.cpp
+index ce097d6..9bda1eb 100644
+--- a/components/V4L2EncodeInterface.cpp
++++ b/components/V4L2EncodeInterface.cpp
+@@ -68,6 +68,16 @@ bool IsValidProfileForCodec(VideoCodec codec, C2Config::profile_t profile) {
+ 
+ }  // namespace
+ 
++// static
++// fydroid: no provider by default (V4L2 device query + fixed fallback);
++// libfydroid_c2_mojo registers a Chrome-VEA-over-Mojo query.
++V4L2EncodeInterface::ProfileProviderCB V4L2EncodeInterface::sProfileProvider = nullptr;
++
++// static
++void V4L2EncodeInterface::SetProfileProvider(ProfileProviderCB provider) {
++    sProfileProvider = provider;
++}
++
+ // static
+ C2R V4L2EncodeInterface::H264ProfileLevelSetter(
+         bool /*mayBlock*/, C2P<C2StreamProfileLevelInfo::output>& info,
+@@ -255,12 +265,19 @@ void V4L2EncodeInterface::Initialize(const C2String& name) {
+     std::vector<unsigned int> profiles;
+     ui::Size maxSize;
+ 
+-    // fydroid: the encode backend may be Mojo IPC to Chrome's VEA, in which case
+-    // there is no V4L2 encoder device to enumerate. Query the device when present;
+-    // otherwise (or if it reports nothing) fall back to a fixed profile set so the
+-    // interface still constructs — Chrome's VEA validates the real profile at
+-    // encode time. See device/fydeos/docs/c2-codec2-mojo-port-plan.md.
+-    scoped_refptr<V4L2Device> device = V4L2Device::create();
++    // fydroid: the encode backend is Mojo IPC to Chrome's VEA. Prefer the real
++    // supported profiles from the registered provider (which queries the VEA over
++    // Mojo); there is no V4L2 encoder device to enumerate in the container. Fall
++    // through to the V4L2 device query, then a fixed profile set, so the interface
++    // always constructs. See device/fydeos/docs/c2-codec2-mojo-port-plan.md.
++    if (sProfileProvider && sProfileProvider(*codec, &profiles, &maxSize) && !profiles.empty()) {
++        // Align max height to the macroblock (16) boundary.
++        maxSize.setHeight((maxSize.height + 15) & ~15);
++        ALOGI("Encode profiles from VEA provider: %zu, max %dx%d", profiles.size(), maxSize.width,
++              maxSize.height);
++    }
++
++    scoped_refptr<V4L2Device> device = profiles.empty() ? V4L2Device::create() : nullptr;
+     if (device) {
+         V4L2Device::SupportedEncodeProfiles supported_profiles =
+                 device->getSupportedEncodeProfiles();
+diff --git a/components/include/v4l2_codec2/components/V4L2EncodeInterface.h b/components/include/v4l2_codec2/components/V4L2EncodeInterface.h
+index fefebf0..dd5d881 100644
+--- a/components/include/v4l2_codec2/components/V4L2EncodeInterface.h
++++ b/components/include/v4l2_codec2/components/V4L2EncodeInterface.h
+@@ -15,6 +15,7 @@
+ #include <util/C2InterfaceHelper.h>
+ 
+ #include <v4l2_codec2/common/EncodeHelpers.h>
++#include <v4l2_codec2/common/VideoTypes.h>
+ 
+ namespace media {
+ class V4L2Device;
+@@ -28,6 +29,16 @@ class V4L2EncodeInterface : public C2InterfaceHelper {
+ public:
+     V4L2EncodeInterface(const C2String& name, std::shared_ptr<C2ReflectorHelper> helper);
+ 
++    // fydroid: optional provider of supported encode profiles — libfydroid_c2_mojo
++    // registers one that queries Chrome's VEA over Mojo. Returns true and fills
++    // |profiles| (C2Config::profile_t values cast to unsigned) + |maxSize| on
++    // success. When unset or it returns false, Initialize falls back to the V4L2
++    // device query, then a fixed profile set. Set before any component is created.
++    // See device/fydeos/docs/c2-codec2-mojo-port-plan.md.
++    using ProfileProviderCB = bool (*)(VideoCodec codec, std::vector<unsigned int>* profiles,
++                                       ui::Size* maxSize);
++    static void SetProfileProvider(ProfileProviderCB provider);
++
+     // Interfaces for the V4L2EncodeInterface
+     // Note: these getters are not thread-safe. For dynamic parameters, component should use
+     // formal query API for C2ComponentInterface instead.
+@@ -117,6 +128,9 @@ protected:
+     std::shared_ptr<C2StreamIntraRefreshTuning::output> mIntraRefreshPeriod;
+ 
+     c2_status_t mInitStatus = C2_NO_INIT;
++
++    // fydroid: the registered profile provider (see SetProfileProvider).
++    static ProfileProviderCB sProfileProvider;
+ };
+ 
+ }  // namespace android
+-- 
+2.43.0
+

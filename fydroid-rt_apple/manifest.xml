@@ -1,0 +1,117 @@
+<!--
+    Input:
+        manifest.xml
+-->
+<manifest version="2.0" type="device" target-level="6">
+    <hal format="hidl">
+        <name>android.hardware.audio</name>
+        <transport>hwbinder</transport>
+        <version>6.0</version>
+        <interface>
+            <name>IDevicesFactory</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@6.0::IDevicesFactory/default</fqname>
+    </hal>
+    <hal format="hidl">
+        <name>android.hardware.audio.effect</name>
+        <transport>hwbinder</transport>
+        <version>6.0</version>
+        <interface>
+            <name>IEffectsFactory</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@6.0::IEffectsFactory/default</fqname>
+    </hal>
+    <hal format="hidl">
+        <name>android.hardware.camera.provider</name>
+        <transport>hwbinder</transport>
+        <version>2.4</version>
+        <interface>
+            <name>ICameraProvider</name>
+            <instance>legacy/0</instance>
+        </interface>
+        <fqname>@2.4::ICameraProvider/legacy/0</fqname>
+    </hal>
+    <hal format="hidl">
+        <name>android.hardware.drm</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>ICryptoFactory</name>
+            <instance>default</instance>
+        </interface>
+        <interface>
+            <name>IDrmFactory</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@1.0::ICryptoFactory/default</fqname>
+        <fqname>@1.0::IDrmFactory/default</fqname>
+    </hal>
+    <!-- graphics.allocator@4.0 + graphics.mapper@4.0 (gralloc4) are declared by
+         the minigbm vintf_fragments (allocator@4.0-service.minigbm,
+         mapper@4.0-impl.minigbm), not here. -->
+    <hal format="hidl">
+        <name>android.hardware.graphics.composer</name>
+        <transport arch="32+64">passthrough</transport>
+        <version>2.1</version>
+        <interface>
+            <name>IComposer</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@2.1::IComposer/default</fqname>
+    </hal>
+    <!-- android.hardware.media.c2@1.0::IComponentStore/default — provided by
+         fydroid_c2_default_stub (soft codec passthrough) on apple/VMware,
+         where there is no GPU video accel for fydroid_c2_service_mojo to
+         bridge to. Re-declared here so the framework sees a default store
+         and skips the C2AllocatorIon NULL-reflector crash path. -->
+    <hal format="hidl">
+        <name>android.hardware.media.c2</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IComponentStore</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@1.0::IComponentStore/default</fqname>
+    </hal>
+    <hal format="hidl">
+        <name>android.hardware.media.omx</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IOmx</name>
+            <instance>default</instance>
+        </interface>
+        <interface>
+            <name>IOmxStore</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@1.0::IOmx/default</fqname>
+        <fqname>@1.0::IOmxStore/default</fqname>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.google_arc.arcbridge</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IArcBridgeService</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@1.0::IArcBridgeService/default</fqname>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.google_arc.arcvideobridge</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IArcVideoBridgeService</name>
+            <instance>default</instance>
+        </interface>
+        <fqname>@1.0::IArcVideoBridgeService/default</fqname>
+    </hal>
+    <sepolicy>
+        <version>33.0</version>
+    </sepolicy>
+</manifest>

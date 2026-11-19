@@ -1,0 +1,46 @@
+Description: virtgpu_virgl: report YV12 chroma stride as width/2 for emulated buffers
+ The emulated (non-native) path stacks the three YV12 planes into a single
+ oversized full-width R8 image so the flush/invalidate transfers stay simple,
+ and it reported every plane's stride as the full width. But an Android
+ HAL_PIXEL_FORMAT_YV12 buffer has a fixed layout contract: chroma stride is
+ ALIGN(y_stride/2, 16) == width/2. The media codecs write chroma packed at
+ width/2, so a consumer that reads at the reported full width runs off the
+ written data at exactly the half-height row and the bottom half of the frame
+ renders green (observed on QEMU/virtio-gpu software-decoded video; VMware's
+ vmwgfx backend reports width/2 and is unaffected).
+ .
+ Fix: report strides[1]/[2] = width/2. The plane offsets, sizes and total_size
+ are left at the oversized full-width placement on purpose -- the transfer path
+ relies on the single-R8-image layout and is byte-preserving, so only the
+ reported stride needs to match how the buffer is actually written. NV12 is
+ correct as-is (interleaved UV really is width bytes per chroma row).
+diff --git a/virtgpu_virgl.c b/virtgpu_virgl.c
+index f0e7a4f..c2e82ed 100644
+--- a/virtgpu_virgl.c
++++ b/virtgpu_virgl.c
+@@ -231,13 +231,23 @@ static void virgl_get_emulated_metadata(const struct bo *bo, struct bo_metadata
+ 		metadata->offsets[0] = 0;
+ 		metadata->sizes[0] = metadata->width * original_height;
+ 
++		// Cb/Cr planes. The plane is *placed* as a full-width sub-image below
++		// the Y-plane (offsets/sizes below keep the oversized single-R8-image
++		// layout the flush/invalidate transfers rely on -- do not shrink them).
++		// But the REPORTED stride must be the YV12 contract stride,
++		// ALIGN(y_stride/2, 16) == width/2 (width is already 32-aligned):
++		// the media codecs write HAL_PIXEL_FORMAT_YV12 chroma packed at
++		// width/2, so a consumer reading at the full width walks off the
++		// written data at the half-height row (bottom half renders green).
++		// vmwgfx/other backends report width/2 here; matching them.
++
+ 		// Cb-plane (half resolution, placed below Y-plane)
+-		metadata->strides[1] = metadata->width;
++		metadata->strides[1] = metadata->width / 2;
+ 		metadata->offsets[1] = metadata->offsets[0] + metadata->sizes[0];
+ 		metadata->sizes[1] = metadata->width * c_plane_height;
+ 
+ 		// Cr-plane (half resolution, placed below Cb-plane)
+-		metadata->strides[2] = metadata->width;
++		metadata->strides[2] = metadata->width / 2;
+ 		metadata->offsets[2] = metadata->offsets[1] + metadata->sizes[1];
+ 		metadata->sizes[2] = metadata->width * c_plane_height;
+ 

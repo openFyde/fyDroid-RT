@@ -1,0 +1,7 @@
+service vendor.drm-widevine-service /vendor/bin/hw/android.hardware.drm-service.widevine
+    class hal
+    user media
+    group mediadrm drmrpc system
+    ioprio rt 4
+    task_profiles ProcessCapacityHigh
+    interface aidl android.hardware.drm.IDrmFactory/widevine

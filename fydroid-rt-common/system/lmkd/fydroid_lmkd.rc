@@ -1,0 +1,7 @@
+service lmkd /system/bin/fydroid_lmkd
+    override
+    class core
+    group root system readproc
+    critical
+    socket lmkd seqpacket 0660 system system
+    writepid /dev/cpuset/system-background/tasks
