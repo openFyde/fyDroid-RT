@@ -1,7 +1,7 @@
-# Building fydroid-rt
+# Building fyDroid-RT
 
 This guide takes you from an empty machine to the two deliverables of
-fydroid-rt, `system.raw.img` and `vendor.raw.img`. The worked example is the
+fyDroid-RT, `system.raw.img` and `vendor.raw.img`. The worked example is the
 **amd64** target (`fydroid_rt_amd64`). The other targets differ only in a few
 places; see [Other architectures](#11-other-architectures).
 
@@ -20,7 +20,7 @@ yourself.
 **Disk and RAM.** AOSP's general guidance for Android 13 is at least 400 GB of
 free disk space (about 250 GB for the source checkout and 150 GB for a build)
 and at least 16 GB of RAM; more RAM and CPU cores shorten build times
-considerably. fydroid-rt adds a few GB on top of that (an Android NDK, a Rust
+considerably. fyDroid-RT adds a few GB on top of that (an Android NDK, a Rust
 toolchain and native Mesa tools under `out/host/`).
 
 **Packages.** You need:
@@ -35,7 +35,7 @@ toolchain and native Mesa tools under `out/host/`).
       libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig repo
   ```
 
-- The fydroid-rt specific packages. `prepare_build_env.sh` installs these for
+- The fyDroid-RT specific packages. `prepare_build_env.sh` installs these for
   you in [step 6](#6-prepare-the-host-build-environment):
   `llvm-18 llvm-18-dev clang-18 libclang-18-dev libclang-cpp18-dev
   libclc-18-dev libllvmspirvlib-18-dev spirv-tools spirv-headers
@@ -73,9 +73,9 @@ Mesa, from upstream), which assumes a normal, full-history clone with the
 fine: the `aosp` remote still fetches all branches when the scripts call
 `git fetch aosp`.
 
-## 3. Get fydroid-rt
+## 3. Get fyDroid-RT
 
-fydroid-rt must live at `device/fydeos` inside the AOSP tree:
+fyDroid-RT must live at `device/fydeos` inside the AOSP tree:
 
 ```bash
 cd ~/aosp13
@@ -87,7 +87,7 @@ manifest.
 
 ## 4. Apply the AOSP patches
 
-fydroid-rt modifies 23 AOSP projects. The patches live under
+fyDroid-RT modifies 23 AOSP projects. The patches live under
 `device/fydeos/fydroid-rt-common/patches/`, one directory per project, and the
 directory path below `patches/` is the project path in the AOSP tree (for
 example `patches/frameworks/base/` applies to `frameworks/base/`). Each
@@ -125,7 +125,7 @@ number of patch files in its directory:
 
 ## 5. Sync the external projects
 
-fydroid-rt replaces three AOSP projects with pinned upstream revisions plus a
+fyDroid-RT replaces three AOSP projects with pinned upstream revisions plus a
 local patch set. Each has a `sync.sh` next to its patches:
 
 | Script | Operates on | Pinned revision | Fetched from |
@@ -189,7 +189,7 @@ mkdir -p ~/tmp && TMPDIR=~/tmp device/fydeos/fydroid-rt-common/scripts/prepare_b
 ## 7. Native bridge (amd64)
 
 Most Android apps ship ARM code. On an x86_64 CPU, Android's *native bridge*
-translates that code at run time. fydroid-rt for amd64 uses one of two
+translates that code at run time. fyDroid-RT for amd64 uses one of two
 translators:
 
 - **Intel Houdini**, for Intel CPUs, cloned into
@@ -212,7 +212,7 @@ device/fydeos/fydroid-rt-common/scripts/clone_ndk_translation.sh  # [branch]
 ```
 
 Each script makes a shallow clone of the requested branch and then applies
-the fydroid-rt fixups from `fydroid-rt-common/vendor/patches/houdini/` or
+the fyDroid-RT fixups from `fydroid-rt-common/vendor/patches/houdini/` or
 `.../vendor/patches/ndk_translation/` with `git am --3way`. If the existing
 clone is on a different branch, the script deletes it and clones again. Other
 Houdini branches are listed in the header of `clone_houdini.sh`.
@@ -349,7 +349,7 @@ ls out/target/product/fydroid-rt_arm64/*.raw.img
 
 ## 12. Rebuilding and updating
 
-- **After pulling fydroid-rt changes** (`git -C device/fydeos pull`), re-run
+- **After pulling fyDroid-RT changes** (`git -C device/fydeos pull`), re-run
   the three `sync.sh` scripts and re-apply any patch series that changed.
 - **Re-applying a project's patches.** Reset the project to the base tag and
   run the loop from step 4 for it (or for all projects):

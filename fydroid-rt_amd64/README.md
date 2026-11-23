@@ -1,6 +1,6 @@
 # fydroid_rt_amd64
 
-Universal **x86_64** fydroid-rt board. One image targets:
+Universal **x86_64** fyDroid-RT board. One image targets:
 
 - **CPU:** any 64-bit Intel or AMD processor (generic `x86-64` baseline, no AVX2 — runs on older Atom-class Chromebooks too).
 - **GPU:** Intel (`iris`/`anv`), AMD (`zink`-on-`radv`), and VMware guests (`svga`) — all drivers in one build, selected at runtime.
