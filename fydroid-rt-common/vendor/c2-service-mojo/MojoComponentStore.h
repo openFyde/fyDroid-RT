@@ -1,6 +1,6 @@
-// Copyright 2024 The FydeOS Authors. All rights reserved.
+// Copyright 2024 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// found in the LICENSE.BSD file.
 
 // fydroid-owned C2ComponentStore for the Mojo-backed video codecs. It mirrors
 // upstream external/v4l2_codec2's V4L2ComponentStore (a thin name -> factory

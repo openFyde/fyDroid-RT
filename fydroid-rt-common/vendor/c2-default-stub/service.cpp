@@ -1,6 +1,6 @@
-// Copyright 2026 The FydeOS Authors. All rights reserved.
+// Copyright 2026 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// found in the LICENSE.BSD file.
 //
 // Tiny IComponentStore/default stub for fydroid-rt boards that don't have
 // a hardware video decoder (apple/VMware). The MediaCodec framework expects

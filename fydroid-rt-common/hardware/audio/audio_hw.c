@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The FydeOS Authors
+ * Copyright (C) 2024 Fyde Innovations
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -1270,7 +1270,7 @@ struct audio_module HAL_MODULE_INFO_SYM = {
         .hal_api_version = HARDWARE_HAL_API_VERSION,
         .id = AUDIO_HARDWARE_MODULE_ID,
         .name = "FydeOS CRAS Audio HAL",
-        .author = "The FydeOS Authors",
+        .author = "Fyde Innovations",
         .methods = &hal_module_methods,
     },
 };

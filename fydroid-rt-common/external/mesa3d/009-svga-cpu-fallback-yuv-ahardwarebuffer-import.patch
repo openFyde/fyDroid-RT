@@ -188,7 +188,7 @@ index 00000000000..e3f4bf3a14b
 +++ b/src/gallium/drivers/svga/svga_yuv_import.c
 @@ -0,0 +1,147 @@
 +/*
-+ * Copyright 2026 FydeOS Authors
++ * Copyright 2026 Fyde Innovations
 + * SPDX-License-Identifier: MIT
 + *
 + * Scalar BT.601 limited-range YUV → BGRA conversion + RGBA texture
@@ -341,7 +341,7 @@ index 00000000000..6944c9ba2db
 +++ b/src/gallium/drivers/svga/svga_yuv_import.h
 @@ -0,0 +1,80 @@
 +/*
-+ * Copyright 2026 FydeOS Authors
++ * Copyright 2026 Fyde Innovations
 + * SPDX-License-Identifier: MIT
 + *
 + * SVGA YUV-via-CPU dma-buf import.

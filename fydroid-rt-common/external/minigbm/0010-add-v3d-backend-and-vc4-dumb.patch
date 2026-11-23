@@ -401,7 +401,7 @@ index 0000000..1f2f1bf
 +++ b/v3d.c
 @@ -0,0 +1,236 @@
 +/*
-+ * Copyright 2019 The FydeOS Authors. All rights reserved.
++ * Copyright 2019 Fyde Innovations
 + * Use of this source code is governed by a BSD-style license that can be
 + * found in the LICENSE file.
 + * Author: Yang Tsao <yang@fydeos.io>

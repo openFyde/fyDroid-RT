@@ -120,7 +120,7 @@ index 0000000..c989bf4
 +++ b/nouveau.c
 @@ -0,0 +1,419 @@
 +/*
-+ * Copyright 2026 The FydeOS Authors
++ * Copyright 2026 Fyde Innovations
 + * Use of this source code is governed by a BSD-style license that can be
 + * found in the LICENSE file.
 + */

@@ -21,7 +21,7 @@ index 000000000000..e7b1f6c626d8
 +++ b/core/java/com/android/internal/fydroid/FydroidDefaults.java
 @@ -0,0 +1,45 @@
 +/*
-+ * Copyright (C) 2026 The FydeOS Authors
++ * Copyright (C) 2026 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.

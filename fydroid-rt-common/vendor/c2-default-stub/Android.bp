@@ -1,6 +1,6 @@
-// Copyright 2026 The FydeOS Authors. All rights reserved.
+// Copyright 2026 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// found in the LICENSE.BSD file.
 
 cc_binary {
     name: "fydroid_c2_default_stub",

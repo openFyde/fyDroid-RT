@@ -252,7 +252,7 @@ index 00000000000..e81d84d7e26
 +++ b/src/org/chromium/settings/HiddenPreferenceController.java
 @@ -0,0 +1,30 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -288,7 +288,7 @@ index 00000000000..b8483201fe1
 +++ b/src/org/chromium/settings/SettingsBlackHoleActivity.java
 @@ -0,0 +1,67 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -361,7 +361,7 @@ index 00000000000..59354aaa1a6
 +++ b/src/org/chromium/settings/accessibility/ArcAccessibilityActivity.java
 @@ -0,0 +1,20 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -387,7 +387,7 @@ index 00000000000..0cfdef35c65
 +++ b/src/org/chromium/settings/accessibility/ArcAccessibilitySettings.java
 @@ -0,0 +1,94 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -487,7 +487,7 @@ index 00000000000..dec94606a34
 +++ b/src/org/chromium/settings/dashboard/suggestions/SuggestionFeatureProviderArcImpl.java
 @@ -0,0 +1,21 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -514,7 +514,7 @@ index 00000000000..5074c99d9b9
 +++ b/src/org/chromium/settings/development/ArcAdbPreferenceController.java
 @@ -0,0 +1,64 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -584,7 +584,7 @@ index 00000000000..f93c31ce043
 +++ b/src/org/chromium/settings/development/ArcCaptionDescriptionPreferenceController.java
 @@ -0,0 +1,43 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -633,7 +633,7 @@ index 00000000000..489894c09c5
 +++ b/src/org/chromium/settings/development/ArcDarkThemePreferenceController.java
 @@ -0,0 +1,77 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -716,7 +716,7 @@ index 00000000000..aa9a444dea7
 +++ b/src/org/chromium/settings/development/ArcDevelopmentConstants.java
 @@ -0,0 +1,79 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -801,7 +801,7 @@ index 00000000000..6dd1d0d44c8
 +++ b/src/org/chromium/settings/development/ArcDevelopmentSettingsActivity.java
 @@ -0,0 +1,21 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -828,7 +828,7 @@ index 00000000000..33ef7117f39
 +++ b/src/org/chromium/settings/development/ArcDevelopmentSettingsDashboardFragment.java
 @@ -0,0 +1,136 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -970,7 +970,7 @@ index 00000000000..af627735abc
 +++ b/src/org/chromium/settings/development/ArcForceFullscreenPreferenceController.java
 @@ -0,0 +1,48 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1024,7 +1024,7 @@ index 00000000000..a6f1df2361b
 +++ b/src/org/chromium/settings/development/ArcLaunchWindowSizePreferenceController.java
 @@ -0,0 +1,45 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1075,7 +1075,7 @@ index 00000000000..1be97fb4769
 +++ b/src/org/chromium/settings/development/ArcMouseCompatPreferenceController.java
 @@ -0,0 +1,47 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1128,7 +1128,7 @@ index 00000000000..1b5cc9fbdf0
 +++ b/src/org/chromium/settings/development/ArcNotificationScalingPreferenceController.java
 @@ -0,0 +1,47 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1181,7 +1181,7 @@ index 00000000000..3f214c8243b
 +++ b/src/org/chromium/settings/development/ArcPinchGesturePreferenceController.java
 @@ -0,0 +1,47 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1234,7 +1234,7 @@ index 00000000000..53052a726bc
 +++ b/src/org/chromium/settings/development/ArcRubberBandResizingPreferenceController.java
 @@ -0,0 +1,48 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1288,7 +1288,7 @@ index 00000000000..c2ffda28c8c
 +++ b/src/org/chromium/settings/development/ArcSmoothScrollPreferenceController.java
 @@ -0,0 +1,47 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1341,7 +1341,7 @@ index 00000000000..daec72bc16d
 +++ b/src/org/chromium/settings/development/ArcVelocityTrackerStrategyPreferenceController.java
 @@ -0,0 +1,45 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1392,7 +1392,7 @@ index 00000000000..129a61fdafc
 +++ b/src/org/chromium/settings/development/ArcWaylandClientLogsPreferenceController.java
 @@ -0,0 +1,48 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1446,7 +1446,7 @@ index 00000000000..0bb53fe996f
 +++ b/src/org/chromium/settings/development/ArcWaylandTimingLogsPreferenceController.java
 @@ -0,0 +1,48 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1500,7 +1500,7 @@ index 00000000000..969af3537a2
 +++ b/src/org/chromium/settings/development/ArcWirelessDebuggingPreferenceController.java
 @@ -0,0 +1,84 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1590,7 +1590,7 @@ index 00000000000..970d162b800
 +++ b/src/org/chromium/settings/development/ArcWmFeatureForceUnResizeController.java
 @@ -0,0 +1,48 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1644,7 +1644,7 @@ index 00000000000..2d2d7c075cc
 +++ b/src/org/chromium/settings/development/ArcWmFeatureListPreferenceController.java
 @@ -0,0 +1,103 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1753,7 +1753,7 @@ index 00000000000..671a1f3e131
 +++ b/src/org/chromium/settings/development/ArcWmFeaturePreferenceController.java
 @@ -0,0 +1,55 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1814,7 +1814,7 @@ index 00000000000..434cfc3de63
 +++ b/src/org/chromium/settings/development/ArcWmFeatureSwitchPreferenceController.java
 @@ -0,0 +1,69 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1889,7 +1889,7 @@ index 00000000000..12c0f118ff9
 +++ b/src/org/chromium/settings/overlay/FeatureFactoryImpl.java
 @@ -0,0 +1,43 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
@@ -1938,7 +1938,7 @@ index 00000000000..fbe40a0d5b3
 +++ b/src/org/chromium/settings/search/SearchFeatureProviderArcImpl.java
 @@ -0,0 +1,24 @@
 +/*
-+ * Copyright (C) 2024 The FydeOS Authors
++ * Copyright (C) 2024 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.

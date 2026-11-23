@@ -1,6 +1,6 @@
-// Copyright 2024 The FydeOS Authors. All rights reserved.
+// Copyright 2024 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// found in the LICENSE.BSD file.
 
 // Native C++ enum for arc.mojom.VideoPixelFormat, ABI-compatible with the
 // original closed-source libarcbridge.so.

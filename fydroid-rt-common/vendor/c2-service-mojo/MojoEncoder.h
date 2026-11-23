@@ -1,6 +1,6 @@
-// Copyright 2024 The FydeOS Authors. All rights reserved.
+// Copyright 2024 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// found in the LICENSE.BSD file.
 
 #ifndef FYDROID_C2_MOJO_ENCODER_H
 #define FYDROID_C2_MOJO_ENCODER_H

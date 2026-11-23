@@ -196,7 +196,7 @@ index 00000000000..865e4bfddc1
 +++ b/src/com/android/settings/applications/appinfo/GameCategoryPreferenceController.java
 @@ -0,0 +1,101 @@
 +/*
-+ * Copyright (C) 2026 FydeOS
++ * Copyright (C) 2026 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.

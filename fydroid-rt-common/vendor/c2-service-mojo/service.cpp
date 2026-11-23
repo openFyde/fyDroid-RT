@@ -1,6 +1,6 @@
-// Copyright 2024 The FydeOS Authors. All rights reserved.
+// Copyright 2024 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
+// found in the LICENSE.BSD file.
 
 //#define LOG_NDEBUG 0
 #define LOG_TAG "android.hardware.media.c2@1.0-service-mojo"

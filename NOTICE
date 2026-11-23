@@ -1,5 +1,5 @@
-fydroid-rt
-Copyright The FydeOS Authors
+fyDroid-RT
+Copyright Fyde Innovations
 
 This project is licensed under the Apache License, Version 2.0. See LICENSE.
 
@@ -7,7 +7,8 @@ Parts of this repository are derived from other open-source projects and
 remain under their original licenses, as stated in each file's header:
 
 - Files whose header says "governed by a BSD-style license that can be found
-  in the LICENSE file" (code derived from Chromium and ChromiumOS, including
+  in the LICENSE file" or "in the LICENSE.BSD file" (code derived from
+  Chromium and ChromiumOS, including
   the Mojo interface definitions under
   fydroid-rt-common/frameworks/native/libs/arcbridge/mojom and the CRAS audio
   client under fydroid-rt-common/external/libcras) are licensed under the

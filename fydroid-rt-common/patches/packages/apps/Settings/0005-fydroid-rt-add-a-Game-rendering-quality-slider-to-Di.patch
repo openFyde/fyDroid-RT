@@ -46,7 +46,7 @@ index 00000000000..860d046ec75
 +++ b/res/layout/fydroid_preference_widget_seekbar_with_summary.xml
 @@ -0,0 +1,80 @@
 +<?xml version="1.0" encoding="utf-8"?>
-+<!-- Copyright (C) 2026 FydeOS
++<!-- Copyright (C) 2026 Fyde Innovations
 +
 +     Licensed under the Apache License, Version 2.0 (the "License");
 +     you may not use this file except in compliance with the License.
@@ -336,7 +336,7 @@ index 00000000000..1a48035f1b5
 +++ b/src/com/android/settings/display/GameRenderQualityPreferenceController.java
 @@ -0,0 +1,271 @@
 +/*
-+ * Copyright (C) 2026 FydeOS
++ * Copyright (C) 2026 Fyde Innovations
 + *
 + * Licensed under the Apache License, Version 2.0 (the "License");
 + * you may not use this file except in compliance with the License.
