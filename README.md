@@ -104,25 +104,35 @@ In source code, paths and build targets the project is written `fydroid-rt`,
 
 ## Contributing
 
-Patches are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a
-pull request, and the [Code of Conduct](CODE_OF_CONDUCT.md) before you join the
-discussion.
+fyDroid-RT is developed by Fyde Innovations and published here as source.
+Issues and patches are welcome, but please expect reviews to take time.
 
 - **Bugs and feature requests:** [openFyde/issues](https://github.com/openFyde/issues),
   the central tracker for all openFyde projects.
+- **Patches:** read [CONTRIBUTING.md](CONTRIBUTING.md) first. Commits need a
+  `Signed-off-by` line.
 - **Security reports:** follow [SECURITY.md](SECURITY.md). Do not open a public issue.
+- **Conduct:** the [Code of Conduct](CODE_OF_CONDUCT.md) applies to all project spaces.
 
 <br>
 
 ## License
 
-fyDroid-RT is licensed under the Apache License, Version 2.0; see
-[LICENSE](LICENSE). Some components come from other projects and keep their
-own licenses; see [NOTICE](NOTICE).
+fyDroid-RT builds on several upstream projects, so the repository carries more
+than one license. **The header of each file is authoritative**, and
+[NOTICE](NOTICE) has the full detail. In summary:
 
-The native bridge binaries used on amd64 (Intel Houdini, Google
-ndk_translation) are proprietary third-party software. They are not included
-in this repository and are not covered by its license.
+| What | License | Copyright |
+|------|---------|-----------|
+| Everything written for fyDroid-RT. This is the default for the repository | [Apache 2.0](LICENSE) | Fyde Innovations |
+| Mojo interface definitions and their Java bindings, the CRAS audio client (`external/libcras`) and the Codec2 service (`vendor/c2-service-mojo`) | [BSD 3-Clause](LICENSE.BSD) | The Chromium Authors, The ChromiumOS Authors |
+| Wayland protocol descriptions (`external/wayland-protocols`) | MIT-style, stated in each file | Their respective authors |
+| Patch files under `patches/`, `external/` and `vendor/patches/` | The license of the file each patch modifies: mostly Apache 2.0, MIT and BSD, and GPL 2.0 for some | The upstream projects and Fyde Innovations |
+
+Not included, and not covered by any license here: the native bridge
+binaries used on amd64 (Intel Houdini, Google ndk_translation) and the
+F-Droid packages. The build scripts download them from third parties, and
+each is subject to its own terms. Houdini and ndk_translation are proprietary.
 
 <br>
 

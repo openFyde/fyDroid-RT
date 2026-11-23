@@ -1,7 +1,8 @@
 # Contributing to fyDroid-RT
 
-Thank you for helping. This page covers what we need from a contribution so it
-can be reviewed and merged quickly.
+fyDroid-RT is developed by Fyde Innovations and published here as source.
+Outside patches are welcome. This page covers what we need from a
+contribution; please expect reviews to take time.
 
 ## Where things go
 
@@ -115,4 +116,4 @@ and class names use `Fydroid`, because those languages do not allow hyphens.
 ## Review
 
 A maintainer listed in [CODEOWNERS](.github/CODEOWNERS) reviews every pull
-request. Expect questions; small, focused pull requests are merged fastest.
+request. Small, focused pull requests are the easiest to review.

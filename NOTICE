@@ -14,6 +14,11 @@ remain under their original licenses, as stated in each file's header:
   client under fydroid-rt-common/external/libcras) are licensed under the
   3-clause BSD license in LICENSE.BSD.
 
+- The Java sources under
+  fydroid-rt-common/frameworks/arc/org.chromium.arc.mojom are Mojo bindings
+  for Chromium's interface definitions. They are Copyright The Chromium
+  Authors and licensed under the same 3-clause BSD license.
+
 - fydroid-rt-common/vendor/c2-service-mojo is derived from the Android
   v4l2_codec2 project (Copyright The Chromium Authors) and stays under the
   same 3-clause BSD license.
