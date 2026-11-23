@@ -1,3 +1,5 @@
+<br>
+
 # fydroid-rt
 
 An open-source Android container runtime for FydeOS, replacing Google's
@@ -8,6 +10,8 @@ replaced it with ARCVM (a full virtual machine), which needs more memory and
 CPU, leaving many older Chromebooks unable to run Android apps. fydroid-rt
 brings back the container approach by rebuilding the Android runtime from
 AOSP (Android Open Source Project) 13 source.
+
+<br>
 
 ## Status and targets
 
@@ -20,6 +24,8 @@ images, `system.raw.img` and `vendor.raw.img`, for these lunch targets:
 | `fydroid_rt_arm64-userdebug` | Rockchip RK3588S |
 | `fydroid_rt_apple-userdebug` | arm64 guests on Apple Silicon (VMware Fusion, virtio-gpu) |
 | `fydroid_rt_armv8-userdebug` | Raspberry Pi 4 (experimental) |
+
+<br>
 
 ## Repository layout
 
@@ -52,6 +58,8 @@ device/fydeos/
 └── fydroid-rt_armv8/        Raspberry Pi 4 target (experimental)
 ```
 
+<br>
+
 ## Building
 
 See [BUILD.md](BUILD.md) for the full guide. In outline:
@@ -62,11 +70,15 @@ See [BUILD.md](BUILD.md) for the full guide. In outline:
 4. Fetch the F-Droid APKs (and, for amd64, the native bridge binaries).
 5. `lunch fydroid_rt_amd64-userdebug && m systemrawimage vendorrawimage`.
 
+<br>
+
 ## Running
 
 The images need a ChromeOS-based host whose Android support uses the ARC++
 container (not ARCVM), such as openFyde or FydeOS. The host-side integration
 is not part of this repository.
+
+<br>
 
 ## License
 
