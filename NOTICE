@@ -14,6 +14,10 @@ remain under their original licenses, as stated in each file's header:
   client under fydroid-rt-common/external/libcras) are licensed under the
   3-clause BSD license in LICENSE.BSD.
 
+- fydroid-rt-common/vendor/c2-service-mojo is derived from the Android
+  v4l2_codec2 project (Copyright The Chromium Authors) and stays under the
+  same 3-clause BSD license.
+
 - fydroid-rt-common/external/libcras/third_party/utlist is Copyright
   Troy D. Hanson and licensed under the BSD license in its header.
 

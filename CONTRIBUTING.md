@@ -84,9 +84,13 @@ Apache 2.0 files (the default), in the comment style of the language:
  */
 ```
 
-Files derived from Chromium or ChromiumOS stay under the BSD license:
+Everything written for fyDroid-RT is Apache 2.0. The one exception is a file
+copied or adapted from a BSD-licensed upstream such as Chromium, ChromiumOS
+or v4l2_codec2. It stays under the upstream license and keeps the upstream
+copyright line above ours:
 
 ```cpp
+// Copyright 2020 The Chromium Authors. All rights reserved.
 // Copyright 2026 Fyde Innovations
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE.BSD file.
